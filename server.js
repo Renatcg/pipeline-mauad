@@ -12,7 +12,9 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor"];
 const RESCUED_STATUS = "Resgatado";
-const sessions = new Map();
+const DATABASE_URL = process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || "";
+const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
+let sqlClientPromise = null;
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -35,7 +37,7 @@ function verifyPassword(password, stored) {
   return crypto.timingSafeEqual(Buffer.from(expected, "hex"), actual);
 }
 
-function ensureDb() {
+function buildDefaultDb() {
   if (fs.existsSync(DB_PATH)) return migrateDb(readJson(DB_PATH));
   const seed = fs.existsSync(SEED_PATH)
     ? readJson(SEED_PATH)
@@ -94,6 +96,50 @@ function ensureDb() {
   return db;
 }
 
+async function getSql() {
+  if (!DATABASE_URL) return null;
+  if (!sqlClientPromise) {
+    sqlClientPromise = import("@neondatabase/serverless").then(({ neon }) => neon(DATABASE_URL));
+  }
+  return sqlClientPromise;
+}
+
+async function ensurePostgresState() {
+  const sql = await getSql();
+  if (!sql) return null;
+  await sql`
+    CREATE TABLE IF NOT EXISTS app_state (
+      id text PRIMARY KEY,
+      data jsonb NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  const rows = await sql`SELECT data FROM app_state WHERE id = 'main' LIMIT 1`;
+  if (rows.length) return migrateDb(rows[0].data);
+  const db = buildDefaultDb();
+  await sql`INSERT INTO app_state (id, data) VALUES ('main', ${JSON.stringify(db)}::jsonb)`;
+  return db;
+}
+
+async function loadDb() {
+  if (DATABASE_URL) return ensurePostgresState();
+  return buildDefaultDb();
+}
+
+async function saveDb(db) {
+  if (!DATABASE_URL) {
+    writeDb(db);
+    return;
+  }
+  const sql = await getSql();
+  await sql`
+    INSERT INTO app_state (id, data, updated_at)
+    VALUES ('main', ${JSON.stringify(db)}::jsonb, now())
+    ON CONFLICT (id)
+    DO UPDATE SET data = EXCLUDED.data, updated_at = now()
+  `;
+}
+
 function migrateDb(db) {
   let changed = false;
   if (!db.pipelineStatuses.includes(RESCUED_STATUS)) {
@@ -146,16 +192,22 @@ function notFound(res) {
   sendJson(res, 404, { error: "Não encontrado" });
 }
 
-function getSession(req) {
-  const sid = parseCookies(req).sid;
-  if (!sid) return null;
-  const session = sessions.get(sid);
-  if (!session || session.expiresAt < Date.now()) {
-    sessions.delete(sid);
-    return null;
-  }
-  session.expiresAt = Date.now() + SESSION_TTL_MS;
-  return session;
+function signSession(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+
+function readSession(req) {
+  const token = parseCookies(req).sid;
+  if (!token || !token.includes(".")) return null;
+  const [body, sig] = token.split(".");
+  const expected = crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+  if (Buffer.byteLength(sig) !== Buffer.byteLength(expected)) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+  if (!payload.expiresAt || payload.expiresAt < Date.now()) return null;
+  return payload;
 }
 
 function publicUser(user) {
@@ -164,7 +216,7 @@ function publicUser(user) {
 }
 
 function requireAuth(req, res, db) {
-  const session = getSession(req);
+  const session = readSession(req);
   if (!session) {
     sendJson(res, 401, { error: "Login necessário" });
     return null;
@@ -237,16 +289,13 @@ async function routeApi(req, res, db) {
     if (!user || !user.active || !verifyPassword(String(body.password || ""), user.passwordHash)) {
       return sendJson(res, 401, { error: "Usuário ou senha inválidos" });
     }
-    const sid = crypto.randomBytes(32).toString("hex");
-    sessions.set(sid, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
+    const sid = signSession({ userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
     return sendJson(res, 200, { user: publicUser(user) }, {
       "Set-Cookie": `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`
     });
   }
 
   if (method === "POST" && url.pathname === "/api/logout") {
-    const sid = parseCookies(req).sid;
-    if (sid) sessions.delete(sid);
     return sendJson(res, 200, { ok: true }, { "Set-Cookie": "sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0" });
   }
 
@@ -281,7 +330,7 @@ async function routeApi(req, res, db) {
     }
     lead.updatedAt = new Date().toISOString();
     audit(db, user, "UPDATE_LEAD", { leadId: lead.id, changes: body });
-    writeDb(db);
+    await saveDb(db);
     return sendJson(res, 200, { lead });
   }
 
@@ -297,7 +346,7 @@ async function routeApi(req, res, db) {
     lead.rescuedAt = new Date().toISOString();
     lead.updatedAt = lead.rescuedAt;
     audit(db, user, "RESCUE_ODYSSEIA_LEAD", { leadId: lead.id });
-    writeDb(db);
+    await saveDb(db);
     return sendJson(res, 200, { lead });
   }
 
@@ -322,7 +371,7 @@ async function routeApi(req, res, db) {
     };
     db.users.push(newUser);
     audit(db, user, "CREATE_USER", { userId: newUser.id, role: newUser.role });
-    writeDb(db);
+    await saveDb(db);
     return sendJson(res, 201, { user: publicUser(newUser) });
   }
 
@@ -338,7 +387,7 @@ async function routeApi(req, res, db) {
     if (body.password) target.passwordHash = hashPassword(String(body.password));
     target.updatedAt = new Date().toISOString();
     audit(db, user, "UPDATE_USER", { userId: target.id, changes: { ...body, password: body.password ? "***" : undefined } });
-    writeDb(db);
+    await saveDb(db);
     return sendJson(res, 200, { user: publicUser(target) });
   }
 
@@ -347,16 +396,33 @@ async function routeApi(req, res, db) {
     const body = await readBody(req);
     db.integrations = body.integrations;
     audit(db, user, "UPDATE_INTEGRATIONS", {});
-    writeDb(db);
+    await saveDb(db);
     return sendJson(res, 200, { integrations: db.integrations });
+  }
+
+  if (url.pathname === "/api/admin/import-db" && method === "POST") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    if (!body.db || !Array.isArray(body.db.users) || !Array.isArray(body.db.leads)) {
+      return sendJson(res, 400, { error: "Base inválida" });
+    }
+    const imported = migrateDb(body.db);
+    audit(imported, user, "IMPORT_DATABASE", { leads: imported.leads.length, users: imported.users.length });
+    await saveDb(imported);
+    return sendJson(res, 200, {
+      ok: true,
+      leads: imported.leads.length,
+      users: imported.users.length,
+      source: DATABASE_URL ? "postgres" : "file"
+    });
   }
 
   notFound(res);
 }
 
-const db = ensureDb();
-function handleRequest(req, res) {
+async function handleRequest(req, res) {
   if (req.url.startsWith("/api/")) {
+    const db = await loadDb();
     routeApi(req, res, db).catch((error) => {
       console.error(error);
       sendJson(res, 500, { error: "Erro interno" });
@@ -367,7 +433,12 @@ function handleRequest(req, res) {
 }
 
 if (require.main === module) {
-  const server = http.createServer(handleRequest);
+  const server = http.createServer((req, res) => {
+    handleRequest(req, res).catch((error) => {
+      console.error(error);
+      sendJson(res, 500, { error: "Erro interno" });
+    });
+  });
   server.listen(PORT, HOST, () => {
     console.log(`Pipeline de leads disponível em http://${HOST}:${PORT}`);
     console.log("Login inicial: admin / Admin@12345");

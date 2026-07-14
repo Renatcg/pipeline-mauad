@@ -4,6 +4,10 @@
   "private": true,
   "description": "Pipeline seguro de leads com Kanban, planilha e dashboard.",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "import:db": "node scripts/import-db-to-app.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.2"
   }
 }
