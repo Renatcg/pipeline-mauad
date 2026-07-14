@@ -4,6 +4,7 @@ const state = {
   user: null,
   roles: [],
   statuses: [],
+  tagDefinitions: [],
   users: [],
   leads: [],
   integrations: null,
@@ -144,22 +145,34 @@ function renderLogin(error = "") {
   if (window.location.pathname !== "/login") history.replaceState({}, "", "/login");
   app.innerHTML = `
     <section class="login-page">
-      <form class="login-box" id="loginForm">
-        <h1>Pipeline Comercial</h1>
-        <p>Construtora Mauad</p>
-        <div class="field">
-          <label for="username">Usuário</label>
-          <input id="username" name="username" autocomplete="username" value="admin" required>
-        </div>
-        <div class="field">
-          <label for="password">Senha</label>
-          <input id="password" name="password" type="password" autocomplete="current-password" required>
-        </div>
-        ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
-        <div class="field">
-          <button class="primary" type="submit">Entrar</button>
-        </div>
-      </form>
+      <div class="login-frame">
+        <section class="login-intro">
+          <img src="/logo-mauad-branco.png" alt="Construtora Mauad">
+          <span>Pipeline Comercial</span>
+          <h1>Organize leads, atendimentos e negociações em um só lugar.</h1>
+          <p>Acompanhe bases, resgates, corretores e conversões do funil comercial com segurança.</p>
+          <small>Ambiente protegido para a equipe comercial da Construtora Mauad.</small>
+        </section>
+        <section class="login-panel">
+          <form class="login-box" id="loginForm">
+            <span class="eyebrow">Entrar</span>
+            <h2>Acessar conta</h2>
+            <p>Use seu usuário e senha para acessar o sistema.</p>
+            <div class="field">
+              <label for="username">Usuário</label>
+              <input id="username" name="username" autocomplete="username" value="admin" required>
+            </div>
+            <div class="field">
+              <label for="password">Senha</label>
+              <input id="password" name="password" type="password" autocomplete="current-password" required>
+            </div>
+            ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
+            <div class="field">
+              <button class="primary login-submit" type="submit">Entrar</button>
+            </div>
+          </form>
+        </section>
+      </div>
     </section>
   `;
   document.querySelector("#loginForm").addEventListener("submit", async (event) => {
@@ -192,6 +205,7 @@ async function loadState() {
   state.user = data.user;
   state.roles = data.roles;
   state.statuses = data.pipelineStatuses;
+  state.tagDefinitions = data.tagDefinitions || [];
   state.users = data.users;
   state.leads = data.leads;
   state.integrations = data.integrations;
@@ -292,18 +306,29 @@ function leadTags(lead) {
   return Array.isArray(lead.tags) ? lead.tags.filter(Boolean) : [];
 }
 
+function tagDefinition(name) {
+  return state.tagDefinitions.find((tag) => tag.name === name) || { name, color: "#475467" };
+}
+
 function availableTags() {
-  const defaults = ["Quente", "Morno", "Frio", "Retorno", "Visita", "Documentação"];
-  const existing = state.leads.flatMap((lead) => leadTags(lead));
-  return [...new Set([...defaults, ...existing])].sort((a, b) => a.localeCompare(b, "pt-BR"));
+  return [...state.tagDefinitions].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
 }
 
 function renderLeadTags(lead, editable = false) {
   const tags = leadTags(lead);
+  const unusedTags = availableTags().filter((tag) => !tags.includes(tag.name));
   return `
     <div class="lead-tags">
-      ${tags.map((tag) => `<button class="tag" data-remove-tag="${escapeHtml(lead.id)}" data-tag="${escapeHtml(tag)}" title="Remover etiqueta">${escapeHtml(tag)}</button>`).join("")}
-      ${editable ? `<button class="tag tag-add" data-add-tag="${escapeHtml(lead.id)}" title="Adicionar etiqueta">+ Etiqueta</button>` : ""}
+      ${tags.map((tagName) => {
+        const tag = tagDefinition(tagName);
+        return `<button class="tag" style="--tag-color:${escapeHtml(tag.color)}" data-remove-tag="${escapeHtml(lead.id)}" data-tag="${escapeHtml(tagName)}" title="Remover etiqueta">${escapeHtml(tagName)}</button>`;
+      }).join("")}
+      ${editable && unusedTags.length ? `
+        <select class="tag-select" data-tag-select="${escapeHtml(lead.id)}" title="Adicionar etiqueta">
+          <option value="">+ Etiqueta</option>
+          ${unusedTags.map((tag) => `<option value="${escapeHtml(tag.name)}">${escapeHtml(tag.name)}</option>`).join("")}
+        </select>
+      ` : ""}
     </div>
   `;
 }
@@ -379,14 +404,13 @@ function bindLeadActions() {
       renderApp();
     });
   });
-  document.querySelectorAll("[data-add-tag]").forEach((button) => {
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const lead = state.leads.find((item) => item.id === button.dataset.addTag);
-      const suggestion = availableTags().join(", ");
-      const tag = prompt(`Digite a etiqueta para este lead.\nSugestões: ${suggestion}`, "");
-      if (!tag?.trim()) return;
-      await patchLead(lead.id, { tags: [...new Set([...leadTags(lead), tag.trim()])] });
+  document.querySelectorAll("[data-tag-select]").forEach((select) => {
+    select.addEventListener("click", (event) => event.stopPropagation());
+    select.addEventListener("change", async () => {
+      const lead = state.leads.find((item) => item.id === select.dataset.tagSelect);
+      const tag = select.value;
+      if (!tag) return;
+      await patchLead(lead.id, { tags: [...new Set([...leadTags(lead), tag])] });
       renderApp();
     });
   });
@@ -763,6 +787,7 @@ function settingsLayout(content) {
       ${settingsTabButton("users", "Usuários")}
       ${settingsTabButton("integrations", "Integrações")}
       ${settingsTabButton("statuses", "Status do pipeline")}
+      ${settingsTabButton("tags", "Etiquetas")}
     </div>
     ${content}
   `);
@@ -778,6 +803,7 @@ function settingsLayout(content) {
 function renderSettings() {
   if (state.settingsTab === "integrations") return renderIntegrationSettings();
   if (state.settingsTab === "statuses") return renderStatusSettings();
+  if (state.settingsTab === "tags") return renderTagSettings();
   return renderUserSettings();
 }
 
@@ -1009,6 +1035,73 @@ function renderStatusSettings() {
     } else {
       await api("/api/statuses", { method: "POST", body: JSON.stringify({ name: form.get("name") }) });
     }
+    state.settingsEditing = null;
+    await loadState();
+    renderSettings();
+  });
+}
+
+function renderTagSettings() {
+  const isCreating = state.settingsEditing === "new-tag";
+  const editTag = state.tagDefinitions.find((tag) => state.settingsEditing === `tag:${tag.id}`);
+  const formTag = editTag || { name: "", color: "#0f766e" };
+  const rows = state.tagDefinitions.map((tag) => {
+    const count = state.leads.filter((lead) => leadTags(lead).includes(tag.name)).length;
+    return `
+      <tr>
+        <td><span class="tag static-tag" style="--tag-color:${escapeHtml(tag.color)}">${escapeHtml(tag.name)}</span></td>
+        <td><span class="color-swatch" style="background:${escapeHtml(tag.color)}"></span>${escapeHtml(tag.color)}</td>
+        <td>${count}</td>
+        <td><div class="row-actions"><button data-edit-tag="${escapeHtml(tag.id)}">Editar</button><button data-delete-tag="${escapeHtml(tag.id)}">Excluir</button></div></td>
+      </tr>
+    `;
+  }).join("");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Etiquetas</h2>
+        <button class="primary" data-new-tag>Cadastrar novo</button>
+      </div>
+      ${(isCreating || editTag) ? `
+        <form id="tagForm" class="form-grid editor">
+          <div class="field"><label>Nome da etiqueta</label><input name="name" value="${escapeHtml(formTag.name)}" required></div>
+          <div class="field"><label>Cor</label><input name="color" type="color" value="${escapeHtml(formTag.color)}"></div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
+        </form>
+      ` : ""}
+      <div class="table-wrap">
+        <table><thead><tr><th>Etiqueta</th><th>Cor</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="empty">Nenhuma etiqueta cadastrada</td></tr>'}</tbody></table>
+      </div>
+    </section>
+  `);
+  bindSettingsCommon();
+  document.querySelector("[data-new-tag]")?.addEventListener("click", () => {
+    state.settingsEditing = "new-tag";
+    renderSettings();
+  });
+  document.querySelectorAll("[data-edit-tag]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `tag:${button.dataset.editTag}`;
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-delete-tag]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Excluir esta etiqueta? Ela será removida dos leads que a usam.")) return;
+      const data = await api(`/api/tags/${button.dataset.deleteTag}`, { method: "DELETE" });
+      state.tagDefinitions = data.tagDefinitions;
+      await loadState();
+      renderSettings();
+    });
+  });
+  document.querySelector("#tagForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const payload = { name: form.get("name"), color: form.get("color") };
+    const data = editTag
+      ? await api(`/api/tags/${editTag.id}`, { method: "PATCH", body: JSON.stringify(payload) })
+      : await api("/api/tags", { method: "POST", body: JSON.stringify(payload) });
+    state.tagDefinitions = data.tagDefinitions;
     state.settingsEditing = null;
     await loadState();
     renderSettings();

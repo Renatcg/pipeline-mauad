@@ -11,6 +11,14 @@ const SEED_PATH = path.join(DATA_DIR, "seed.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor"];
+const DEFAULT_TAG_DEFINITIONS = [
+  { id: "tag-quente", name: "Quente", color: "#d92d20" },
+  { id: "tag-morno", name: "Morno", color: "#f79009" },
+  { id: "tag-frio", name: "Frio", color: "#1570ef" },
+  { id: "tag-retorno", name: "Retorno", color: "#7f56d9" },
+  { id: "tag-visita", name: "Visita", color: "#039855" },
+  { id: "tag-documentacao", name: "Documentação", color: "#475467" }
+];
 const LEGACY_ODYSSEIA_STATUSES = new Set([
   "Resgatado",
   "Novo Lead",
@@ -75,6 +83,7 @@ function buildDefaultDb() {
   const db = {
     roles: seed.roles || ROLES,
     pipelineStatuses: [],
+    tagDefinitions: DEFAULT_TAG_DEFINITIONS,
     users: [
       {
         id: "admin-ti",
@@ -178,6 +187,10 @@ function migrateDb(db) {
     db.pipelineStatuses = [];
     changed = true;
   }
+  if (!Array.isArray(db.tagDefinitions)) {
+    db.tagDefinitions = DEFAULT_TAG_DEFINITIONS.map((tag) => ({ ...tag }));
+    changed = true;
+  }
   const statusesInUse = new Set(db.leads.filter((lead) => lead.inPipeline).map((lead) => lead.status));
   const commercialStatuses = db.pipelineStatuses.filter((status) => !LEGACY_ODYSSEIA_STATUSES.has(status) || statusesInUse.has(status));
   if (commercialStatuses.length !== db.pipelineStatuses.length) {
@@ -192,6 +205,16 @@ function migrateDb(db) {
     if (!Array.isArray(lead.tags)) {
       lead.tags = [];
       changed = true;
+    }
+    for (const tag of lead.tags) {
+      if (!db.tagDefinitions.some((item) => item.name === tag)) {
+        db.tagDefinitions.push({
+          id: `tag-${crypto.randomUUID()}`,
+          name: tag,
+          color: "#475467"
+        });
+        changed = true;
+      }
     }
     if (lead.source === "ODYSSEIA" && lead.odysseiaStatus == null) {
       lead.odysseiaStatus = lead.status;
@@ -208,6 +231,15 @@ function migrateDb(db) {
   }
   if (changed) Object.defineProperty(db, "__dirty", { value: true, enumerable: false, configurable: true });
   return db;
+}
+
+function cleanColor(color) {
+  const value = String(color || "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(value) ? value : "#475467";
+}
+
+function registeredTagNames(db) {
+  return new Set((db.tagDefinitions || []).map((tag) => tag.name));
 }
 
 function parseCookies(req) {
@@ -371,7 +403,8 @@ function routeStatic(req, res) {
   const type = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
-    ".js": "application/javascript; charset=utf-8"
+    ".js": "application/javascript; charset=utf-8",
+    ".png": "image/png"
   }[ext] || "application/octet-stream";
   res.writeHead(200, {
     "Content-Type": type,
@@ -414,6 +447,7 @@ async function routeApi(req, res, db) {
       user: publicUser(user),
       roles: db.roles,
       pipelineStatuses: db.pipelineStatuses,
+      tagDefinitions: db.tagDefinitions || [],
       users: db.users.map(publicUser),
       leads: visibleLeads(db, user),
       integrations: canManageSettings(user) ? db.integrations : null,
@@ -436,8 +470,9 @@ async function routeApi(req, res, db) {
     for (const key of allowed) {
       if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
       if (key === "tags") {
+        const validTags = registeredTagNames(db);
         lead.tags = Array.isArray(body.tags)
-          ? [...new Set(body.tags.map((tag) => String(tag).trim()).filter(Boolean))].slice(0, 12)
+          ? [...new Set(body.tags.map((tag) => String(tag).trim()).filter((tag) => tag && validTags.has(tag)))].slice(0, 12)
           : [];
       } else if (key === "assignedTo") {
         lead.assignedTo = body.assignedTo || null;
@@ -620,6 +655,60 @@ async function routeApi(req, res, db) {
     audit(db, user, "DELETE_STATUS", { status });
     await saveDb(db);
     return sendJson(res, 200, { pipelineStatuses: db.pipelineStatuses });
+  }
+
+  if (url.pathname === "/api/tags" && method === "POST") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const name = String(body.name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+    if (db.tagDefinitions.some((tag) => tag.name.toLowerCase() === name.toLowerCase())) {
+      return sendJson(res, 400, { error: "Etiqueta já existe" });
+    }
+    const tag = {
+      id: `tag-${crypto.randomUUID()}`,
+      name,
+      color: cleanColor(body.color)
+    };
+    db.tagDefinitions.push(tag);
+    audit(db, user, "CREATE_TAG", { name });
+    await saveDb(db);
+    return sendJson(res, 201, { tagDefinitions: db.tagDefinitions });
+  }
+
+  const tagMatch = url.pathname.match(/^\/api\/tags\/([^/]+)$/);
+  if (tagMatch && method === "PATCH") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const tag = db.tagDefinitions.find((item) => item.id === tagMatch[1]);
+    if (!tag) return notFound(res);
+    const body = await readBody(req);
+    const oldName = tag.name;
+    const name = String(body.name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+    if (db.tagDefinitions.some((item) => item.id !== tag.id && item.name.toLowerCase() === name.toLowerCase())) {
+      return sendJson(res, 400, { error: "Etiqueta já existe" });
+    }
+    tag.name = name;
+    tag.color = cleanColor(body.color);
+    for (const lead of db.leads) {
+      if (Array.isArray(lead.tags)) lead.tags = lead.tags.map((item) => (item === oldName ? name : item));
+    }
+    audit(db, user, "UPDATE_TAG", { oldName, name });
+    await saveDb(db);
+    return sendJson(res, 200, { tagDefinitions: db.tagDefinitions });
+  }
+
+  if (tagMatch && method === "DELETE") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const index = db.tagDefinitions.findIndex((item) => item.id === tagMatch[1]);
+    if (index < 0) return notFound(res);
+    const [tag] = db.tagDefinitions.splice(index, 1);
+    for (const lead of db.leads) {
+      if (Array.isArray(lead.tags)) lead.tags = lead.tags.filter((item) => item !== tag.name);
+    }
+    audit(db, user, "DELETE_TAG", { name: tag.name });
+    await saveDb(db);
+    return sendJson(res, 200, { tagDefinitions: db.tagDefinitions });
   }
 
   if (url.pathname === "/api/admin/import-db" && method === "POST") {
