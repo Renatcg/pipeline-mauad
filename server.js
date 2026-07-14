@@ -185,6 +185,14 @@ function migrateDb(db) {
     changed = true;
   }
   for (const lead of db.leads) {
+    if (!Array.isArray(lead.comments)) {
+      lead.comments = [];
+      changed = true;
+    }
+    if (!Array.isArray(lead.tags)) {
+      lead.tags = [];
+      changed = true;
+    }
     if (lead.source === "ODYSSEIA" && lead.odysseiaStatus == null) {
       lead.odysseiaStatus = lead.status;
       changed = true;
@@ -284,6 +292,10 @@ function visibleLeads(db, user) {
   return db.leads;
 }
 
+function canEditLead(user, lead) {
+  return canManageLeads(user) || (user.role === "Corretor" && lead.assignedTo === user.id);
+}
+
 async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -351,7 +363,8 @@ function mergeImportedLeads(db, importedLeads, pipelineStatuses = []) {
 
 function routeStatic(req, res) {
   const requested = req.url === "/" ? "/index.html" : decodeURIComponent(req.url.split("?")[0]);
-  const filePath = path.normalize(path.join(PUBLIC_DIR, requested));
+  const routedRequest = path.extname(requested) ? requested : "/index.html";
+  const filePath = path.normalize(path.join(PUBLIC_DIR, routedRequest));
   if (!filePath.startsWith(PUBLIC_DIR)) return notFound(res);
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) return notFound(res);
   const ext = path.extname(filePath);
@@ -414,14 +427,52 @@ async function routeApi(req, res, db) {
     if (!lead) return notFound(res);
     if (user.role === "Corretor" && lead.assignedTo !== user.id) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
-    const allowed = canManageLeads(user) && lead.inPipeline ? ["status", "favorite", "assignedTo", "order"] : ["favorite"];
+    const detailFields = ["name", "phone", "assistant", "desiredProject", "desiredUnit", "unitValue", "notes", "tags"];
+    const allowed = canManageLeads(user) && lead.inPipeline
+      ? ["status", "favorite", "assignedTo", "order", ...detailFields]
+      : canEditLead(user, lead) && lead.inPipeline
+        ? ["favorite", ...detailFields]
+      : ["favorite"];
     for (const key of allowed) {
-      if (Object.prototype.hasOwnProperty.call(body, key)) lead[key] = body[key];
+      if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
+      if (key === "tags") {
+        lead.tags = Array.isArray(body.tags)
+          ? [...new Set(body.tags.map((tag) => String(tag).trim()).filter(Boolean))].slice(0, 12)
+          : [];
+      } else if (key === "assignedTo") {
+        lead.assignedTo = body.assignedTo || null;
+        lead.assignedName = lead.assignedTo ? db.users.find((item) => item.id === lead.assignedTo)?.name || lead.assignedName || "" : "";
+      } else {
+        lead[key] = body[key];
+      }
     }
     lead.updatedAt = new Date().toISOString();
     audit(db, user, "UPDATE_LEAD", { leadId: lead.id, changes: body });
     await saveDb(db);
     return sendJson(res, 200, { lead });
+  }
+
+  const commentMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments$/);
+  if (commentMatch && method === "POST") {
+    const lead = db.leads.find((item) => item.id === commentMatch[1]);
+    if (!lead) return notFound(res);
+    if (!canEditLead(user, lead) || !lead.inPipeline) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const text = String(body.text || "").trim();
+    if (!text) return sendJson(res, 400, { error: "Comentário obrigatório" });
+    const comment = {
+      id: `comment-${crypto.randomUUID()}`,
+      text,
+      createdAt: new Date().toISOString(),
+      authorId: user.id,
+      authorName: user.name
+    };
+    if (!Array.isArray(lead.comments)) lead.comments = [];
+    lead.comments.unshift(comment);
+    lead.updatedAt = comment.createdAt;
+    audit(db, user, "COMMENT_LEAD", { leadId: lead.id });
+    await saveDb(db);
+    return sendJson(res, 201, { lead, comment });
   }
 
   const rescueMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rescue$/);

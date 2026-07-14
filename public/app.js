@@ -9,6 +9,8 @@ const state = {
   integrations: null,
   auditLog: [],
   view: "kanban",
+  leadId: null,
+  previousView: "kanban",
   settingsTab: "users",
   settingsEditing: null,
   baseSource: "ODYSSEIA",
@@ -22,6 +24,23 @@ const profileAccess = {
   "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard"],
   Diretoria: ["dashboard", "sheet", "odysseia", "kanban"],
   Corretor: ["kanban", "sheet"]
+};
+
+const routeByView = {
+  kanban: "/kanban",
+  sheet: "/planilha",
+  odysseia: "/bases",
+  dashboard: "/dashboard",
+  settings: "/configuracoes"
+};
+
+const viewByRoute = {
+  "/": "kanban",
+  "/kanban": "kanban",
+  "/planilha": "sheet",
+  "/bases": "odysseia",
+  "/dashboard": "dashboard",
+  "/configuracoes": "settings"
 };
 
 function escapeHtml(value) {
@@ -49,6 +68,30 @@ function allowedViews() {
 
 function userName(id) {
   return state.users.find((user) => user.id === id)?.name || "";
+}
+
+function canManageLeads() {
+  return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(state.user?.role);
+}
+
+function syncRouteFromLocation() {
+  const path = window.location.pathname;
+  if (path.startsWith("/leads/")) {
+    state.previousView = state.previousView || "kanban";
+    state.view = "lead";
+    state.leadId = decodeURIComponent(path.replace("/leads/", ""));
+    return;
+  }
+  state.view = viewByRoute[path] || "kanban";
+  state.leadId = null;
+}
+
+function routeTo(view, leadId = null) {
+  state.view = view;
+  state.leadId = leadId;
+  const path = view === "lead" ? `/leads/${encodeURIComponent(leadId)}` : routeByView[view] || "/kanban";
+  if (window.location.pathname !== path) history.pushState({}, "", path);
+  renderApp();
 }
 
 function filteredLeads() {
@@ -98,6 +141,7 @@ function metrics(leads = filteredLeads()) {
 }
 
 function renderLogin(error = "") {
+  if (window.location.pathname !== "/login") history.replaceState({}, "", "/login");
   app.innerHTML = `
     <section class="login-page">
       <form class="login-box" id="loginForm">
@@ -131,7 +175,12 @@ function renderLogin(error = "") {
       });
       state.user = result.user;
       await loadState();
-      renderApp();
+      if (state.view === "lead" && state.leadId) {
+        routeTo("lead", state.leadId);
+        return;
+      }
+      const nextView = state.view !== "lead" && allowedViews().includes(state.view) ? state.view : allowedViews()[0] || "kanban";
+      routeTo(nextView);
     } catch (error) {
       renderLogin(error.message);
     }
@@ -147,7 +196,7 @@ async function loadState() {
   state.leads = data.leads;
   state.integrations = data.integrations;
   state.auditLog = data.auditLog;
-  if (!allowedViews().includes(state.view)) state.view = allowedViews()[0];
+  if (state.view !== "lead" && !allowedViews().includes(state.view)) state.view = allowedViews()[0];
 }
 
 function navButton(view, icon, label) {
@@ -185,13 +234,13 @@ function renderShell(content) {
   `;
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.view = button.dataset.view;
-      renderApp();
+      routeTo(button.dataset.view);
     });
   });
   bindPageFilters();
   document.querySelector("#logout").addEventListener("click", async () => {
     await api("/api/logout", { method: "POST" });
+    history.pushState({}, "", "/login");
     renderLogin();
   });
 }
@@ -239,9 +288,39 @@ function renderMetrics(leads = filteredLeads()) {
   `;
 }
 
+function leadTags(lead) {
+  return Array.isArray(lead.tags) ? lead.tags.filter(Boolean) : [];
+}
+
+function availableTags() {
+  const defaults = ["Quente", "Morno", "Frio", "Retorno", "Visita", "Documentação"];
+  const existing = state.leads.flatMap((lead) => leadTags(lead));
+  return [...new Set([...defaults, ...existing])].sort((a, b) => a.localeCompare(b, "pt-BR"));
+}
+
+function renderLeadTags(lead, editable = false) {
+  const tags = leadTags(lead);
+  return `
+    <div class="lead-tags">
+      ${tags.map((tag) => `<button class="tag" data-remove-tag="${escapeHtml(lead.id)}" data-tag="${escapeHtml(tag)}" title="Remover etiqueta">${escapeHtml(tag)}</button>`).join("")}
+      ${editable ? `<button class="tag tag-add" data-add-tag="${escapeHtml(lead.id)}" title="Adicionar etiqueta">+ Etiqueta</button>` : ""}
+    </div>
+  `;
+}
+
+async function patchLead(leadId, payload) {
+  const result = await api(`/api/leads/${encodeURIComponent(leadId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+  const lead = state.leads.find((item) => item.id === leadId);
+  if (lead) Object.assign(lead, result.lead);
+  return result.lead;
+}
+
 function leadCard(lead) {
   return `
-    <article class="card" draggable="true" data-lead="${escapeHtml(lead.id)}">
+    <article class="card" draggable="true" data-lead="${escapeHtml(lead.id)}" data-open-lead="${escapeHtml(lead.id)}">
       <div class="card-title">
         <strong>${escapeHtml(lead.name)}</strong>
         <button class="icon favorite" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button>
@@ -254,6 +333,7 @@ function leadCard(lead) {
         <span class="chip">${escapeHtml(lead.source)}</span>
         <span class="chip">#${escapeHtml(lead.externalId)}</span>
       </div>
+      ${renderLeadTags(lead, true)}
     </article>
   `;
 }
@@ -284,15 +364,37 @@ function renderKanban() {
 }
 
 function bindLeadActions() {
+  document.querySelectorAll("[data-open-lead]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (event.target.closest("button, select, input, textarea, a")) return;
+      state.previousView = state.view === "lead" ? state.previousView : state.view;
+      routeTo("lead", element.dataset.openLead);
+    });
+  });
   document.querySelectorAll("[data-favorite]").forEach((button) => {
     button.addEventListener("click", async (event) => {
       event.stopPropagation();
       const lead = state.leads.find((item) => item.id === button.dataset.favorite);
-      const result = await api(`/api/leads/${lead.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ favorite: !lead.favorite })
-      });
-      Object.assign(lead, result.lead);
+      await patchLead(lead.id, { favorite: !lead.favorite });
+      renderApp();
+    });
+  });
+  document.querySelectorAll("[data-add-tag]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const lead = state.leads.find((item) => item.id === button.dataset.addTag);
+      const suggestion = availableTags().join(", ");
+      const tag = prompt(`Digite a etiqueta para este lead.\nSugestões: ${suggestion}`, "");
+      if (!tag?.trim()) return;
+      await patchLead(lead.id, { tags: [...new Set([...leadTags(lead), tag.trim()])] });
+      renderApp();
+    });
+  });
+  document.querySelectorAll("[data-remove-tag]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const lead = state.leads.find((item) => item.id === button.dataset.removeTag);
+      await patchLead(lead.id, { tags: leadTags(lead).filter((tag) => tag !== button.dataset.tag) });
       renderApp();
     });
   });
@@ -359,7 +461,7 @@ function bindColumnDragDrop() {
 
 function leadRows(leads, options = {}) {
   return leads.map((lead) => `
-    <tr>
+    <tr data-open-lead="${escapeHtml(lead.id)}">
       <td><button class="icon favorite" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button></td>
       <td>${escapeHtml(lead.externalId)}</td>
       <td>${escapeHtml(lead.name)}</td>
@@ -372,6 +474,7 @@ function leadRows(leads, options = {}) {
       </td>
       <td>${escapeHtml(lead.assignedName || userName(lead.assignedTo))}</td>
       <td>${escapeHtml(lead.source)}</td>
+      <td>${renderLeadTags(lead, !options.withRescue)}</td>
       ${options.withRescue ? `<td>${lead.inPipeline ? '<span class="chip">No pipeline</span>' : `<button class="primary" data-rescue="${escapeHtml(lead.id)}">Resgatar</button>`}</td>` : ""}
     </tr>
   `).join("");
@@ -381,8 +484,8 @@ function renderLeadsTable(rows, withRescue = false) {
   return `
     <div class="table-wrap">
       <table>
-        <thead><tr><th>★</th><th>ID</th><th>Nome</th><th>Celular</th><th>Assistente</th><th>Fase atual</th><th>Corretor</th><th>Origem</th>${withRescue ? "<th>Ação</th>" : ""}</tr></thead>
-        <tbody>${rows || `<tr><td colspan="${withRescue ? 9 : 8}" class="empty">Nenhum lead nesta visão</td></tr>`}</tbody>
+        <thead><tr><th>★</th><th>ID</th><th>Nome</th><th>Celular</th><th>Assistente</th><th>Fase atual</th><th>Corretor</th><th>Origem</th><th>Etiquetas</th>${withRescue ? "<th>Ação</th>" : ""}</tr></thead>
+        <tbody>${rows || `<tr><td colspan="${withRescue ? 10 : 9}" class="empty">Nenhum lead nesta visão</td></tr>`}</tbody>
       </table>
     </div>
   `;
@@ -453,6 +556,127 @@ function renderLeadBases() {
         alert(error.message);
       }
     });
+  });
+}
+
+function leadProjectValue(lead) {
+  if (lead.desiredProject) return lead.desiredProject;
+  const project = String(lead.project || "");
+  if (project.toLowerCase().includes("guinle")) return "Reserva Guinle";
+  if (project.toLowerCase().includes("golf")) return "Golf Club Resort";
+  return "";
+}
+
+function renderLeadDetail() {
+  const lead = state.leads.find((item) => item.id === state.leadId);
+  if (!lead) {
+    renderShell(`
+      ${renderViewHead("Lead não encontrado", "Este registro não está disponível para o seu perfil")}
+      <button data-back-lead>Voltar</button>
+    `);
+    document.querySelector("[data-back-lead]")?.addEventListener("click", () => routeTo(state.previousView || "kanban"));
+    return;
+  }
+
+  const comments = [...(Array.isArray(lead.comments) ? lead.comments : [])]
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const project = leadProjectValue(lead);
+  const statusField = lead.inPipeline ? `
+    <select name="status" ${canManageLeads() ? "" : "disabled"}>
+      ${state.statuses.map((status) => `<option value="${escapeHtml(status)}" ${status === lead.status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+    </select>
+  ` : `<input value="${escapeHtml(lead.sourceStatus || lead.odysseiaStatus || lead.status)}" disabled>`;
+  const brokerField = `
+    <select name="assignedTo" ${canManageLeads() ? "" : "disabled"}>
+      <option value="">Sem corretor</option>
+      ${state.users.filter((user) => user.role === "Corretor").map((user) => `<option value="${escapeHtml(user.id)}" ${user.id === lead.assignedTo ? "selected" : ""}>${escapeHtml(user.name)}${user.active ? "" : " (inativo)"}</option>`).join("")}
+    </select>
+  `;
+
+  renderShell(`
+    <div class="view-head">
+      <div class="view-title">
+        <h1>${escapeHtml(lead.name)}</h1>
+        <p>${escapeHtml(lead.source)} · ${escapeHtml(lead.status)}</p>
+      </div>
+      <div class="actions">
+        <button data-back-lead>Voltar</button>
+        <button class="icon favorite ${lead.favorite ? "primary" : ""}" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button>
+      </div>
+    </div>
+    <section class="lead-detail">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Dados do lead</h2>
+          ${renderLeadTags(lead, true)}
+        </div>
+        <form id="leadDetailForm" class="form-grid">
+          <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(lead.name)}" required></div>
+          <div class="field"><label>Telefone</label><input name="phone" value="${escapeHtml(lead.phone || "")}"></div>
+          <div class="field"><label>Status do pipeline</label>${statusField}</div>
+          <div class="field"><label>Corretor</label>${brokerField}</div>
+          <div class="field"><label>Empreendimento desejado</label><select name="desiredProject">
+            <option value="">Selecione</option>
+            ${["Reserva Guinle", "Golf Club Resort"].map((item) => `<option value="${item}" ${item === project ? "selected" : ""}>${item}</option>`).join("")}
+          </select></div>
+          <div class="field"><label>Unidade</label><input name="desiredUnit" value="${escapeHtml(lead.desiredUnit || lead.unit || "")}"></div>
+          <div class="field"><label>Valor da unidade</label><input name="unitValue" value="${escapeHtml(lead.unitValue || lead.value || "")}"></div>
+          <div class="field full"><label>Observações internas</label><textarea name="notes">${escapeHtml(lead.notes || "")}</textarea></div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar detalhes</button></div></div>
+        </form>
+      </div>
+      <div class="panel">
+        <h2>Comentários</h2>
+        <form id="commentForm" class="comment-form">
+          <textarea name="text" placeholder="Adicionar comentário"></textarea>
+          <button class="primary" type="submit">Comentar</button>
+        </form>
+        <div class="timeline">
+          ${comments.map((comment) => `
+            <article class="timeline-item">
+              <div>
+                <strong>${escapeHtml(comment.authorName || "Usuário")}</strong>
+                <span>${escapeHtml(new Date(comment.createdAt).toLocaleString("pt-BR"))}</span>
+              </div>
+              <p>${escapeHtml(comment.text)}</p>
+            </article>
+          `).join("") || '<div class="empty">Nenhum comentário ainda</div>'}
+        </div>
+      </div>
+    </section>
+  `);
+
+  document.querySelector("[data-back-lead]")?.addEventListener("click", () => routeTo(state.previousView || "kanban"));
+  bindLeadActions();
+  document.querySelector("#leadDetailForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const payload = {
+      name: form.get("name"),
+      phone: form.get("phone"),
+      desiredProject: form.get("desiredProject"),
+      desiredUnit: form.get("desiredUnit"),
+      unitValue: form.get("unitValue"),
+      notes: form.get("notes")
+    };
+    if (canManageLeads()) {
+      payload.status = form.get("status");
+      payload.assignedTo = form.get("assignedTo");
+    }
+    await patchLead(lead.id, payload);
+    renderLeadDetail();
+  });
+  document.querySelector("#commentForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const text = String(form.get("text") || "").trim();
+    if (!text) return;
+    const result = await api(`/api/leads/${encodeURIComponent(lead.id)}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ text })
+    });
+    Object.assign(lead, result.lead);
+    renderLeadDetail();
   });
 }
 
@@ -801,6 +1025,7 @@ function bindSettingsCommon() {
 }
 
 function renderApp() {
+  if (state.view === "lead") return renderLeadDetail();
   if (state.view === "kanban") return renderKanban();
   if (state.view === "sheet") return renderSheet();
   if (state.view === "odysseia") return renderLeadBases();
@@ -810,9 +1035,15 @@ function renderApp() {
 
 (async function boot() {
   try {
+    syncRouteFromLocation();
     await loadState();
     renderApp();
   } catch {
     renderLogin();
   }
 })();
+
+window.addEventListener("popstate", () => {
+  syncRouteFromLocation();
+  if (state.user) renderApp();
+});
