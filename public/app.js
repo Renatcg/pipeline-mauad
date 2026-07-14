@@ -463,14 +463,16 @@ function renderFunnelInfographic(leads) {
   if (!counts.length) {
     return '<section class="panel funnel-panel"><h2>Conversão do funil</h2><div class="empty">Cadastre status do pipeline para visualizar o funil.</div></section>';
   }
-  const max = Math.max(...counts.map((item) => item.count), 1);
+  const palette = ["#0f9f6e", "#58b957", "#b8b84b", "#dc8c2f", "#d9572a", "#c9342d"];
+  const totalStages = Math.max(counts.length - 1, 1);
   const stages = counts.map((item, index) => {
     const next = counts[index + 1];
     const conversion = next && item.count ? Math.round((next.count / item.count) * 100) : null;
-    const width = Math.max(24, (item.count / max) * 100);
+    const width = 100 - (index / totalStages) * 46;
+    const color = palette[Math.min(index, palette.length - 1)];
     return `
       <div class="funnel-stage">
-        <div class="funnel-bar" style="width:${width}%">
+        <div class="funnel-bar" style="--funnel-width:${width}%; --funnel-color:${color}">
           <span>${escapeHtml(item.status)}</span>
           <strong>${item.count}</strong>
         </div>
