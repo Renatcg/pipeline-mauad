@@ -81,8 +81,8 @@ function renderLogin(error = "") {
   app.innerHTML = `
     <section class="login-page">
       <form class="login-box" id="loginForm">
-        <h1>Pipeline de Leads</h1>
-        <p>RMeireles | Mauad | Lev</p>
+        <h1>Pipeline Comercial</h1>
+        <p>Construtora Mauad</p>
         <div class="field">
           <label for="username">Usuário</label>
           <input id="username" name="username" autocomplete="username" value="admin" required>
@@ -140,8 +140,8 @@ function renderShell(content) {
     <section class="shell">
       <aside class="side">
         <div class="brand">
-          <strong>Pipeline</strong>
-          <span>Origem ODYSSEIA</span>
+          <strong>Pipeline Comercial</strong>
+          <span>Construtora Mauad</span>
         </div>
         <nav class="nav">
           ${navButton("kanban", "▦", "Kanban")}
@@ -235,11 +235,11 @@ function renderKanban() {
     (acc[lead.status] ||= []).push(lead);
     return acc;
   }, {});
-  const columns = state.statuses.map((status) => {
+  const columns = state.statuses.map((status, index) => {
     const items = (byStatus[status] || []).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     return `
-      <section class="column" data-status="${escapeHtml(status)}">
-        <div class="column-head">
+      <section class="column" data-status="${escapeHtml(status)}" data-status-index="${index}">
+        <div class="column-head" draggable="true" data-column-drag="${index}" title="Arraste para ordenar">
           <strong>${escapeHtml(status)}</strong>
           <span class="count">${items.length}</span>
         </div>
@@ -247,9 +247,11 @@ function renderKanban() {
       </section>
     `;
   }).join("");
-  renderShell(`${renderViewHead("Kanban", "Leads ativos no pipeline")}${renderMetrics(leads)}<section class="kanban">${columns}</section>`);
+  const empty = !state.statuses.length ? '<section class="panel"><div class="empty">Cadastre o primeiro status em Configurações para começar o pipeline.</div></section>' : "";
+  renderShell(`${renderViewHead("Kanban", "Leads ativos no pipeline")}${renderMetrics(leads)}${empty}<section class="kanban">${columns}</section>`);
   bindLeadActions();
   bindDragDrop();
+  bindColumnDragDrop();
 }
 
 function bindLeadActions() {
@@ -291,6 +293,37 @@ function bindDragDrop() {
       });
       Object.assign(lead, result.lead);
       renderApp();
+    });
+  });
+}
+
+function bindColumnDragDrop() {
+  let draggedIndex = null;
+  document.querySelectorAll("[data-column-drag]").forEach((head) => {
+    head.addEventListener("dragstart", (event) => {
+      draggedIndex = Number(head.dataset.columnDrag);
+      event.dataTransfer.effectAllowed = "move";
+      head.closest(".column")?.classList.add("dragging-column");
+    });
+    head.addEventListener("dragend", () => {
+      document.querySelectorAll(".dragging-column").forEach((column) => column.classList.remove("dragging-column"));
+    });
+  });
+  document.querySelectorAll(".column").forEach((column) => {
+    column.addEventListener("dragover", (event) => {
+      if (draggedIndex != null) event.preventDefault();
+    });
+    column.addEventListener("drop", async (event) => {
+      if (draggedIndex == null) return;
+      event.preventDefault();
+      const targetIndex = Number(column.dataset.statusIndex);
+      if (targetIndex === draggedIndex) return;
+      const statuses = [...state.statuses];
+      const [moved] = statuses.splice(draggedIndex, 1);
+      statuses.splice(targetIndex, 0, moved);
+      const result = await api("/api/statuses/reorder", { method: "PUT", body: JSON.stringify({ statuses }) });
+      state.statuses = result.pipelineStatuses;
+      renderKanban();
     });
   });
 }
@@ -366,10 +399,14 @@ function renderOdysseiaBase() {
   bindLeadActions();
   document.querySelectorAll("[data-rescue]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const result = await api(`/api/leads/${button.dataset.rescue}/rescue`, { method: "POST" });
-      const lead = state.leads.find((item) => item.id === result.lead.id);
-      Object.assign(lead, result.lead);
-      renderOdysseiaBase();
+      try {
+        const result = await api(`/api/leads/${button.dataset.rescue}/rescue`, { method: "POST" });
+        const lead = state.leads.find((item) => item.id === result.lead.id);
+        Object.assign(lead, result.lead);
+        renderOdysseiaBase();
+      } catch (error) {
+        alert(error.message);
+      }
     });
   });
 }
@@ -407,6 +444,7 @@ function renderDashboard() {
       <div class="metric"><span>Favoritos</span><strong>${data.favorites}</strong></div>
       <div class="metric"><span>Base Odysseia</span><strong>${odysseiaLeads().length}</strong></div>
     </section>
+    ${renderFunnelInfographic(leads)}
     <section class="dashboard-grid">
       <div class="panel"><h2>Funil</h2>${funnel}</div>
       <div class="panel">
@@ -415,6 +453,32 @@ function renderDashboard() {
       </div>
     </section>
   `);
+}
+
+function renderFunnelInfographic(leads) {
+  const counts = state.statuses.map((status) => ({
+    status,
+    count: leads.filter((lead) => lead.status === status).length
+  }));
+  if (!counts.length) {
+    return '<section class="panel funnel-panel"><h2>Conversão do funil</h2><div class="empty">Cadastre status do pipeline para visualizar o funil.</div></section>';
+  }
+  const max = Math.max(...counts.map((item) => item.count), 1);
+  const stages = counts.map((item, index) => {
+    const next = counts[index + 1];
+    const conversion = next && item.count ? Math.round((next.count / item.count) * 100) : null;
+    const width = Math.max(24, (item.count / max) * 100);
+    return `
+      <div class="funnel-stage">
+        <div class="funnel-bar" style="width:${width}%">
+          <span>${escapeHtml(item.status)}</span>
+          <strong>${item.count}</strong>
+        </div>
+        ${next ? `<div class="funnel-conversion">${conversion == null ? "0%" : `${conversion}%`} para ${escapeHtml(next.status)}</div>` : ""}
+      </div>
+    `;
+  }).join("");
+  return `<section class="panel funnel-panel"><h2>Conversão do funil</h2><div class="funnel-visual">${stages}</div></section>`;
 }
 
 function settingsTabButton(tab, label) {
@@ -620,7 +684,7 @@ function renderStatusSettings() {
   const editIndex = state.settingsEditing?.startsWith("status:") ? Number(state.settingsEditing.replace("status:", "")) : null;
   const formValue = editIndex != null ? state.statuses[editIndex] : "";
   const rows = state.statuses.map((status, index) => {
-    const count = state.leads.filter((lead) => lead.status === status).length;
+    const count = state.leads.filter((lead) => lead.inPipeline && lead.status === status).length;
     return `
       <tr>
         <td>${escapeHtml(status)}</td>
@@ -643,7 +707,7 @@ function renderStatusSettings() {
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Status</th><th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows}</tbody></table>
+        <table><thead><tr><th>Status</th><th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="empty">Nenhum status cadastrado</td></tr>'}</tbody></table>
       </div>
     </section>
   `);

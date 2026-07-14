@@ -11,7 +11,16 @@ const SEED_PATH = path.join(DATA_DIR, "seed.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor"];
-const RESCUED_STATUS = "Resgatado";
+const LEGACY_ODYSSEIA_STATUSES = new Set([
+  "Resgatado",
+  "Novo Lead",
+  "Encaminhado ao Corretor",
+  "Interesse Definido",
+  "Simulação de Financiamento",
+  "Desqualificado",
+  "Arquivado (Permanentemente)",
+  "Sem status"
+]);
 const DATABASE_URL = process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
 let sqlClientPromise = null;
@@ -38,7 +47,14 @@ function verifyPassword(password, stored) {
 }
 
 function buildDefaultDb() {
-  if (fs.existsSync(DB_PATH)) return migrateDb(readJson(DB_PATH));
+  if (fs.existsSync(DB_PATH)) {
+    const db = migrateDb(readJson(DB_PATH));
+    if (db.__dirty) {
+      delete db.__dirty;
+      writeDb(db);
+    }
+    return db;
+  }
   const seed = fs.existsSync(SEED_PATH)
     ? readJson(SEED_PATH)
     : {
@@ -58,7 +74,7 @@ function buildDefaultDb() {
   const now = new Date().toISOString();
   const db = {
     roles: seed.roles || ROLES,
-    pipelineStatuses: [RESCUED_STATUS, ...seed.pipelineStatuses.filter((status) => status !== RESCUED_STATUS)],
+    pipelineStatuses: [],
     users: [
       {
         id: "admin-ti",
@@ -115,7 +131,19 @@ async function ensurePostgresState() {
     )
   `;
   const rows = await sql`SELECT data FROM app_state WHERE id = 'main' LIMIT 1`;
-  if (rows.length) return migrateDb(rows[0].data);
+  if (rows.length) {
+    const db = migrateDb(rows[0].data);
+    if (db.__dirty) {
+      delete db.__dirty;
+      await sql`
+        INSERT INTO app_state (id, data, updated_at)
+        VALUES ('main', ${JSON.stringify(db)}::jsonb, now())
+        ON CONFLICT (id)
+        DO UPDATE SET data = EXCLUDED.data, updated_at = now()
+      `;
+    }
+    return db;
+  }
   const db = buildDefaultDb();
   await sql`INSERT INTO app_state (id, data) VALUES ('main', ${JSON.stringify(db)}::jsonb)`;
   return db;
@@ -142,8 +170,14 @@ async function saveDb(db) {
 
 function migrateDb(db) {
   let changed = false;
-  if (!db.pipelineStatuses.includes(RESCUED_STATUS)) {
-    db.pipelineStatuses = [RESCUED_STATUS, ...db.pipelineStatuses];
+  if (!Array.isArray(db.pipelineStatuses)) {
+    db.pipelineStatuses = [];
+    changed = true;
+  }
+  const statusesInUse = new Set(db.leads.filter((lead) => lead.inPipeline).map((lead) => lead.status));
+  const commercialStatuses = db.pipelineStatuses.filter((status) => !LEGACY_ODYSSEIA_STATUSES.has(status) || statusesInUse.has(status));
+  if (commercialStatuses.length !== db.pipelineStatuses.length) {
+    db.pipelineStatuses = commercialStatuses;
     changed = true;
   }
   for (const lead of db.leads) {
@@ -156,7 +190,7 @@ function migrateDb(db) {
       changed = true;
     }
   }
-  if (changed) writeDb(db);
+  if (changed) Object.defineProperty(db, "__dirty", { value: true, enumerable: false, configurable: true });
   return db;
 }
 
@@ -340,8 +374,9 @@ async function routeApi(req, res, db) {
     const lead = db.leads.find((item) => item.id === rescueMatch[1]);
     if (!lead) return notFound(res);
     if (lead.source !== "ODYSSEIA") return sendJson(res, 400, { error: "Apenas leads da Base Odysseia podem ser resgatados" });
+    if (!db.pipelineStatuses.length) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de resgatar leads" });
     lead.inPipeline = true;
-    lead.status = RESCUED_STATUS;
+    lead.status = db.pipelineStatuses[0];
     lead.order = Date.now();
     lead.rescuedAt = new Date().toISOString();
     lead.updatedAt = lead.rescuedAt;
@@ -429,6 +464,22 @@ async function routeApi(req, res, db) {
     return sendJson(res, 201, { pipelineStatuses: db.pipelineStatuses });
   }
 
+  if (url.pathname === "/api/statuses/reorder" && method === "PUT") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const statuses = Array.isArray(body.statuses) ? body.statuses.map((status) => String(status).trim()).filter(Boolean) : [];
+    if (statuses.length !== db.pipelineStatuses.length || new Set(statuses).size !== db.pipelineStatuses.length) {
+      return sendJson(res, 400, { error: "Sequência inválida" });
+    }
+    for (const status of db.pipelineStatuses) {
+      if (!statuses.includes(status)) return sendJson(res, 400, { error: "Sequência inválida" });
+    }
+    db.pipelineStatuses = statuses;
+    audit(db, user, "REORDER_STATUS", { statuses });
+    await saveDb(db);
+    return sendJson(res, 200, { pipelineStatuses: db.pipelineStatuses });
+  }
+
   const statusMatch = url.pathname.match(/^\/api\/statuses\/(\d+)$/);
   if (statusMatch && method === "PATCH") {
     if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
@@ -443,7 +494,7 @@ async function routeApi(req, res, db) {
     }
     db.pipelineStatuses[index] = name;
     for (const lead of db.leads) {
-      if (lead.status === oldName) lead.status = name;
+      if (lead.inPipeline && lead.status === oldName) lead.status = name;
     }
     audit(db, user, "UPDATE_STATUS", { oldName, name });
     await saveDb(db);
@@ -455,8 +506,7 @@ async function routeApi(req, res, db) {
     const index = Number(statusMatch[1]);
     const status = db.pipelineStatuses[index];
     if (!status) return notFound(res);
-    if (status === RESCUED_STATUS) return sendJson(res, 400, { error: "O status Resgatado é obrigatório" });
-    if (db.leads.some((lead) => lead.status === status)) {
+    if (db.leads.some((lead) => lead.inPipeline && lead.status === status)) {
       return sendJson(res, 400, { error: "Não é possível excluir status usado por leads" });
     }
     db.pipelineStatuses.splice(index, 1);

@@ -298,6 +298,15 @@ textarea {
   justify-content: space-between;
   padding: 10px;
   border-bottom: 1px solid var(--line);
+  cursor: grab;
+}
+
+.column-head:active {
+  cursor: grabbing;
+}
+
+.dragging-column {
+  opacity: 0.55;
 }
 
 .column-head strong {
@@ -480,6 +489,50 @@ th {
   display: block;
   height: 100%;
   background: var(--brand);
+}
+
+.funnel-panel {
+  margin-bottom: 14px;
+}
+
+.funnel-visual {
+  display: grid;
+  gap: 10px;
+}
+
+.funnel-stage {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+}
+
+.funnel-bar {
+  min-height: 46px;
+  max-width: 100%;
+  min-width: 190px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #0f766e, #256d85);
+  color: white;
+  box-shadow: 0 8px 18px rgba(15, 118, 110, 0.14);
+}
+
+.funnel-bar span {
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+.funnel-bar strong {
+  font-size: 20px;
+}
+
+.funnel-conversion {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .settings-grid {
