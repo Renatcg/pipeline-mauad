@@ -662,29 +662,53 @@ function leadRows(leads, options = {}) {
   return leads.map((lead) => `
     <tr data-open-lead="${escapeHtml(lead.id)}">
       <td><button class="icon favorite" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button></td>
-      <td>${escapeHtml(lead.externalId)}</td>
+      ${options.hideId ? "" : `<td>${escapeHtml(lead.externalId)}</td>`}
       <td>${escapeHtml(lead.name)}</td>
       <td>${escapeHtml(lead.phone)}</td>
-      <td>${escapeHtml(lead.assistant)}</td>
+      ${options.hideAssistant ? "" : `<td>${escapeHtml(lead.assistant)}</td>`}
       <td>
-        ${options.readOnlyStatus ? escapeHtml(lead.sourceStatus || lead.odysseiaStatus || lead.status) : `<select data-status-select="${escapeHtml(lead.id)}">
+        ${(options.readOnlyStatus || options.textStatus) ? escapeHtml(lead.sourceStatus || lead.odysseiaStatus || lead.status) : `<select data-status-select="${escapeHtml(lead.id)}">
           ${state.statuses.map((status) => `<option value="${escapeHtml(status)}" ${status === lead.status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
         </select>`}
       </td>
       <td>${escapeHtml(lead.assignedName || userName(lead.assignedTo))}</td>
       <td>${escapeHtml(lead.source)}</td>
-      <td>${renderLeadTags(lead, !options.withRescue)}</td>
+      ${options.hideTags ? "" : `<td>${renderLeadTags(lead, !options.withRescue)}</td>`}
       ${options.withRescue ? `<td>${lead.inPipeline ? '<span class="chip">No pipeline</span>' : `<button class="primary" data-rescue="${escapeHtml(lead.id)}">Resgatar</button>`}</td>` : ""}
     </tr>
   `).join("");
 }
 
-function renderLeadsTable(rows, withRescue = false) {
+function renderLeadsTable(rows, options = {}) {
+  const headers = [
+    "<th>★</th>",
+    options.hideId ? "" : "<th>ID</th>",
+    "<th>Nome</th>",
+    "<th>Celular</th>",
+    options.hideAssistant ? "" : "<th>Assistente</th>",
+    "<th>Fase atual</th>",
+    "<th>Corretor</th>",
+    "<th>Origem</th>",
+    options.hideTags ? "" : "<th>Etiquetas</th>",
+    options.withRescue ? "<th>Ação</th>" : ""
+  ].join("");
+  const columnCount = [
+    true,
+    !options.hideId,
+    true,
+    true,
+    !options.hideAssistant,
+    true,
+    true,
+    true,
+    !options.hideTags,
+    options.withRescue
+  ].filter(Boolean).length;
   return `
     <div class="table-wrap">
       <table>
-        <thead><tr><th>★</th><th>ID</th><th>Nome</th><th>Celular</th><th>Assistente</th><th>Fase atual</th><th>Corretor</th><th>Origem</th><th>Etiquetas</th>${withRescue ? "<th>Ação</th>" : ""}</tr></thead>
-        <tbody>${rows || `<tr><td colspan="${withRescue ? 10 : 9}" class="empty">Nenhum lead nesta visão</td></tr>`}</tbody>
+        <thead><tr>${headers}</tr></thead>
+        <tbody>${rows || `<tr><td colspan="${columnCount}" class="empty">Nenhum lead nesta visão</td></tr>`}</tbody>
       </table>
     </div>
   `;
@@ -692,24 +716,14 @@ function renderLeadsTable(rows, withRescue = false) {
 
 function renderSheet() {
   const leads = pipelineLeads();
-  const rows = leadRows(leads);
+  const tableOptions = { hideId: true, hideAssistant: true, hideTags: true, textStatus: true };
+  const rows = leadRows(leads, tableOptions);
   renderShell(`
     ${renderViewHead("Planilha", "Leads vindos do Meta, importações de pipeline e resgates das bases", { filters: true, addLead: true })}
     ${renderMetrics(leads)}
-    ${renderLeadsTable(rows)}
+    ${renderLeadsTable(rows, tableOptions)}
   `);
   bindLeadActions();
-  document.querySelectorAll("[data-status-select]").forEach((select) => {
-    select.addEventListener("change", async () => {
-      const lead = state.leads.find((item) => item.id === select.dataset.statusSelect);
-      const result = await api(`/api/leads/${lead.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: select.value, order: Date.now() })
-      });
-      Object.assign(lead, result.lead);
-      renderApp();
-    });
-  });
 }
 
 function renderBaseSources(sources) {
@@ -735,7 +749,7 @@ function renderLeadBases() {
       <div class="metric"><span>Resgatados</span><strong>${rescued}</strong></div>
       <div class="metric"><span>Origem</span><strong>${escapeHtml(state.baseSource)}</strong></div>
     </section>
-    ${renderLeadsTable(rows, true)}
+    ${renderLeadsTable(rows, { withRescue: true })}
   `);
   bindLeadActions();
   document.querySelectorAll("[data-base-source]").forEach((button) => {

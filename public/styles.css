@@ -324,15 +324,15 @@ textarea {
 }
 
 .page-filters {
-  width: min(520px, 48vw);
+  width: auto;
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 42px;
+  grid-template-columns: 174px 42px;
   gap: 8px;
 }
 
 .page-filters.with-add-lead {
-  width: min(680px, 56vw);
-  grid-template-columns: auto minmax(220px, 1fr) 42px;
+  width: auto;
+  grid-template-columns: auto 174px 42px;
 }
 
 .page-filters button {
@@ -513,6 +513,7 @@ textarea {
 
 .broker-menu {
   position: relative;
+  margin-top: -6px;
 }
 
 .broker-menu-button {
