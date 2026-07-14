@@ -1,0 +1,6 @@
+data/db.json
+data/seed.json
+.DS_Store
+.env
+.vercel
+node_modules

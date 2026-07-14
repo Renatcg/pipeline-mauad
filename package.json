@@ -1,0 +1,9 @@
+{
+  "name": "pipeline-leads-odysseia",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pipeline seguro de leads com Kanban, planilha e dashboard.",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

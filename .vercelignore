@@ -1,0 +1,6 @@
+data/db.json
+data/seed.json
+.env
+.git
+node_modules
+start.command
