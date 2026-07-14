@@ -367,7 +367,7 @@ function brokerRedirectControl(lead) {
   const brokers = activeBrokers();
   return `
     <select class="broker-redirect" data-assign-lead="${escapeHtml(lead.id)}" title="Direcionar para corretor" ${brokers.length ? "" : "disabled"}>
-      <option value="">↪</option>
+      <option value="">•••</option>
       <option value="__none">Sem corretor</option>
       ${brokers.map((broker) => `<option value="${escapeHtml(broker.id)}">${escapeHtml(broker.name)}</option>`).join("")}
     </select>

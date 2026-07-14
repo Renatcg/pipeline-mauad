@@ -490,11 +490,14 @@ textarea {
   min-height: 32px;
   padding: 0;
   border-radius: 7px;
+  appearance: none;
+  -webkit-appearance: none;
   background: white;
   color: var(--muted);
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 800;
   text-align: center;
+  text-align-last: center;
 }
 
 .card[data-open-lead],
