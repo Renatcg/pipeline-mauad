@@ -153,10 +153,6 @@ function renderShell(content) {
       </aside>
       <section class="main">
         <header class="topbar">
-          <div class="actions">
-            <input id="search" value="${escapeHtml(state.search)}" placeholder="Buscar lead, telefone, fase ou corretor">
-            <button id="favoriteToggle" class="${state.favoritesOnly ? "primary" : ""}" title="Favoritos">★</button>
-          </div>
           <div class="user-pill">
             <strong>${escapeHtml(state.user.name)}</strong>
             <span>${escapeHtml(state.user.role)}</span>
@@ -173,29 +169,42 @@ function renderShell(content) {
       renderApp();
     });
   });
-  document.querySelector("#search").addEventListener("input", (event) => {
-    state.search = event.target.value;
-    renderApp();
-  });
-  document.querySelector("#favoriteToggle").addEventListener("click", () => {
-    state.favoritesOnly = !state.favoritesOnly;
-    renderApp();
-  });
+  bindPageFilters();
   document.querySelector("#logout").addEventListener("click", async () => {
     await api("/api/logout", { method: "POST" });
     renderLogin();
   });
 }
 
-function renderViewHead(title, subtitle = "") {
+function renderViewHead(title, subtitle = "", options = {}) {
+  const filters = options.filters ? `
+    <div class="page-filters">
+      <input id="pageSearch" value="${escapeHtml(state.search)}" placeholder="Buscar lead, telefone, fase ou corretor">
+      <button id="pageFavoriteToggle" class="${state.favoritesOnly ? "primary" : ""}" title="Filtrar favoritos">★</button>
+    </div>
+  ` : "";
   return `
     <div class="view-head">
       <div class="view-title">
         <h1>${escapeHtml(title)}</h1>
         ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}
       </div>
+      ${filters}
     </div>
   `;
+}
+
+function bindPageFilters() {
+  const search = document.querySelector("#pageSearch");
+  const favoriteToggle = document.querySelector("#pageFavoriteToggle");
+  search?.addEventListener("input", (event) => {
+    state.search = event.target.value;
+    renderApp();
+  });
+  favoriteToggle?.addEventListener("click", () => {
+    state.favoritesOnly = !state.favoritesOnly;
+    renderApp();
+  });
 }
 
 function renderMetrics(leads = filteredLeads()) {
@@ -248,7 +257,7 @@ function renderKanban() {
     `;
   }).join("");
   const empty = !state.statuses.length ? '<section class="panel"><div class="empty">Cadastre o primeiro status em Configurações para começar o pipeline.</div></section>' : "";
-  renderShell(`${renderViewHead("Kanban", "Leads ativos no pipeline")}${renderMetrics(leads)}${empty}<section class="kanban">${columns}</section>`);
+  renderShell(`${renderViewHead("Kanban", "Leads ativos no pipeline", { filters: true })}${renderMetrics(leads)}${empty}<section class="kanban">${columns}</section>`);
   bindLeadActions();
   bindDragDrop();
   bindColumnDragDrop();
@@ -363,7 +372,7 @@ function renderSheet() {
   const leads = pipelineLeads();
   const rows = leadRows(leads);
   renderShell(`
-    ${renderViewHead("Planilha", "Leads vindos do Meta e leads resgatados da Base Odysseia")}
+    ${renderViewHead("Planilha", "Leads vindos do Meta e leads resgatados da Base Odysseia", { filters: true })}
     ${renderMetrics(leads)}
     ${renderLeadsTable(rows)}
   `);
@@ -387,7 +396,7 @@ function renderOdysseiaBase() {
   const pending = leads.filter((lead) => !lead.inPipeline).length;
   const rescued = leads.filter((lead) => lead.inPipeline).length;
   renderShell(`
-    ${renderViewHead("Base Odysseia", "Base importada separada do pipeline")}
+    ${renderViewHead("Base Odysseia", "Base importada separada do pipeline", { filters: true })}
     <section class="metrics">
       <div class="metric"><span>Total Odysseia</span><strong>${leads.length}</strong></div>
       <div class="metric"><span>A resgatar</span><strong>${pending}</strong></div>
@@ -437,7 +446,7 @@ function renderDashboard() {
     </tr>
   `).join("");
   renderShell(`
-    ${renderViewHead("Dashboard", "Indicadores de volume de lead e funil")}
+    ${renderViewHead("Dashboard", "Indicadores de volume de lead e funil", { filters: true })}
     <section class="metrics">
       <div class="metric"><span>Volume total</span><strong>${data.total}</strong></div>
       <div class="metric"><span>Ativos</span><strong>${data.active}</strong></div>
