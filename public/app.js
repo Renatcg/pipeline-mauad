@@ -9,6 +9,8 @@ const state = {
   integrations: null,
   auditLog: [],
   view: "kanban",
+  settingsTab: "users",
+  settingsEditing: null,
   favoritesOnly: false,
   search: ""
 };
@@ -415,88 +417,275 @@ function renderDashboard() {
   `);
 }
 
+function settingsTabButton(tab, label) {
+  return `<button class="${state.settingsTab === tab ? "active" : ""}" data-settings-tab="${tab}">${label}</button>`;
+}
+
+function settingsLayout(content) {
+  renderShell(`
+    ${renderViewHead("Configurações", "Cadastros administrativos do sistema")}
+    <div class="tabs">
+      ${settingsTabButton("users", "Usuários")}
+      ${settingsTabButton("integrations", "Integrações")}
+      ${settingsTabButton("statuses", "Status do pipeline")}
+    </div>
+    ${content}
+  `);
+  document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsTab = button.dataset.settingsTab;
+      state.settingsEditing = null;
+      renderSettings();
+    });
+  });
+}
+
 function renderSettings() {
+  if (state.settingsTab === "integrations") return renderIntegrationSettings();
+  if (state.settingsTab === "statuses") return renderStatusSettings();
+  return renderUserSettings();
+}
+
+function renderUserSettings() {
+  const isCreating = state.settingsEditing === "new-user";
+  const editUser = state.users.find((user) => user.id === state.settingsEditing);
+  const formUser = editUser || {};
   const users = state.users.map((user) => `
     <tr>
       <td>${escapeHtml(user.name)}</td>
       <td>${escapeHtml(user.username)}</td>
       <td>${escapeHtml(user.role)}</td>
       <td class="${user.active ? "status-active" : "status-inactive"}">${user.active ? "Ativo" : "Inativo"}</td>
-      <td><button data-toggle-user="${escapeHtml(user.id)}">${user.active ? "Inativar" : "Ativar"}</button></td>
+      <td>
+        <div class="row-actions">
+          <button data-edit-user="${escapeHtml(user.id)}">Editar</button>
+          <button data-delete-user="${escapeHtml(user.id)}">Excluir</button>
+        </div>
+      </td>
     </tr>
   `).join("");
-  const integrations = state.integrations || {};
-  renderShell(`
-    ${renderViewHead("Configurações", "Usuários, perfis e integrações")}
-    <section class="settings-grid">
-      <div class="panel">
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
         <h2>Usuários</h2>
-        <form id="userForm" class="form-grid">
-          <div class="field"><label>Nome</label><input name="name" required></div>
-          <div class="field"><label>Usuário</label><input name="username" required></div>
-          <div class="field"><label>Perfil</label><select name="role">${state.roles.map((role) => `<option>${escapeHtml(role)}</option>`).join("")}</select></div>
-          <div class="field"><label>Senha</label><input name="password" type="password"></div>
-          <div class="field"><label>Status</label><select name="active"><option value="true">Ativo</option><option value="false">Inativo</option></select></div>
-          <div class="field"><label>&nbsp;</label><button class="primary" type="submit">Criar usuário</button></div>
-        </form>
-        <div class="table-wrap">
-          <table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Status</th><th></th></tr></thead><tbody>${users}</tbody></table>
-        </div>
+        <button class="primary" data-new-user>Cadastrar novo</button>
       </div>
-      <div class="panel">
-        <h2>Integrações</h2>
-        <form id="integrationForm" class="form-grid">
-          <div class="field"><label>Forms Meta</label><select name="meta"><option value="true">Ativo</option><option value="false">Inativo</option></select></div>
-          <div class="field"><label>WhatsApp</label><input name="whatsapp" value="${escapeHtml(integrations.whatsapp?.provider || "")}"></div>
-          <div class="field"><label>E-mail remetente</label><input name="sender" value="${escapeHtml(integrations.email?.sender || "")}"></div>
-          <div class="field"><label>SMTP</label><input name="smtp" value="${escapeHtml(integrations.email?.smtpHost || "")}"></div>
-          <div class="field full"><label>Endpoint proprietário</label><input name="endpoint" value="${escapeHtml(integrations.proprietaryEndpoints?.[0]?.url || "")}"></div>
-          <div class="field full"><button class="primary" type="submit">Salvar integrações</button></div>
+      ${(isCreating || editUser) ? `
+        <form id="userForm" class="form-grid editor">
+          <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(formUser.name || "")}" required></div>
+          <div class="field"><label>Usuário</label><input name="username" value="${escapeHtml(formUser.username || "")}" ${editUser ? "disabled" : "required"}></div>
+          <div class="field"><label>Perfil</label><select name="role">${state.roles.map((role) => `<option ${role === formUser.role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select></div>
+          <div class="field"><label>Senha</label><input name="password" type="password" placeholder="${editUser ? "Manter senha atual" : ""}"></div>
+          <div class="field"><label>Status</label><select name="active"><option value="true" ${formUser.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${formUser.active === false ? "selected" : ""}>Inativo</option></select></div>
+          <div class="field"><label>&nbsp;</label><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
-        <h2>Auditoria</h2>
-        <div class="meta">${state.auditLog.map((item) => `<span>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))} · ${escapeHtml(item.action)} · ${escapeHtml(item.actor)}</span>`).join("")}</div>
+      ` : ""}
+      <div class="table-wrap">
+        <table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Status</th><th>Ações</th></tr></thead><tbody>${users}</tbody></table>
       </div>
     </section>
   `);
-  document.querySelector("#userForm").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    await api("/api/users", {
-      method: "POST",
-      body: JSON.stringify({
-        name: form.get("name"),
-        username: form.get("username"),
-        role: form.get("role"),
-        password: form.get("password"),
-        active: form.get("active") === "true"
-      })
-    });
-    await loadState();
+  bindSettingsCommon();
+  document.querySelector("[data-new-user]")?.addEventListener("click", () => {
+    state.settingsEditing = "new-user";
     renderSettings();
   });
-  document.querySelectorAll("[data-toggle-user]").forEach((button) => {
+  document.querySelectorAll("[data-edit-user]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = button.dataset.editUser;
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-delete-user]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const target = state.users.find((user) => user.id === button.dataset.toggleUser);
-      await api(`/api/users/${target.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ active: !target.active })
-      });
+      if (!confirm("Excluir este usuário?")) return;
+      await api(`/api/users/${button.dataset.deleteUser}`, { method: "DELETE" });
       await loadState();
       renderSettings();
     });
   });
-  document.querySelector("#integrationForm").addEventListener("submit", async (event) => {
+  document.querySelector("#userForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const integrations = {
-      metaForms: { enabled: form.get("meta") === "true", forms: state.integrations?.metaForms?.forms || [] },
-      whatsapp: { enabled: Boolean(form.get("whatsapp")), provider: form.get("whatsapp"), tokenSet: state.integrations?.whatsapp?.tokenSet || false },
-      email: { enabled: Boolean(form.get("sender") || form.get("smtp")), sender: form.get("sender"), smtpHost: form.get("smtp") },
-      proprietaryEndpoints: form.get("endpoint") ? [{ name: "Endpoint principal", url: form.get("endpoint"), enabled: true }] : []
+    const payload = {
+      name: form.get("name"),
+      role: form.get("role"),
+      password: form.get("password"),
+      active: form.get("active") === "true"
     };
-    await api("/api/integrations", { method: "PUT", body: JSON.stringify({ integrations }) });
+    if (editUser) {
+      await api(`/api/users/${editUser.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+    } else {
+      await api("/api/users", {
+        method: "POST",
+        body: JSON.stringify({ ...payload, username: form.get("username") })
+      });
+    }
+    state.settingsEditing = null;
     await loadState();
     renderSettings();
+  });
+}
+
+function integrationRows() {
+  const integrations = state.integrations || {};
+  return [
+    { id: "metaForms", name: "Forms do Meta", type: "Meta", status: integrations.metaForms?.enabled, detail: `${integrations.metaForms?.forms?.length || 0} forms` },
+    { id: "whatsapp", name: "WhatsApp", type: "Mensageria", status: integrations.whatsapp?.enabled, detail: integrations.whatsapp?.provider || "Sem provedor" },
+    { id: "email", name: "E-mail", type: "E-mail", status: integrations.email?.enabled, detail: integrations.email?.sender || integrations.email?.smtpHost || "Sem remetente" },
+    { id: "endpoint", name: "Endpoint proprietário", type: "API", status: Boolean(integrations.proprietaryEndpoints?.[0]?.enabled), detail: integrations.proprietaryEndpoints?.[0]?.url || "Sem endpoint" }
+  ];
+}
+
+function renderIntegrationSettings() {
+  const editing = state.settingsEditing;
+  const integrations = state.integrations || {};
+  const rows = integrationRows().map((item) => `
+    <tr>
+      <td>${escapeHtml(item.name)}</td>
+      <td>${escapeHtml(item.type)}</td>
+      <td class="${item.status ? "status-active" : "status-inactive"}">${item.status ? "Ativo" : "Inativo"}</td>
+      <td>${escapeHtml(item.detail)}</td>
+      <td><div class="row-actions"><button data-edit-integration="${item.id}">Editar</button><button data-delete-integration="${item.id}">Excluir</button></div></td>
+    </tr>
+  `).join("");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Integrações</h2>
+        <button class="primary" data-new-integration>Cadastrar novo</button>
+      </div>
+      ${editing?.startsWith("integration:") ? renderIntegrationForm(editing.replace("integration:", ""), integrations) : ""}
+      <div class="table-wrap">
+        <table><thead><tr><th>Nome</th><th>Tipo</th><th>Status</th><th>Detalhe</th><th>Ações</th></tr></thead><tbody>${rows}</tbody></table>
+      </div>
+      <h2>Auditoria</h2>
+      <div class="meta">${state.auditLog.map((item) => `<span>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))} · ${escapeHtml(item.action)} · ${escapeHtml(item.actor)}</span>`).join("")}</div>
+    </section>
+  `);
+  bindSettingsCommon();
+  document.querySelector("[data-new-integration]")?.addEventListener("click", () => {
+    state.settingsEditing = "integration:metaForms";
+    renderSettings();
+  });
+  document.querySelectorAll("[data-edit-integration]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `integration:${button.dataset.editIntegration}`;
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-delete-integration]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Excluir esta integração?")) return;
+      await saveIntegration(button.dataset.deleteIntegration, {});
+    });
+  });
+  document.querySelector("#integrationForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    await saveIntegration(form.get("type"), Object.fromEntries(form.entries()));
+  });
+}
+
+function renderIntegrationForm(type, integrations) {
+  const endpoint = integrations.proprietaryEndpoints?.[0] || {};
+  return `
+    <form id="integrationForm" class="form-grid editor">
+      <div class="field"><label>Tipo</label><select name="type">
+        ${["metaForms", "whatsapp", "email", "endpoint"].map((item) => `<option value="${item}" ${item === type ? "selected" : ""}>${escapeHtml({ metaForms: "Forms do Meta", whatsapp: "WhatsApp", email: "E-mail", endpoint: "Endpoint proprietário" }[item])}</option>`).join("")}
+      </select></div>
+      <div class="field"><label>Status</label><select name="enabled"><option value="true">Ativo</option><option value="false">Inativo</option></select></div>
+      <div class="field"><label>Provedor / Remetente</label><input name="primary" value="${escapeHtml(integrations.whatsapp?.provider || integrations.email?.sender || "")}"></div>
+      <div class="field"><label>SMTP / URL</label><input name="secondary" value="${escapeHtml(integrations.email?.smtpHost || endpoint.url || "")}"></div>
+      <div class="field full"><label>&nbsp;</label><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
+    </form>
+  `;
+}
+
+async function saveIntegration(type, values) {
+  const integrations = JSON.parse(JSON.stringify(state.integrations || {}));
+  const enabled = values.enabled === "true";
+  if (type === "metaForms") integrations.metaForms = { enabled, forms: integrations.metaForms?.forms || [] };
+  if (type === "whatsapp") integrations.whatsapp = { enabled, provider: values.primary || "", tokenSet: integrations.whatsapp?.tokenSet || false };
+  if (type === "email") integrations.email = { enabled, sender: values.primary || "", smtpHost: values.secondary || "" };
+  if (type === "endpoint") integrations.proprietaryEndpoints = values.secondary ? [{ name: "Endpoint principal", url: values.secondary, enabled }] : [];
+  await api("/api/integrations", { method: "PUT", body: JSON.stringify({ integrations }) });
+  state.settingsEditing = null;
+  await loadState();
+  renderSettings();
+}
+
+function renderStatusSettings() {
+  const isCreating = state.settingsEditing === "new-status";
+  const editIndex = state.settingsEditing?.startsWith("status:") ? Number(state.settingsEditing.replace("status:", "")) : null;
+  const formValue = editIndex != null ? state.statuses[editIndex] : "";
+  const rows = state.statuses.map((status, index) => {
+    const count = state.leads.filter((lead) => lead.status === status).length;
+    return `
+      <tr>
+        <td>${escapeHtml(status)}</td>
+        <td>${index + 1}</td>
+        <td>${count}</td>
+        <td><div class="row-actions"><button data-edit-status="${index}">Editar</button><button data-delete-status="${index}">Excluir</button></div></td>
+      </tr>
+    `;
+  }).join("");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Status do pipeline</h2>
+        <button class="primary" data-new-status>Cadastrar novo</button>
+      </div>
+      ${(isCreating || editIndex != null) ? `
+        <form id="statusForm" class="form-grid editor">
+          <div class="field full"><label>Nome do status</label><input name="name" value="${escapeHtml(formValue)}" required></div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
+        </form>
+      ` : ""}
+      <div class="table-wrap">
+        <table><thead><tr><th>Status</th><th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows}</tbody></table>
+      </div>
+    </section>
+  `);
+  bindSettingsCommon();
+  document.querySelector("[data-new-status]")?.addEventListener("click", () => {
+    state.settingsEditing = "new-status";
+    renderSettings();
+  });
+  document.querySelectorAll("[data-edit-status]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `status:${button.dataset.editStatus}`;
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-delete-status]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Excluir este status?")) return;
+      await api(`/api/statuses/${button.dataset.deleteStatus}`, { method: "DELETE" });
+      await loadState();
+      renderSettings();
+    });
+  });
+  document.querySelector("#statusForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    if (editIndex != null) {
+      await api(`/api/statuses/${editIndex}`, { method: "PATCH", body: JSON.stringify({ name: form.get("name") }) });
+    } else {
+      await api("/api/statuses", { method: "POST", body: JSON.stringify({ name: form.get("name") }) });
+    }
+    state.settingsEditing = null;
+    await loadState();
+    renderSettings();
+  });
+}
+
+function bindSettingsCommon() {
+  document.querySelectorAll("[data-cancel-settings]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = null;
+      renderSettings();
+    });
   });
 }
 

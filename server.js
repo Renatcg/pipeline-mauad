@@ -391,6 +391,23 @@ async function routeApi(req, res, db) {
     return sendJson(res, 200, { user: publicUser(target) });
   }
 
+  if (userMatch && method === "DELETE") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const targetIndex = db.users.findIndex((item) => item.id === userMatch[1]);
+    if (targetIndex < 0) return notFound(res);
+    if (db.users[targetIndex].id === user.id) return sendJson(res, 400, { error: "Não é possível excluir o próprio usuário" });
+    const [deleted] = db.users.splice(targetIndex, 1);
+    for (const lead of db.leads) {
+      if (lead.assignedTo === deleted.id) {
+        lead.assignedTo = null;
+        lead.assignedName = "";
+      }
+    }
+    audit(db, user, "DELETE_USER", { userId: deleted.id });
+    await saveDb(db);
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (url.pathname === "/api/integrations" && method === "PUT") {
     if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
@@ -398,6 +415,54 @@ async function routeApi(req, res, db) {
     audit(db, user, "UPDATE_INTEGRATIONS", {});
     await saveDb(db);
     return sendJson(res, 200, { integrations: db.integrations });
+  }
+
+  if (url.pathname === "/api/statuses" && method === "POST") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const name = String(body.name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+    if (db.pipelineStatuses.includes(name)) return sendJson(res, 400, { error: "Status já existe" });
+    db.pipelineStatuses.push(name);
+    audit(db, user, "CREATE_STATUS", { name });
+    await saveDb(db);
+    return sendJson(res, 201, { pipelineStatuses: db.pipelineStatuses });
+  }
+
+  const statusMatch = url.pathname.match(/^\/api\/statuses\/(\d+)$/);
+  if (statusMatch && method === "PATCH") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const index = Number(statusMatch[1]);
+    const oldName = db.pipelineStatuses[index];
+    if (!oldName) return notFound(res);
+    const body = await readBody(req);
+    const name = String(body.name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+    if (db.pipelineStatuses.some((status, idx) => status === name && idx !== index)) {
+      return sendJson(res, 400, { error: "Status já existe" });
+    }
+    db.pipelineStatuses[index] = name;
+    for (const lead of db.leads) {
+      if (lead.status === oldName) lead.status = name;
+    }
+    audit(db, user, "UPDATE_STATUS", { oldName, name });
+    await saveDb(db);
+    return sendJson(res, 200, { pipelineStatuses: db.pipelineStatuses });
+  }
+
+  if (statusMatch && method === "DELETE") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const index = Number(statusMatch[1]);
+    const status = db.pipelineStatuses[index];
+    if (!status) return notFound(res);
+    if (status === RESCUED_STATUS) return sendJson(res, 400, { error: "O status Resgatado é obrigatório" });
+    if (db.leads.some((lead) => lead.status === status)) {
+      return sendJson(res, 400, { error: "Não é possível excluir status usado por leads" });
+    }
+    db.pipelineStatuses.splice(index, 1);
+    audit(db, user, "DELETE_STATUS", { status });
+    await saveDb(db);
+    return sendJson(res, 200, { pipelineStatuses: db.pipelineStatuses });
   }
 
   if (url.pathname === "/api/admin/import-db" && method === "POST") {
