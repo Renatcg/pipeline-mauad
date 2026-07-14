@@ -25,7 +25,7 @@ const profileAccess = {
   "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard"],
   "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard"],
   Diretoria: ["dashboard", "sheet", "odysseia", "kanban"],
-  Corretor: ["kanban", "sheet"]
+  Corretor: ["kanban", "sheet", "odysseia"]
 };
 
 const routeByView = {
@@ -76,6 +76,16 @@ function canManageLeads() {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(state.user?.role);
 }
 
+function activeBrokerForLead(lead) {
+  return state.users.find((user) => user.id === lead.assignedTo && user.role === "Corretor" && user.active) || null;
+}
+
+function activeBrokers() {
+  return state.users
+    .filter((user) => user.role === "Corretor" && user.active)
+    .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+}
+
 function syncRouteFromLocation() {
   const path = window.location.pathname;
   if (path.startsWith("/leads/")) {
@@ -108,7 +118,7 @@ function filteredLeads() {
 }
 
 function pipelineLeads() {
-  return filteredLeads().filter((lead) => lead.inPipeline);
+  return filteredLeads().filter((lead) => lead.inPipeline && (state.user?.role !== "Corretor" || lead.assignedTo === state.user.id));
 }
 
 function odysseiaLeads() {
@@ -352,20 +362,30 @@ function refreshFavoriteButtons(lead) {
   });
 }
 
+function brokerRedirectControl(lead) {
+  if (!canManageLeads()) return "";
+  const brokers = activeBrokers();
+  return `
+    <select class="broker-redirect" data-assign-lead="${escapeHtml(lead.id)}" title="Direcionar para corretor" ${brokers.length ? "" : "disabled"}>
+      <option value="">↗</option>
+      <option value="__none">Sem corretor</option>
+      ${brokers.map((broker) => `<option value="${escapeHtml(broker.id)}">${escapeHtml(broker.name)}</option>`).join("")}
+    </select>
+  `;
+}
+
 function leadCard(lead) {
+  const broker = activeBrokerForLead(lead);
   return `
     <article class="card" draggable="true" data-lead="${escapeHtml(lead.id)}" data-open-lead="${escapeHtml(lead.id)}">
       <div class="card-title">
+        <button class="favorite-inline" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button>
         <strong>${escapeHtml(lead.name)}</strong>
-        <button class="icon favorite" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button>
+        ${brokerRedirectControl(lead)}
       </div>
       <div class="meta">
         <span>${escapeHtml(lead.phone || "Sem telefone")}</span>
-        <span>${escapeHtml(lead.assignedName || userName(lead.assignedTo) || "Sem corretor")}</span>
-      </div>
-      <div class="chips">
-        <span class="chip">${escapeHtml(lead.source)}</span>
-        <span class="chip">#${escapeHtml(lead.externalId)}</span>
+        <span>${escapeHtml(broker?.name || "Sem corretor")}</span>
       </div>
       ${renderLeadTags(lead, true)}
     </article>
@@ -437,6 +457,22 @@ function bindLeadActions() {
           refreshFavoriteButtons(lead);
         }
         alert(error.message);
+      }
+    });
+  });
+  document.querySelectorAll("[data-assign-lead]").forEach((select) => {
+    select.addEventListener("click", (event) => event.stopPropagation());
+    select.addEventListener("change", async () => {
+      const lead = state.leads.find((item) => item.id === select.dataset.assignLead);
+      if (!lead) return;
+      const assignedTo = select.value === "__none" ? null : select.value;
+      if (!select.value) return;
+      try {
+        await patchLead(lead.id, { assignedTo });
+        renderApp();
+      } catch (error) {
+        alert(error.message);
+        renderApp();
       }
     });
   });
@@ -671,6 +707,8 @@ function renderLeadDetail() {
           ${renderLeadTags(lead, true)}
         </div>
         <form id="leadDetailForm" class="form-grid">
+          <div class="field"><label>Origem</label><input value="${escapeHtml(lead.source || "")}" disabled></div>
+          <div class="field"><label>ID importado</label><input value="${escapeHtml(lead.externalId || "")}" disabled></div>
           <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(lead.name)}" required></div>
           <div class="field"><label>Telefone</label><input name="phone" value="${escapeHtml(lead.phone || "")}"></div>
           <div class="field"><label>Status do pipeline</label>${statusField}</div>

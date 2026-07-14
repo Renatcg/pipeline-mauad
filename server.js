@@ -320,7 +320,9 @@ function canManageLeads(user) {
 }
 
 function visibleLeads(db, user) {
-  if (user.role === "Corretor") return db.leads.filter((lead) => lead.inPipeline && lead.assignedTo === user.id);
+  if (user.role === "Corretor") {
+    return db.leads.filter((lead) => lead.assignedTo === user.id || !lead.inPipeline || lead.sourceStatus || lead.odysseiaStatus);
+  }
   return db.leads;
 }
 
@@ -475,8 +477,10 @@ async function routeApi(req, res, db) {
           ? [...new Set(body.tags.map((tag) => String(tag).trim()).filter((tag) => tag && validTags.has(tag)))].slice(0, 12)
           : [];
       } else if (key === "assignedTo") {
-        lead.assignedTo = body.assignedTo || null;
-        lead.assignedName = lead.assignedTo ? db.users.find((item) => item.id === lead.assignedTo)?.name || lead.assignedName || "" : "";
+        const assignedUser = body.assignedTo ? db.users.find((item) => item.id === body.assignedTo && item.role === "Corretor" && item.active) : null;
+        if (body.assignedTo && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
+        lead.assignedTo = assignedUser?.id || null;
+        lead.assignedName = assignedUser?.name || "";
       } else {
         lead[key] = body[key];
       }
@@ -512,13 +516,17 @@ async function routeApi(req, res, db) {
 
   const rescueMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rescue$/);
   if (rescueMatch && method === "POST") {
-    if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canManageLeads(user) && user.role !== "Corretor") return sendJson(res, 403, { error: "Sem permissão" });
     const lead = db.leads.find((item) => item.id === rescueMatch[1]);
     if (!lead) return notFound(res);
     if (lead.inPipeline) return sendJson(res, 400, { error: "Este lead já está no pipeline" });
     if (!db.pipelineStatuses.length) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de resgatar leads" });
     lead.inPipeline = true;
     lead.status = db.pipelineStatuses[0];
+    if (user.role === "Corretor") {
+      lead.assignedTo = user.id;
+      lead.assignedName = user.name;
+    }
     lead.order = Date.now();
     lead.rescuedAt = new Date().toISOString();
     lead.updatedAt = lead.rescuedAt;
