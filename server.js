@@ -170,6 +170,10 @@ async function saveDb(db) {
 
 function migrateDb(db) {
   let changed = false;
+  if (!Array.isArray(db.auditLog)) {
+    db.auditLog = [];
+    changed = true;
+  }
   if (!Array.isArray(db.pipelineStatuses)) {
     db.pipelineStatuses = [];
     changed = true;
@@ -183,6 +187,10 @@ function migrateDb(db) {
   for (const lead of db.leads) {
     if (lead.source === "ODYSSEIA" && lead.odysseiaStatus == null) {
       lead.odysseiaStatus = lead.status;
+      changed = true;
+    }
+    if (lead.source !== "ODYSSEIA" && !lead.inPipeline && lead.sourceStatus == null) {
+      lead.sourceStatus = lead.status;
       changed = true;
     }
     if (lead.inPipeline == null) {
@@ -293,6 +301,54 @@ function audit(db, actor, action, details) {
   db.auditLog = db.auditLog.slice(0, 200);
 }
 
+function mergeImportedLeads(db, importedLeads, pipelineStatuses = []) {
+  const now = new Date().toISOString();
+  const existingById = new Map(db.leads.map((lead) => [lead.id, lead]));
+  let created = 0;
+  let updated = 0;
+
+  for (const status of pipelineStatuses.map((item) => String(item || "").trim()).filter(Boolean)) {
+    if (!db.pipelineStatuses.includes(status)) db.pipelineStatuses.push(status);
+  }
+
+  for (const item of importedLeads) {
+    const id = String(item.id || "").trim();
+    const name = String(item.name || "").trim();
+    if (!id || !name) continue;
+    const previous = existingById.get(id);
+    const lead = {
+      ...previous,
+      ...item,
+      id,
+      name,
+      phone: String(item.phone || previous?.phone || "").trim(),
+      assistant: String(item.assistant || previous?.assistant || "").trim(),
+      assignedName: String(item.assignedName || previous?.assignedName || "").trim(),
+      source: String(item.source || previous?.source || "IMPORTADO").trim().toUpperCase(),
+      favorite: previous?.favorite ?? Boolean(item.favorite),
+      order: item.order ?? previous?.order ?? Date.now(),
+      createdAt: previous?.createdAt || item.createdAt || now,
+      updatedAt: now,
+      inPipeline: Boolean(item.inPipeline)
+    };
+    if (!lead.inPipeline) {
+      lead.sourceStatus = item.sourceStatus || previous?.sourceStatus || item.status || "Base";
+      if (lead.source === "ODYSSEIA") lead.odysseiaStatus = lead.odysseiaStatus || lead.sourceStatus;
+    }
+    if (lead.inPipeline && !db.pipelineStatuses.includes(lead.status)) db.pipelineStatuses.push(lead.status);
+    if (previous) {
+      Object.assign(previous, lead);
+      updated += 1;
+    } else {
+      db.leads.push(lead);
+      existingById.set(id, lead);
+      created += 1;
+    }
+  }
+
+  return { created, updated, total: created + updated };
+}
+
 function routeStatic(req, res) {
   const requested = req.url === "/" ? "/index.html" : decodeURIComponent(req.url.split("?")[0]);
   const filePath = path.normalize(path.join(PUBLIC_DIR, requested));
@@ -373,14 +429,14 @@ async function routeApi(req, res, db) {
     if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const lead = db.leads.find((item) => item.id === rescueMatch[1]);
     if (!lead) return notFound(res);
-    if (lead.source !== "ODYSSEIA") return sendJson(res, 400, { error: "Apenas leads da Base Odysseia podem ser resgatados" });
+    if (lead.inPipeline) return sendJson(res, 400, { error: "Este lead já está no pipeline" });
     if (!db.pipelineStatuses.length) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de resgatar leads" });
     lead.inPipeline = true;
     lead.status = db.pipelineStatuses[0];
     lead.order = Date.now();
     lead.rescuedAt = new Date().toISOString();
     lead.updatedAt = lead.rescuedAt;
-    audit(db, user, "RESCUE_ODYSSEIA_LEAD", { leadId: lead.id });
+    audit(db, user, "RESCUE_BASE_LEAD", { leadId: lead.id, source: lead.source });
     await saveDb(db);
     return sendJson(res, 200, { lead });
   }
@@ -528,6 +584,26 @@ async function routeApi(req, res, db) {
       ok: true,
       leads: imported.leads.length,
       users: imported.users.length,
+      source: DATABASE_URL ? "postgres" : "file"
+    });
+  }
+
+  if (url.pathname === "/api/admin/import-leads" && method === "POST") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    if (!Array.isArray(body.leads)) return sendJson(res, 400, { error: "Lista de leads inválida" });
+    const result = mergeImportedLeads(db, body.leads, Array.isArray(body.pipelineStatuses) ? body.pipelineStatuses : []);
+    audit(db, user, "IMPORT_LEADS", {
+      leads: result.total,
+      created: result.created,
+      updated: result.updated,
+      sources: [...new Set(body.leads.map((lead) => lead.source).filter(Boolean))]
+    });
+    await saveDb(db);
+    return sendJson(res, 200, {
+      ok: true,
+      ...result,
+      statuses: db.pipelineStatuses.length,
       source: DATABASE_URL ? "postgres" : "file"
     });
   }

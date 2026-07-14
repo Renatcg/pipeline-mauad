@@ -1,11 +1,13 @@
 {
-  "name": "pipeline-leads-odysseia",
+  "name": "pipeline-comercial-mauad",
   "version": "1.0.0",
   "private": true,
   "description": "Pipeline seguro de leads com Kanban, planilha e dashboard.",
   "scripts": {
     "start": "node server.js",
-    "import:db": "node scripts/import-db-to-app.js"
+    "import:db": "node scripts/import-db-to-app.js",
+    "build:lead-import": "python3 scripts/build-lead-import-payload.py",
+    "import:leads": "node scripts/import-leads-to-app.js"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.2"

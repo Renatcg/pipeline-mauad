@@ -11,6 +11,7 @@ const state = {
   view: "kanban",
   settingsTab: "users",
   settingsEditing: null,
+  baseSource: "ODYSSEIA",
   favoritesOnly: false,
   search: ""
 };
@@ -67,6 +68,25 @@ function pipelineLeads() {
 
 function odysseiaLeads() {
   return filteredLeads().filter((lead) => lead.source === "ODYSSEIA");
+}
+
+function baseSources() {
+  const sources = [...new Set(state.leads
+    .filter((lead) => !lead.inPipeline || lead.sourceStatus || lead.odysseiaStatus)
+    .map((lead) => lead.source)
+    .filter(Boolean))].sort();
+  if (sources.includes("ODYSSEIA")) sources.unshift(...sources.splice(sources.indexOf("ODYSSEIA"), 1));
+  return sources;
+}
+
+function baseLeads() {
+  const sources = baseSources();
+  if (!sources.includes(state.baseSource)) state.baseSource = sources[0] || "ODYSSEIA";
+  return filteredLeads().filter((lead) => lead.source === state.baseSource && (!lead.inPipeline || lead.sourceStatus || lead.odysseiaStatus));
+}
+
+function baseLeadCount() {
+  return state.leads.filter((lead) => !lead.inPipeline).length;
 }
 
 function metrics(leads = filteredLeads()) {
@@ -146,7 +166,7 @@ function renderShell(content) {
         <nav class="nav">
           ${navButton("kanban", "▦", "Kanban")}
           ${navButton("sheet", "▤", "Planilha")}
-          ${navButton("odysseia", "◎", "Base Odysseia")}
+          ${navButton("odysseia", "◎", "Bases")}
           ${navButton("dashboard", "◫", "Dashboard")}
           ${navButton("settings", "⚙", "Configurações")}
         </nav>
@@ -346,7 +366,7 @@ function leadRows(leads, options = {}) {
       <td>${escapeHtml(lead.phone)}</td>
       <td>${escapeHtml(lead.assistant)}</td>
       <td>
-        ${options.readOnlyStatus ? escapeHtml(lead.odysseiaStatus || lead.status) : `<select data-status-select="${escapeHtml(lead.id)}">
+        ${options.readOnlyStatus ? escapeHtml(lead.sourceStatus || lead.odysseiaStatus || lead.status) : `<select data-status-select="${escapeHtml(lead.id)}">
           ${state.statuses.map((status) => `<option value="${escapeHtml(status)}" ${status === lead.status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
         </select>`}
       </td>
@@ -372,7 +392,7 @@ function renderSheet() {
   const leads = pipelineLeads();
   const rows = leadRows(leads);
   renderShell(`
-    ${renderViewHead("Planilha", "Leads vindos do Meta e leads resgatados da Base Odysseia", { filters: true })}
+    ${renderViewHead("Planilha", "Leads vindos do Meta, importações de pipeline e resgates das bases", { filters: true })}
     ${renderMetrics(leads)}
     ${renderLeadsTable(rows)}
   `);
@@ -390,29 +410,45 @@ function renderSheet() {
   });
 }
 
-function renderOdysseiaBase() {
-  const leads = odysseiaLeads();
+function renderBaseSources(sources) {
+  return `
+    <div class="tabs base-tabs">
+      ${sources.map((source) => `<button class="${state.baseSource === source ? "active" : ""}" data-base-source="${escapeHtml(source)}">${escapeHtml(source)}</button>`).join("")}
+    </div>
+  `;
+}
+
+function renderLeadBases() {
+  const sources = baseSources();
+  const leads = baseLeads();
   const rows = leadRows(leads, { readOnlyStatus: true, withRescue: true });
   const pending = leads.filter((lead) => !lead.inPipeline).length;
   const rescued = leads.filter((lead) => lead.inPipeline).length;
   renderShell(`
-    ${renderViewHead("Base Odysseia", "Base importada separada do pipeline", { filters: true })}
+    ${renderViewHead("Bases de Leads", "Bases importadas separadas do pipeline comercial", { filters: true })}
+    ${sources.length ? renderBaseSources(sources) : ""}
     <section class="metrics">
-      <div class="metric"><span>Total Odysseia</span><strong>${leads.length}</strong></div>
+      <div class="metric"><span>Total da base</span><strong>${leads.length}</strong></div>
       <div class="metric"><span>A resgatar</span><strong>${pending}</strong></div>
       <div class="metric"><span>Resgatados</span><strong>${rescued}</strong></div>
-      <div class="metric"><span>Origem</span><strong>ODYSSEIA</strong></div>
+      <div class="metric"><span>Origem</span><strong>${escapeHtml(state.baseSource)}</strong></div>
     </section>
     ${renderLeadsTable(rows, true)}
   `);
   bindLeadActions();
+  document.querySelectorAll("[data-base-source]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.baseSource = button.dataset.baseSource;
+      renderLeadBases();
+    });
+  });
   document.querySelectorAll("[data-rescue]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
         const result = await api(`/api/leads/${button.dataset.rescue}/rescue`, { method: "POST" });
         const lead = state.leads.find((item) => item.id === result.lead.id);
         Object.assign(lead, result.lead);
-        renderOdysseiaBase();
+        renderLeadBases();
       } catch (error) {
         alert(error.message);
       }
@@ -451,7 +487,7 @@ function renderDashboard() {
       <div class="metric"><span>Volume total</span><strong>${data.total}</strong></div>
       <div class="metric"><span>Ativos</span><strong>${data.active}</strong></div>
       <div class="metric"><span>Favoritos</span><strong>${data.favorites}</strong></div>
-      <div class="metric"><span>Base Odysseia</span><strong>${odysseiaLeads().length}</strong></div>
+      <div class="metric"><span>Em bases</span><strong>${baseLeadCount()}</strong></div>
     </section>
     ${renderFunnelInfographic(leads)}
     <section class="dashboard-grid">
@@ -767,7 +803,7 @@ function bindSettingsCommon() {
 function renderApp() {
   if (state.view === "kanban") return renderKanban();
   if (state.view === "sheet") return renderSheet();
-  if (state.view === "odysseia") return renderOdysseiaBase();
+  if (state.view === "odysseia") return renderLeadBases();
   if (state.view === "dashboard") return renderDashboard();
   if (state.view === "settings") return renderSettings();
 }
