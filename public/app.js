@@ -15,6 +15,7 @@ const state = {
   settingsTab: "users",
   settingsEditing: null,
   baseSource: "ODYSSEIA",
+  favoriteRequests: {},
   favoritesOnly: false,
   search: ""
 };
@@ -343,6 +344,14 @@ async function patchLead(leadId, payload) {
   return result.lead;
 }
 
+function refreshFavoriteButtons(lead) {
+  document.querySelectorAll("[data-favorite]").forEach((button) => {
+    if (button.dataset.favorite !== lead.id) return;
+    button.textContent = lead.favorite ? "★" : "☆";
+    button.classList.toggle("primary", Boolean(lead.favorite));
+  });
+}
+
 function leadCard(lead) {
   return `
     <article class="card" draggable="true" data-lead="${escapeHtml(lead.id)}" data-open-lead="${escapeHtml(lead.id)}">
@@ -400,8 +409,35 @@ function bindLeadActions() {
     button.addEventListener("click", async (event) => {
       event.stopPropagation();
       const lead = state.leads.find((item) => item.id === button.dataset.favorite);
-      await patchLead(lead.id, { favorite: !lead.favorite });
-      renderApp();
+      if (!lead) return;
+      const previous = Boolean(lead.favorite);
+      const next = !previous;
+      const requestId = `${Date.now()}-${Math.random()}`;
+      state.favoriteRequests[lead.id] = requestId;
+      lead.favorite = next;
+      if (state.favoritesOnly) {
+        renderApp();
+      } else {
+        refreshFavoriteButtons(lead);
+      }
+      try {
+        const result = await api(`/api/leads/${encodeURIComponent(lead.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ favorite: next })
+        });
+        if (state.favoriteRequests[lead.id] !== requestId) return;
+        Object.assign(lead, result.lead);
+        refreshFavoriteButtons(lead);
+      } catch (error) {
+        if (state.favoriteRequests[lead.id] !== requestId) return;
+        lead.favorite = previous;
+        if (state.favoritesOnly) {
+          renderApp();
+        } else {
+          refreshFavoriteButtons(lead);
+        }
+        alert(error.message);
+      }
     });
   });
   document.querySelectorAll("[data-tag-select]").forEach((select) => {
