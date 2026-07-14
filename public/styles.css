@@ -75,6 +75,20 @@ textarea {
   color: var(--ink);
 }
 
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-color: white;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 15px, calc(100% - 11px) 15px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 input[type="color"] {
   min-height: 42px;
   padding: 4px;
@@ -485,19 +499,69 @@ textarea {
   color: var(--brand);
 }
 
-.broker-redirect {
-  width: 36px;
-  min-height: 32px;
+.broker-menu {
+  position: relative;
+}
+
+.broker-menu-button {
+  width: 32px;
+  min-height: 30px;
   padding: 0;
   border-radius: 7px;
-  appearance: none;
-  -webkit-appearance: none;
   background: white;
   color: var(--muted);
-  font-size: 18px;
-  font-weight: 800;
-  text-align: center;
-  text-align-last: center;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.broker-menu-button:hover,
+.broker-menu.open .broker-menu-button {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.broker-menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 5;
+  width: 210px;
+  display: none;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  box-shadow: var(--shadow);
+}
+
+.broker-menu.open .broker-menu-list {
+  display: grid;
+  gap: 3px;
+}
+
+.broker-menu-list button {
+  width: 100%;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.broker-menu-list button:hover:not(:disabled) {
+  background: #eef7f6;
+  color: var(--brand-strong);
+}
+
+.broker-menu-list button:disabled {
+  background: #f5f7f9;
+  color: #a0aab6;
 }
 
 .card[data-open-lead],

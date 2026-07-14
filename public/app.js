@@ -16,6 +16,7 @@ const state = {
   settingsEditing: null,
   baseSource: "ODYSSEIA",
   favoriteRequests: {},
+  brokerMenuBound: false,
   favoritesOnly: false,
   search: ""
 };
@@ -366,11 +367,13 @@ function brokerRedirectControl(lead) {
   if (!canManageLeads()) return "";
   const brokers = activeBrokers();
   return `
-    <select class="broker-redirect" data-assign-lead="${escapeHtml(lead.id)}" title="Direcionar para corretor" ${brokers.length ? "" : "disabled"}>
-      <option value="">•••</option>
-      <option value="__none">Sem corretor</option>
-      ${brokers.map((broker) => `<option value="${escapeHtml(broker.id)}">${escapeHtml(broker.name)}</option>`).join("")}
-    </select>
+    <div class="broker-menu" data-assign-menu="${escapeHtml(lead.id)}">
+      <button class="broker-menu-button" data-toggle-assign-menu="${escapeHtml(lead.id)}" title="Direcionar para corretor" ${brokers.length ? "" : "disabled"}>⋮</button>
+      <div class="broker-menu-list">
+        <button data-assign-broker="${escapeHtml(lead.id)}" data-broker-id="" ${lead.assignedTo ? "" : "disabled"}>Sem corretor</button>
+        ${brokers.map((broker) => `<button data-assign-broker="${escapeHtml(lead.id)}" data-broker-id="${escapeHtml(broker.id)}" ${broker.id === lead.assignedTo ? "disabled" : ""}>${escapeHtml(broker.name)}</button>`).join("")}
+      </div>
+    </div>
   `;
 }
 
@@ -420,7 +423,7 @@ function renderKanban() {
 function bindLeadActions() {
   document.querySelectorAll("[data-open-lead]").forEach((element) => {
     element.addEventListener("click", (event) => {
-      if (event.target.closest("button, select, input, textarea, a")) return;
+      if (event.target.closest("button, select, input, textarea, a, [data-assign-menu]")) return;
       state.previousView = state.view === "lead" ? state.previousView : state.view;
       routeTo("lead", element.dataset.openLead);
     });
@@ -460,13 +463,21 @@ function bindLeadActions() {
       }
     });
   });
-  document.querySelectorAll("[data-assign-lead]").forEach((select) => {
-    select.addEventListener("click", (event) => event.stopPropagation());
-    select.addEventListener("change", async () => {
-      const lead = state.leads.find((item) => item.id === select.dataset.assignLead);
+  document.querySelectorAll("[data-toggle-assign-menu]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      document.querySelectorAll(".broker-menu.open").forEach((menu) => {
+        if (menu !== button.closest(".broker-menu")) menu.classList.remove("open");
+      });
+      button.closest(".broker-menu")?.classList.toggle("open");
+    });
+  });
+  document.querySelectorAll("[data-assign-broker]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const lead = state.leads.find((item) => item.id === button.dataset.assignBroker);
       if (!lead) return;
-      const assignedTo = select.value === "__none" ? null : select.value;
-      if (!select.value) return;
+      const assignedTo = button.dataset.brokerId || null;
       try {
         await patchLead(lead.id, { assignedTo });
         renderApp();
@@ -476,6 +487,12 @@ function bindLeadActions() {
       }
     });
   });
+  if (!state.brokerMenuBound) {
+    document.addEventListener("click", () => {
+      document.querySelectorAll(".broker-menu.open").forEach((menu) => menu.classList.remove("open"));
+    });
+    state.brokerMenuBound = true;
+  }
   document.querySelectorAll("[data-tag-select]").forEach((select) => {
     select.addEventListener("click", (event) => event.stopPropagation());
     select.addEventListener("change", async () => {
