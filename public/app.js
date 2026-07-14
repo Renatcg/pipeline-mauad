@@ -14,6 +14,7 @@ const state = {
   previousView: "kanban",
   settingsTab: "users",
   settingsEditing: null,
+  creatingLead: false,
   baseSource: "ODYSSEIA",
   favoriteRequests: {},
   brokerMenuBound: false,
@@ -75,6 +76,10 @@ function userName(id) {
 
 function canManageLeads() {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(state.user?.role);
+}
+
+function canCreateLeads() {
+  return canManageLeads() || state.user?.role === "Corretor";
 }
 
 function activeBrokerForLead(lead) {
@@ -257,6 +262,7 @@ function renderShell(content) {
         <div class="content">${content}</div>
       </section>
     </section>
+    ${state.creatingLead ? renderCreateLeadModal() : ""}
   `;
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -264,6 +270,7 @@ function renderShell(content) {
     });
   });
   bindPageFilters();
+  bindCreateLeadModal();
   document.querySelector("#logout").addEventListener("click", async () => {
     await api("/api/logout", { method: "POST" });
     history.pushState({}, "", "/login");
@@ -272,8 +279,10 @@ function renderShell(content) {
 }
 
 function renderViewHead(title, subtitle = "", options = {}) {
+  const showAddLead = Boolean(options.addLead && canCreateLeads());
   const filters = options.filters ? `
-    <div class="page-filters">
+    <div class="page-filters ${showAddLead ? "with-add-lead" : ""}">
+      ${showAddLead ? '<button id="addLeadButton" class="primary add-lead-button">Adicionar Lead</button>' : ""}
       <input id="pageSearch" value="${escapeHtml(state.search)}" placeholder="Buscar lead, telefone, fase ou corretor">
       <button id="pageFavoriteToggle" class="${state.favoritesOnly ? "primary" : ""}" title="Filtrar favoritos">★</button>
     </div>
@@ -292,6 +301,7 @@ function renderViewHead(title, subtitle = "", options = {}) {
 function bindPageFilters() {
   const search = document.querySelector("#pageSearch");
   const favoriteToggle = document.querySelector("#pageFavoriteToggle");
+  const addLeadButton = document.querySelector("#addLeadButton");
   search?.addEventListener("input", (event) => {
     state.search = event.target.value;
     renderApp();
@@ -299,6 +309,68 @@ function bindPageFilters() {
   favoriteToggle?.addEventListener("click", () => {
     state.favoritesOnly = !state.favoritesOnly;
     renderApp();
+  });
+  addLeadButton?.addEventListener("click", () => {
+    state.creatingLead = true;
+    renderApp();
+  });
+}
+
+function renderCreateLeadModal() {
+  const statusOptions = state.statuses.map((status, index) => `<option value="${escapeHtml(status)}" ${index === 0 ? "selected" : ""}>${escapeHtml(status)}</option>`).join("");
+  const brokerOptions = state.user?.role === "Corretor"
+    ? `<option value="${escapeHtml(state.user.id)}" selected>${escapeHtml(state.user.name)}</option>`
+    : `<option value="">Sem corretor</option>${activeBrokers().map((broker) => `<option value="${escapeHtml(broker.id)}">${escapeHtml(broker.name)}</option>`).join("")}`;
+  return `
+    <div class="modal-backdrop" data-close-create-lead>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="createLeadTitle">
+        <div class="panel-head">
+          <h2 id="createLeadTitle">Adicionar Lead</h2>
+          <button type="button" class="icon" data-close-create-lead title="Fechar">×</button>
+        </div>
+        <form id="createLeadForm" class="form-grid">
+          <div class="field"><label>Nome</label><input name="name" required autofocus></div>
+          <div class="field"><label>Telefone</label><input name="phone"></div>
+          <div class="field"><label>Status do pipeline</label><select name="status" ${state.statuses.length ? "" : "disabled"}>${statusOptions || '<option value="">Cadastre um status</option>'}</select></div>
+          <div class="field"><label>Corretor</label><select name="assignedTo">${brokerOptions}</select></div>
+          <div class="field"><label>Empreendimento desejado</label><select name="desiredProject">
+            <option value="">Selecione</option>
+            <option>Reserva Guinle</option>
+            <option>Golf Club Resort</option>
+          </select></div>
+          <div class="field"><label>Unidade</label><input name="desiredUnit"></div>
+          <div class="field"><label>Valor da unidade</label><input name="unitValue"></div>
+          <div class="field full"><label>Observações internas</label><textarea name="notes"></textarea></div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar lead</button><button type="button" data-close-create-lead>Cancelar</button></div></div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function bindCreateLeadModal() {
+  document.querySelectorAll("[data-close-create-lead]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (event.target !== element && element.classList.contains("modal-backdrop")) return;
+      state.creatingLead = false;
+      renderApp();
+    });
+  });
+  document.querySelector("#createLeadForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      const result = await api("/api/leads", {
+        method: "POST",
+        body: JSON.stringify(Object.fromEntries(form.entries()))
+      });
+      state.leads.push(result.lead);
+      state.creatingLead = false;
+      state.previousView = state.view;
+      routeTo("lead", result.lead.id);
+    } catch (error) {
+      alert(error.message);
+    }
   });
 }
 
@@ -336,10 +408,12 @@ function renderLeadTags(lead, editable = false) {
         return `<button class="tag" style="--tag-color:${escapeHtml(tag.color)}" data-remove-tag="${escapeHtml(lead.id)}" data-tag="${escapeHtml(tagName)}" title="Remover etiqueta">${escapeHtml(tagName)}</button>`;
       }).join("")}
       ${editable && unusedTags.length ? `
-        <select class="tag-select" data-tag-select="${escapeHtml(lead.id)}" title="Adicionar etiqueta">
-          <option value="">+ Etiqueta</option>
-          ${unusedTags.map((tag) => `<option value="${escapeHtml(tag.name)}">${escapeHtml(tag.name)}</option>`).join("")}
-        </select>
+        <div class="tag-menu" data-tag-menu="${escapeHtml(lead.id)}">
+          <button class="tag-menu-button" data-toggle-tag-menu="${escapeHtml(lead.id)}" title="Adicionar etiqueta">+ Etiqueta</button>
+          <div class="tag-menu-list">
+            ${unusedTags.map((tag) => `<button data-assign-tag="${escapeHtml(lead.id)}" data-tag="${escapeHtml(tag.name)}"><span class="tag static-tag" style="--tag-color:${escapeHtml(tag.color)}">${escapeHtml(tag.name)}</span></button>`).join("")}
+          </div>
+        </div>
       ` : ""}
     </div>
   `;
@@ -414,7 +488,7 @@ function renderKanban() {
     `;
   }).join("");
   const empty = !state.statuses.length ? '<section class="panel"><div class="empty">Cadastre o primeiro status em Configurações para começar o pipeline.</div></section>' : "";
-  renderShell(`${renderViewHead("Kanban", "Leads ativos no pipeline", { filters: true })}${renderMetrics(leads)}${empty}<section class="kanban">${columns}</section>`);
+  renderShell(`${renderViewHead("Kanban", "Leads ativos no pipeline", { filters: true, addLead: true })}${renderMetrics(leads)}${empty}<section class="kanban">${columns}</section>`);
   bindLeadActions();
   bindDragDrop();
   bindColumnDragDrop();
@@ -423,7 +497,7 @@ function renderKanban() {
 function bindLeadActions() {
   document.querySelectorAll("[data-open-lead]").forEach((element) => {
     element.addEventListener("click", (event) => {
-      if (event.target.closest("button, select, input, textarea, a, [data-assign-menu]")) return;
+      if (event.target.closest("button, select, input, textarea, a, [data-assign-menu], [data-tag-menu]")) return;
       state.previousView = state.view === "lead" ? state.previousView : state.view;
       routeTo("lead", element.dataset.openLead);
     });
@@ -466,6 +540,7 @@ function bindLeadActions() {
   document.querySelectorAll("[data-toggle-assign-menu]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
+      document.querySelectorAll(".tag-menu.open").forEach((menu) => menu.classList.remove("open"));
       document.querySelectorAll(".broker-menu.open").forEach((menu) => {
         if (menu !== button.closest(".broker-menu")) menu.classList.remove("open");
       });
@@ -487,22 +562,33 @@ function bindLeadActions() {
       }
     });
   });
-  if (!state.brokerMenuBound) {
-    document.addEventListener("click", () => {
+  document.querySelectorAll("[data-toggle-tag-menu]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
       document.querySelectorAll(".broker-menu.open").forEach((menu) => menu.classList.remove("open"));
+      document.querySelectorAll(".tag-menu.open").forEach((menu) => {
+        if (menu !== button.closest(".tag-menu")) menu.classList.remove("open");
+      });
+      button.closest(".tag-menu")?.classList.toggle("open");
     });
-    state.brokerMenuBound = true;
-  }
-  document.querySelectorAll("[data-tag-select]").forEach((select) => {
-    select.addEventListener("click", (event) => event.stopPropagation());
-    select.addEventListener("change", async () => {
-      const lead = state.leads.find((item) => item.id === select.dataset.tagSelect);
-      const tag = select.value;
-      if (!tag) return;
+  });
+  document.querySelectorAll("[data-assign-tag]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const lead = state.leads.find((item) => item.id === button.dataset.assignTag);
+      const tag = button.dataset.tag;
+      if (!lead || !tag) return;
       await patchLead(lead.id, { tags: [...new Set([...leadTags(lead), tag])] });
       renderApp();
     });
   });
+  if (!state.brokerMenuBound) {
+    document.addEventListener("click", () => {
+      document.querySelectorAll(".broker-menu.open").forEach((menu) => menu.classList.remove("open"));
+      document.querySelectorAll(".tag-menu.open").forEach((menu) => menu.classList.remove("open"));
+    });
+    state.brokerMenuBound = true;
+  }
   document.querySelectorAll("[data-remove-tag]").forEach((button) => {
     button.addEventListener("click", async (event) => {
       event.stopPropagation();
@@ -608,7 +694,7 @@ function renderSheet() {
   const leads = pipelineLeads();
   const rows = leadRows(leads);
   renderShell(`
-    ${renderViewHead("Planilha", "Leads vindos do Meta, importações de pipeline e resgates das bases", { filters: true })}
+    ${renderViewHead("Planilha", "Leads vindos do Meta, importações de pipeline e resgates das bases", { filters: true, addLead: true })}
     ${renderMetrics(leads)}
     ${renderLeadsTable(rows)}
   `);

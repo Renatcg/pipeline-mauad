@@ -19,16 +19,6 @@ const DEFAULT_TAG_DEFINITIONS = [
   { id: "tag-visita", name: "Visita", color: "#039855" },
   { id: "tag-documentacao", name: "Documentação", color: "#475467" }
 ];
-const LEGACY_ODYSSEIA_STATUSES = new Set([
-  "Resgatado",
-  "Novo Lead",
-  "Encaminhado ao Corretor",
-  "Interesse Definido",
-  "Simulação de Financiamento",
-  "Desqualificado",
-  "Arquivado (Permanentemente)",
-  "Sem status"
-]);
 const DATABASE_URL = process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
 let sqlClientPromise = null;
@@ -189,12 +179,6 @@ function migrateDb(db) {
   }
   if (!Array.isArray(db.tagDefinitions)) {
     db.tagDefinitions = DEFAULT_TAG_DEFINITIONS.map((tag) => ({ ...tag }));
-    changed = true;
-  }
-  const statusesInUse = new Set(db.leads.filter((lead) => lead.inPipeline).map((lead) => lead.status));
-  const commercialStatuses = db.pipelineStatuses.filter((status) => !LEGACY_ODYSSEIA_STATUSES.has(status) || statusesInUse.has(status));
-  if (commercialStatuses.length !== db.pipelineStatuses.length) {
-    db.pipelineStatuses = commercialStatuses;
     changed = true;
   }
   for (const lead of db.leads) {
@@ -455,6 +439,53 @@ async function routeApi(req, res, db) {
       integrations: canManageSettings(user) ? db.integrations : null,
       auditLog: canManageSettings(user) ? db.auditLog.slice(0, 25) : []
     });
+  }
+
+  if (method === "POST" && url.pathname === "/api/leads") {
+    if (!canManageLeads(user) && user.role !== "Corretor") return sendJson(res, 403, { error: "Sem permissão" });
+    if (!db.pipelineStatuses.length) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de adicionar leads" });
+    const body = await readBody(req);
+    const name = String(body.name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+    const requestedStatus = String(body.status || "").trim();
+    const status = db.pipelineStatuses.includes(requestedStatus) ? requestedStatus : db.pipelineStatuses[0];
+    const assignedUser = user.role === "Corretor"
+      ? user
+      : body.assignedTo
+        ? db.users.find((item) => item.id === body.assignedTo && item.role === "Corretor" && item.active)
+        : null;
+    if (body.assignedTo && user.role !== "Corretor" && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
+    const validTags = registeredTagNames(db);
+    const tags = Array.isArray(body.tags)
+      ? [...new Set(body.tags.map((tag) => String(tag).trim()).filter((tag) => tag && validTags.has(tag)))].slice(0, 12)
+      : [];
+    const now = new Date().toISOString();
+    const lead = {
+      id: `lead-${crypto.randomUUID()}`,
+      externalId: `MANUAL-${Date.now()}`,
+      name,
+      phone: String(body.phone || "").trim(),
+      assistant: "",
+      source: "MANUAL",
+      status,
+      inPipeline: true,
+      favorite: false,
+      assignedTo: assignedUser?.id || null,
+      assignedName: assignedUser?.name || "",
+      desiredProject: String(body.desiredProject || "").trim(),
+      desiredUnit: String(body.desiredUnit || "").trim(),
+      unitValue: String(body.unitValue || "").trim(),
+      notes: String(body.notes || "").trim(),
+      tags,
+      comments: [],
+      order: Date.now(),
+      createdAt: now,
+      updatedAt: now
+    };
+    db.leads.push(lead);
+    audit(db, user, "CREATE_LEAD", { leadId: lead.id, source: lead.source });
+    await saveDb(db);
+    return sendJson(res, 201, { lead });
   }
 
   const leadMatch = url.pathname.match(/^\/api\/leads\/([^/]+)$/);
@@ -762,10 +793,7 @@ async function routeApi(req, res, db) {
 async function handleRequest(req, res) {
   if (req.url.startsWith("/api/")) {
     const db = await loadDb();
-    routeApi(req, res, db).catch((error) => {
-      console.error(error);
-      sendJson(res, 500, { error: "Erro interno" });
-    });
+    return routeApi(req, res, db);
   } else {
     routeStatic(req, res);
   }
