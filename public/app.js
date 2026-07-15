@@ -86,6 +86,10 @@ function canManageSystemSettings() {
   return state.user?.role === "Admin TI";
 }
 
+function canManagePipelineSettings() {
+  return ["Admin TI", "Head Comercial"].includes(state.user?.role);
+}
+
 function editableRoles() {
   if (state.user?.role === "Admin TI") return state.roles;
   if (state.user?.role === "Head Comercial") return ["Supervisor Comercial", "Corretor"];
@@ -960,6 +964,7 @@ function renderLeadDetail() {
       </div>
       <div class="actions">
         <button data-back-lead>Voltar</button>
+        ${canManageLeads() ? `<button class="danger-button" data-delete-lead="${escapeHtml(lead.id)}">Excluir lead</button>` : ""}
         <button class="icon favorite ${lead.favorite ? "primary" : ""}" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button>
       </div>
     </div>
@@ -1008,6 +1013,19 @@ function renderLeadDetail() {
   `);
 
   document.querySelector("[data-back-lead]")?.addEventListener("click", () => routeTo(state.previousView || "kanban"));
+  document.querySelector("[data-delete-lead]")?.addEventListener("click", async (event) => {
+    if (!confirm("Excluir este lead definitivamente?")) return;
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Excluindo...");
+      await api(`/api/leads/${encodeURIComponent(lead.id)}`, { method: "DELETE" });
+      state.leads = state.leads.filter((item) => item.id !== lead.id);
+      routeTo(state.previousView || "kanban");
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
   bindLeadActions();
   document.querySelector("#leadDetailForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1120,11 +1138,11 @@ function settingsTabButton(tab, label) {
 function settingsLayout(content) {
   renderShell(`
     ${renderViewHead("Configurações", "Cadastros administrativos do sistema")}
-    <div class="tabs">
-      ${settingsTabButton("users", "Usuários")}
-      ${canManageSystemSettings() ? settingsTabButton("integrations", "Integrações") : ""}
-      ${canManageSystemSettings() ? settingsTabButton("statuses", "Status do pipeline") : ""}
-      ${canManageSystemSettings() ? settingsTabButton("tags", "Etiquetas") : ""}
+      <div class="tabs">
+        ${settingsTabButton("users", "Usuários")}
+        ${canManageSystemSettings() ? settingsTabButton("integrations", "Integrações") : ""}
+        ${canManagePipelineSettings() ? settingsTabButton("statuses", "Status do pipeline") : ""}
+        ${canManagePipelineSettings() ? settingsTabButton("tags", "Etiquetas") : ""}
     </div>
     ${content}
   `);
@@ -1138,7 +1156,8 @@ function settingsLayout(content) {
 }
 
 function renderSettings() {
-  if (!canManageSystemSettings()) state.settingsTab = "users";
+  if (state.settingsTab === "integrations" && !canManageSystemSettings()) state.settingsTab = "users";
+  if (["statuses", "tags"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "integrations") return renderIntegrationSettings();
   if (state.settingsTab === "statuses") return renderStatusSettings();
   if (state.settingsTab === "tags") return renderTagSettings();
@@ -1175,21 +1194,18 @@ function renderUserSettings() {
         <h2>Usuários</h2>
         <button class="primary" data-new-user>Cadastrar novo</button>
       </div>
-      ${(isCreating || editUser) ? `
-        <form id="userForm" class="form-grid editor">
-          <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(formUser.name || "")}" required></div>
-          <div class="field"><label>E-mail de acesso</label><input name="username" type="email" value="${escapeHtml(formUser.username || "")}" ${editUser ? "disabled" : "required"}></div>
-          <div class="field"><label>Perfil</label><select name="role">${roleOptions.map((role) => `<option ${role === formUser.role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select></div>
-          <div class="field"><label>Status</label><select name="active"><option value="true" ${formUser.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${formUser.active === false ? "selected" : ""}>Inativo</option></select></div>
-          <div class="field"><label>&nbsp;</label><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
-        </form>
-      ` : ""}
       <div class="table-wrap">
         <table><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th>Senha</th><th>Ações</th></tr></thead><tbody>${users}</tbody></table>
       </div>
     </section>
+    ${(isCreating || editUser) ? renderUserEditorModal(formUser, Boolean(editUser), roleOptions) : ""}
   `);
   bindSettingsCommon();
+  document.querySelector("[data-user-modal-backdrop]")?.addEventListener("click", (event) => {
+    if (event.target !== event.currentTarget) return;
+    state.settingsEditing = null;
+    renderSettings();
+  });
   document.querySelector("[data-new-user]")?.addEventListener("click", () => {
     state.settingsEditing = "new-user";
     renderSettings();
@@ -1279,6 +1295,26 @@ function renderUserSettings() {
       alert(error.message);
     }
   });
+}
+
+function renderUserEditorModal(formUser, isEditing, roleOptions) {
+  return `
+    <div class="modal-backdrop" data-user-modal-backdrop>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="userModalTitle">
+        <div class="panel-head">
+          <h2 id="userModalTitle">${isEditing ? "Editar usuário" : "Cadastrar usuário"}</h2>
+          <button type="button" class="icon" data-cancel-settings title="Fechar">×</button>
+        </div>
+        <form id="userForm" class="form-grid">
+          <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(formUser.name || "")}" required autofocus></div>
+          <div class="field"><label>E-mail de acesso</label><input name="username" type="email" value="${escapeHtml(formUser.username || "")}" ${isEditing ? "disabled" : "required"}></div>
+          <div class="field"><label>Perfil</label><select name="role">${roleOptions.map((role) => `<option ${role === formUser.role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select></div>
+          <div class="field"><label>Status</label><select name="active"><option value="true" ${formUser.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${formUser.active === false ? "selected" : ""}>Inativo</option></select></div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
+        </form>
+      </section>
+    </div>
+  `;
 }
 
 function integrationRows() {

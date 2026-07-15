@@ -389,6 +389,10 @@ function canManageSettings(user) {
   return user.role === "Admin TI";
 }
 
+function canManagePipelineSettings(user) {
+  return ["Admin TI", "Head Comercial"].includes(user.role);
+}
+
 function canManageUsers(user) {
   return ["Admin TI", "Head Comercial"].includes(user.role);
 }
@@ -661,6 +665,16 @@ async function routeApi(req, res, db) {
     return sendJson(res, 200, { lead: publicLead(lead, user) });
   }
 
+  if (leadMatch && method === "DELETE") {
+    if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const index = db.leads.findIndex((item) => item.id === leadMatch[1]);
+    if (index < 0) return notFound(res);
+    const [deleted] = db.leads.splice(index, 1);
+    audit(db, user, "DELETE_LEAD", { leadId: deleted.id, source: deleted.source });
+    await saveDb(db);
+    return sendJson(res, 200, { ok: true });
+  }
+
   const commentMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments$/);
   if (commentMatch && method === "POST") {
     const lead = db.leads.find((item) => item.id === commentMatch[1]);
@@ -830,7 +844,7 @@ async function routeApi(req, res, db) {
   }
 
   if (url.pathname === "/api/statuses" && method === "POST") {
-    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
     const name = String(body.name || "").trim();
     if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
@@ -842,7 +856,7 @@ async function routeApi(req, res, db) {
   }
 
   if (url.pathname === "/api/statuses/reorder" && method === "PUT") {
-    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
     const statuses = Array.isArray(body.statuses) ? body.statuses.map((status) => String(status).trim()).filter(Boolean) : [];
     if (statuses.length !== db.pipelineStatuses.length || new Set(statuses).size !== db.pipelineStatuses.length) {
@@ -859,7 +873,7 @@ async function routeApi(req, res, db) {
 
   const statusMatch = url.pathname.match(/^\/api\/statuses\/(\d+)$/);
   if (statusMatch && method === "PATCH") {
-    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const index = Number(statusMatch[1]);
     const oldName = db.pipelineStatuses[index];
     if (!oldName) return notFound(res);
@@ -879,7 +893,7 @@ async function routeApi(req, res, db) {
   }
 
   if (statusMatch && method === "DELETE") {
-    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const index = Number(statusMatch[1]);
     const status = db.pipelineStatuses[index];
     if (!status) return notFound(res);
@@ -893,7 +907,7 @@ async function routeApi(req, res, db) {
   }
 
   if (url.pathname === "/api/tags" && method === "POST") {
-    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
     const name = String(body.name || "").trim();
     if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
@@ -913,7 +927,7 @@ async function routeApi(req, res, db) {
 
   const tagMatch = url.pathname.match(/^\/api\/tags\/([^/]+)$/);
   if (tagMatch && method === "PATCH") {
-    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const tag = db.tagDefinitions.find((item) => item.id === tagMatch[1]);
     if (!tag) return notFound(res);
     const body = await readBody(req);
@@ -934,7 +948,7 @@ async function routeApi(req, res, db) {
   }
 
   if (tagMatch && method === "DELETE") {
-    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const index = db.tagDefinitions.findIndex((item) => item.id === tagMatch[1]);
     if (index < 0) return notFound(res);
     const [tag] = db.tagDefinitions.splice(index, 1);

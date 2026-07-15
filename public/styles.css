@@ -52,6 +52,17 @@ button.primary:hover {
   background: var(--brand-strong);
 }
 
+.danger-button {
+  background: #fff5f5;
+  border-color: #f3b8b5;
+  color: var(--danger);
+  font-weight: 800;
+}
+
+.danger-button:hover {
+  background: #fee4e2;
+}
+
 button.icon {
   width: 36px;
   padding: 0;
