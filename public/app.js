@@ -447,8 +447,16 @@ function bindPageFilters() {
   const favoriteToggle = document.querySelector("#pageFavoriteToggle");
   const addLeadButton = document.querySelector("#addLeadButton");
   search?.addEventListener("input", (event) => {
+    const cursorStart = event.target.selectionStart;
+    const cursorEnd = event.target.selectionEnd;
     state.search = event.target.value;
     renderApp();
+    requestAnimationFrame(() => {
+      const nextSearch = document.querySelector("#pageSearch");
+      if (!nextSearch) return;
+      nextSearch.focus();
+      nextSearch.setSelectionRange(cursorStart, cursorEnd);
+    });
   });
   favoriteToggle?.addEventListener("click", () => {
     state.favoritesOnly = !state.favoritesOnly;
