@@ -94,6 +94,11 @@ function activeBrokers() {
 
 function syncRouteFromLocation() {
   const path = window.location.pathname;
+  if (path === "/definir-senha") {
+    state.view = "password-setup";
+    state.leadId = null;
+    return;
+  }
   if (path.startsWith("/leads/")) {
     state.previousView = state.previousView || "kanban";
     state.view = "lead";
@@ -158,7 +163,7 @@ function metrics(leads = filteredLeads()) {
   return { total, favorites, assigned, active };
 }
 
-function renderLogin(error = "") {
+function renderLogin(error = "", message = "") {
   if (window.location.pathname !== "/login") history.replaceState({}, "", "/login");
   app.innerHTML = `
     <section class="login-page">
@@ -176,13 +181,14 @@ function renderLogin(error = "") {
             <h2>Acessar conta</h2>
             <p>Use seu usuário e senha para acessar o sistema.</p>
             <div class="field">
-              <label for="username">Usuário</label>
+              <label for="username">E-mail ou usuário</label>
               <input id="username" name="username" autocomplete="username" value="admin" required>
             </div>
             <div class="field">
               <label for="password">Senha</label>
               <input id="password" name="password" type="password" autocomplete="current-password" required>
             </div>
+            ${message ? `<div class="success">${escapeHtml(message)}</div>` : ""}
             ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
             <div class="field">
               <button class="primary login-submit" type="submit">Entrar</button>
@@ -213,6 +219,76 @@ function renderLogin(error = "") {
       routeTo(nextView);
     } catch (error) {
       renderLogin(error.message);
+    }
+  });
+}
+
+function passwordRuleList() {
+  return `
+    <ul class="password-rules">
+      <li>mínimo de 8 caracteres</li>
+      <li>letra maiúscula e minúscula</li>
+      <li>número</li>
+      <li>caractere especial</li>
+    </ul>
+  `;
+}
+
+function renderPasswordSetup(message = "", error = "") {
+  const token = new URLSearchParams(window.location.search).get("token") || "";
+  const invalidLink = !token;
+  app.innerHTML = `
+    <section class="login-page">
+      <div class="login-frame">
+        <section class="login-intro">
+          <img src="/logo-mauad-branco.png" alt="Construtora Mauad">
+          <span>Pipeline Comercial</span>
+          <h1>Crie uma senha segura para acessar o sistema.</h1>
+          <p>Este convite é individual, temporário e será invalidado depois do primeiro uso.</p>
+          <small>Ambiente protegido para a equipe comercial da Construtora Mauad.</small>
+        </section>
+        <section class="login-panel">
+          <form class="login-box" id="passwordSetupForm">
+            <span class="eyebrow">Primeiro acesso</span>
+            <h2>Definir senha</h2>
+            <p>Use uma senha forte para concluir seu acesso.</p>
+            ${passwordRuleList()}
+            <div class="field">
+              <label for="password">Senha</label>
+              <input id="password" name="password" type="password" autocomplete="new-password" ${invalidLink ? "disabled" : "required"}>
+            </div>
+            <div class="field">
+              <label for="confirmPassword">Confirmar senha</label>
+              <input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" ${invalidLink ? "disabled" : "required"}>
+            </div>
+            ${message ? `<div class="success">${escapeHtml(message)}</div>` : ""}
+            ${invalidLink ? '<div class="error">Link inválido ou sem token.</div>' : ""}
+            ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
+            <div class="field">
+              <button class="primary login-submit" type="submit" ${invalidLink ? "disabled" : ""}>Salvar senha</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </section>
+  `;
+  if (invalidLink) return;
+  document.querySelector("#passwordSetupForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      await api("/api/password/setup", {
+        method: "POST",
+        body: JSON.stringify({
+          token,
+          password: form.get("password"),
+          confirmPassword: form.get("confirmPassword")
+        })
+      });
+      history.replaceState({}, "", "/login");
+      renderLogin("", "Senha criada com sucesso. Faça login para continuar.");
+    } catch (setupError) {
+      renderPasswordSetup("", setupError.message);
     }
   });
 }
@@ -1008,9 +1084,11 @@ function renderUserSettings() {
       <td>${escapeHtml(user.username)}</td>
       <td>${escapeHtml(user.role)}</td>
       <td class="${user.active ? "status-active" : "status-inactive"}">${user.active ? "Ativo" : "Inativo"}</td>
+      <td>${user.passwordConfigured ? '<span class="chip">Senha criada</span>' : user.invitePending ? '<span class="chip">Convite pendente</span>' : '<span class="chip">Sem senha</span>'}</td>
       <td>
         <div class="row-actions">
           <button data-edit-user="${escapeHtml(user.id)}">Editar</button>
+          <button data-invite-user="${escapeHtml(user.id)}">${user.passwordConfigured ? "Redefinir senha" : "Reenviar convite"}</button>
           <button data-delete-user="${escapeHtml(user.id)}">Excluir</button>
         </div>
       </td>
@@ -1025,15 +1103,14 @@ function renderUserSettings() {
       ${(isCreating || editUser) ? `
         <form id="userForm" class="form-grid editor">
           <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(formUser.name || "")}" required></div>
-          <div class="field"><label>Usuário</label><input name="username" value="${escapeHtml(formUser.username || "")}" ${editUser ? "disabled" : "required"}></div>
+          <div class="field"><label>E-mail de acesso</label><input name="username" type="email" value="${escapeHtml(formUser.username || "")}" ${editUser ? "disabled" : "required"}></div>
           <div class="field"><label>Perfil</label><select name="role">${state.roles.map((role) => `<option ${role === formUser.role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select></div>
-          <div class="field"><label>Senha</label><input name="password" type="password" placeholder="${editUser ? "Manter senha atual" : ""}"></div>
           <div class="field"><label>Status</label><select name="active"><option value="true" ${formUser.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${formUser.active === false ? "selected" : ""}>Inativo</option></select></div>
           <div class="field"><label>&nbsp;</label><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Status</th><th>Ações</th></tr></thead><tbody>${users}</tbody></table>
+        <table><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th>Senha</th><th>Ações</th></tr></thead><tbody>${users}</tbody></table>
       </div>
     </section>
   `);
@@ -1056,22 +1133,34 @@ function renderUserSettings() {
       renderSettings();
     });
   });
+  document.querySelectorAll("[data-invite-user]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const data = await api(`/api/users/${button.dataset.inviteUser}/invite`, { method: "POST" });
+      await loadState();
+      renderSettings();
+      if (!data.invitation?.sent && data.invitation?.link) {
+        prompt("Resend ainda não está configurado. Use este link de convite para teste:", data.invitation.link);
+      }
+    });
+  });
   document.querySelector("#userForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const payload = {
       name: form.get("name"),
       role: form.get("role"),
-      password: form.get("password"),
       active: form.get("active") === "true"
     };
     if (editUser) {
       await api(`/api/users/${editUser.id}`, { method: "PATCH", body: JSON.stringify(payload) });
     } else {
-      await api("/api/users", {
+      const data = await api("/api/users", {
         method: "POST",
         body: JSON.stringify({ ...payload, username: form.get("username") })
       });
+      if (!data.invitation?.sent && data.invitation?.link) {
+        prompt("Resend ainda não está configurado. Use este link de convite para teste:", data.invitation.link);
+      }
     }
     state.settingsEditing = null;
     await loadState();
@@ -1309,6 +1398,7 @@ function bindSettingsCommon() {
 }
 
 function renderApp() {
+  if (state.view === "password-setup") return renderPasswordSetup();
   if (state.view === "lead") return renderLeadDetail();
   if (state.view === "kanban") return renderKanban();
   if (state.view === "sheet") return renderSheet();
@@ -1320,6 +1410,10 @@ function renderApp() {
 (async function boot() {
   try {
     syncRouteFromLocation();
+    if (state.view === "password-setup") {
+      renderPasswordSetup();
+      return;
+    }
     await loadState();
     renderApp();
   } catch {
@@ -1329,5 +1423,9 @@ function renderApp() {
 
 window.addEventListener("popstate", () => {
   syncRouteFromLocation();
+  if (state.view === "password-setup") {
+    renderPasswordSetup();
+    return;
+  }
   if (state.user) renderApp();
 });

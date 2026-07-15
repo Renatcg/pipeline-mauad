@@ -10,6 +10,7 @@ const DB_PATH = path.join(DATA_DIR, "db.json");
 const SEED_PATH = path.join(DATA_DIR, "seed.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const PASSWORD_SETUP_TTL_MS = 1000 * 60 * 60 * 24;
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor"];
 const DEFAULT_TAG_DEFINITIONS = [
   { id: "tag-quente", name: "Quente", color: "#d92d20" },
@@ -21,6 +22,8 @@ const DEFAULT_TAG_DEFINITIONS = [
 ];
 const DATABASE_URL = process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
+const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const EMAIL_FROM = process.env.EMAIL_FROM || "Pipeline Mauad <onboarding@resend.dev>";
 let sqlClientPromise = null;
 
 function readJson(file) {
@@ -42,6 +45,19 @@ function verifyPassword(password, stored) {
   const [salt, expected] = stored.split(":");
   const actual = crypto.pbkdf2Sync(password, salt, 210000, 32, "sha256");
   return crypto.timingSafeEqual(Buffer.from(expected, "hex"), actual);
+}
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function buildDefaultDb() {
@@ -226,6 +242,71 @@ function registeredTagNames(db) {
   return new Set((db.tagDefinitions || []).map((tag) => tag.name));
 }
 
+function validatePasswordPolicy(password) {
+  const value = String(password || "");
+  if (value.length < 8) return "A senha deve ter no mínimo 8 caracteres";
+  if (!/[a-z]/.test(value)) return "A senha precisa ter uma letra minúscula";
+  if (!/[A-Z]/.test(value)) return "A senha precisa ter uma letra maiúscula";
+  if (!/[0-9]/.test(value)) return "A senha precisa ter um número";
+  if (!/[^A-Za-z0-9]/.test(value)) return "A senha precisa ter um caractere especial";
+  return "";
+}
+
+function publicBaseUrl(req) {
+  const configured = String(process.env.APP_URL || process.env.VERCEL_PROJECT_PRODUCTION_URL || "").trim();
+  if (configured) return configured.startsWith("http") ? configured.replace(/\/$/, "") : `https://${configured.replace(/\/$/, "")}`;
+  const protocol = req.headers["x-forwarded-proto"] || "http";
+  return `${protocol}://${req.headers.host}`;
+}
+
+function createPasswordSetup(user) {
+  const token = crypto.randomBytes(32).toString("base64url");
+  const now = new Date();
+  user.passwordSetup = {
+    tokenHash: hashToken(token),
+    expiresAt: new Date(now.getTime() + PASSWORD_SETUP_TTL_MS).toISOString(),
+    sentAt: now.toISOString()
+  };
+  user.passwordHash = null;
+  return token;
+}
+
+function findUserByPasswordSetupToken(db, token) {
+  const tokenHash = hashToken(String(token || ""));
+  const now = Date.now();
+  return db.users.find((item) => item.passwordSetup?.tokenHash === tokenHash && new Date(item.passwordSetup.expiresAt).getTime() > now);
+}
+
+async function sendPasswordSetupEmail(req, user, token) {
+  const link = `${publicBaseUrl(req)}/definir-senha?token=${encodeURIComponent(token)}`;
+  if (!RESEND_API_KEY) return { sent: false, link, reason: "RESEND_API_KEY ausente" };
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      from: EMAIL_FROM,
+      to: user.username,
+      subject: "Crie sua senha no Pipeline Comercial | Construtora Mauad",
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#17202a">
+          <h1 style="font-size:22px">Acesso ao Pipeline Comercial</h1>
+          <p>Olá, ${escapeHtml(user.name)}.</p>
+          <p>Você foi cadastrado no Pipeline Comercial da Construtora Mauad. Clique no botão abaixo para criar sua senha.</p>
+          <p><a href="${link}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:12px 18px;border-radius:7px;font-weight:700">Criar minha senha</a></p>
+          <p>Este link expira em 24 horas e só pode ser usado uma vez.</p>
+          <p style="font-size:12px;color:#657382">Se você não reconhece este convite, ignore este e-mail.</p>
+        </div>
+      `
+    })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return { sent: false, link, reason: data.message || "Falha no envio do Resend" };
+  return { sent: true, id: data.id };
+}
+
 function parseCookies(req) {
   return Object.fromEntries(
     (req.headers.cookie || "")
@@ -277,8 +358,13 @@ function readSession(req) {
 }
 
 function publicUser(user) {
-  const { passwordHash, ...safe } = user;
-  return safe;
+  const { passwordHash, passwordSetup, ...safe } = user;
+  return {
+    ...safe,
+    passwordConfigured: Boolean(passwordHash),
+    invitePending: Boolean(passwordSetup && !passwordHash && new Date(passwordSetup.expiresAt).getTime() > Date.now()),
+    inviteExpiresAt: passwordSetup?.expiresAt || null
+  };
 }
 
 function requireAuth(req, res, db) {
@@ -407,10 +493,13 @@ async function routeApi(req, res, db) {
 
   if (method === "POST" && url.pathname === "/api/login") {
     const body = await readBody(req);
-    const user = db.users.find((item) => item.username === String(body.username || "").trim());
-    if (!user || !user.active || !verifyPassword(String(body.password || ""), user.passwordHash)) {
+    const login = String(body.username || "").trim().toLowerCase();
+    const user = db.users.find((item) => String(item.username || "").toLowerCase() === login);
+    if (!user || !user.active) {
       return sendJson(res, 401, { error: "Usuário ou senha inválidos" });
     }
+    if (!user.passwordHash) return sendJson(res, 403, { error: "Senha ainda não cadastrada. Use o link enviado por e-mail." });
+    if (!verifyPassword(String(body.password || ""), user.passwordHash)) return sendJson(res, 401, { error: "Usuário ou senha inválidos" });
     const sid = signSession({ userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
     return sendJson(res, 200, { user: publicUser(user) }, {
       "Set-Cookie": `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`
@@ -419,6 +508,29 @@ async function routeApi(req, res, db) {
 
   if (method === "POST" && url.pathname === "/api/logout") {
     return sendJson(res, 200, { ok: true }, { "Set-Cookie": "sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0" });
+  }
+
+  if (method === "POST" && url.pathname === "/api/password/setup/validate") {
+    const body = await readBody(req);
+    const target = findUserByPasswordSetupToken(db, body.token);
+    if (!target) return sendJson(res, 400, { error: "Link inválido ou expirado" });
+    return sendJson(res, 200, { user: { name: target.name, username: target.username } });
+  }
+
+  if (method === "POST" && url.pathname === "/api/password/setup") {
+    const body = await readBody(req);
+    const target = findUserByPasswordSetupToken(db, body.token);
+    if (!target) return sendJson(res, 400, { error: "Link inválido ou expirado" });
+    const password = String(body.password || "");
+    if (password !== String(body.confirmPassword || "")) return sendJson(res, 400, { error: "As senhas não conferem" });
+    const policyError = validatePasswordPolicy(password);
+    if (policyError) return sendJson(res, 400, { error: policyError });
+    target.passwordHash = hashPassword(password);
+    target.passwordSetup = null;
+    target.updatedAt = new Date().toISOString();
+    audit(db, target, "SET_PASSWORD", { userId: target.id });
+    await saveDb(db);
+    return sendJson(res, 200, { ok: true });
   }
 
   const user = requireAuth(req, res, db);
@@ -570,8 +682,8 @@ async function routeApi(req, res, db) {
     if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
     const username = String(body.username || "").trim().toLowerCase();
-    if (!username || db.users.some((item) => item.username === username)) {
-      return sendJson(res, 400, { error: "Usuário inválido ou já existente" });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(username) || db.users.some((item) => item.username === username)) {
+      return sendJson(res, 400, { error: "E-mail inválido ou já existente" });
     }
     if (!ROLES.includes(body.role)) return sendJson(res, 400, { error: "Perfil inválido" });
     const now = new Date().toISOString();
@@ -581,14 +693,16 @@ async function routeApi(req, res, db) {
       username,
       role: body.role,
       active: Boolean(body.active),
-      passwordHash: body.password ? hashPassword(String(body.password)) : null,
+      passwordHash: null,
       createdAt: now,
       updatedAt: now
     };
+    const token = createPasswordSetup(newUser);
     db.users.push(newUser);
-    audit(db, user, "CREATE_USER", { userId: newUser.id, role: newUser.role });
+    const invitation = await sendPasswordSetupEmail(req, newUser, token);
+    audit(db, user, "CREATE_USER", { userId: newUser.id, role: newUser.role, invitationSent: invitation.sent });
     await saveDb(db);
-    return sendJson(res, 201, { user: publicUser(newUser) });
+    return sendJson(res, 201, { user: publicUser(newUser), invitation });
   }
 
   const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
@@ -600,11 +714,25 @@ async function routeApi(req, res, db) {
     for (const key of ["name", "role", "active"]) {
       if (Object.prototype.hasOwnProperty.call(body, key)) target[key] = body[key];
     }
-    if (body.password) target.passwordHash = hashPassword(String(body.password));
     target.updatedAt = new Date().toISOString();
-    audit(db, user, "UPDATE_USER", { userId: target.id, changes: { ...body, password: body.password ? "***" : undefined } });
+    audit(db, user, "UPDATE_USER", { userId: target.id, changes: body });
     await saveDb(db);
     return sendJson(res, 200, { user: publicUser(target) });
+  }
+
+  const inviteMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/invite$/);
+  if (inviteMatch && method === "POST") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const target = db.users.find((item) => item.id === inviteMatch[1]);
+    if (!target) return notFound(res);
+    if (!target.active) return sendJson(res, 400, { error: "Ative o usuário antes de enviar convite" });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target.username)) return sendJson(res, 400, { error: "Usuário sem e-mail válido" });
+    const token = createPasswordSetup(target);
+    target.updatedAt = new Date().toISOString();
+    const invitation = await sendPasswordSetupEmail(req, target, token);
+    audit(db, user, "SEND_PASSWORD_INVITE", { userId: target.id, invitationSent: invitation.sent });
+    await saveDb(db);
+    return sendJson(res, 200, { user: publicUser(target), invitation });
   }
 
   if (userMatch && method === "DELETE") {

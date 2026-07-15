@@ -224,6 +224,19 @@ textarea {
   margin-top: 12px;
 }
 
+.success {
+  color: var(--ok);
+  margin-top: 12px;
+  font-weight: 700;
+}
+
+.password-rules {
+  margin: -8px 0 8px;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .login-submit {
   width: 100%;
   min-height: 48px;
