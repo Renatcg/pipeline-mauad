@@ -1,4 +1,5 @@
 const app = document.querySelector("#app");
+const INACTIVITY_LIMIT_MS = 1000 * 60 * 5;
 
 const state = {
   user: null,
@@ -18,6 +19,7 @@ const state = {
   baseSource: "ODYSSEIA",
   favoriteRequests: {},
   brokerMenuBound: false,
+  inactivityTimer: null,
   favoritesOnly: false,
   search: ""
 };
@@ -69,6 +71,28 @@ async function api(path, options = {}) {
 function allowedViews() {
   return profileAccess[state.user?.role] || [];
 }
+
+function clearInactivityTimer() {
+  if (state.inactivityTimer) clearTimeout(state.inactivityTimer);
+  state.inactivityTimer = null;
+}
+
+function resetInactivityTimer() {
+  if (!state.user) return;
+  clearInactivityTimer();
+  state.inactivityTimer = setTimeout(async () => {
+    state.user = null;
+    try {
+      await api("/api/logout", { method: "POST" });
+    } catch {}
+    history.pushState({}, "", "/login");
+    renderLogin("Sessão expirada por inatividade.");
+  }, INACTIVITY_LIMIT_MS);
+}
+
+["click", "keydown", "mousemove", "scroll", "touchstart"].forEach((eventName) => {
+  window.addEventListener(eventName, resetInactivityTimer, { passive: true });
+});
 
 function userName(id) {
   return state.users.find((user) => user.id === id)?.name || "";
@@ -164,13 +188,17 @@ function baseSources() {
     .map((lead) => lead.source)
     .filter(Boolean))].sort();
   if (sources.includes("ODYSSEIA")) sources.unshift(...sources.splice(sources.indexOf("ODYSSEIA"), 1));
-  return sources;
+  return sources.length ? ["TODOS", ...sources] : [];
 }
 
 function baseLeads() {
   const sources = baseSources();
-  if (!sources.includes(state.baseSource)) state.baseSource = sources[0] || "ODYSSEIA";
-  return filteredLeads().filter((lead) => lead.source === state.baseSource && (!lead.inPipeline || lead.sourceStatus || lead.odysseiaStatus));
+  if (!sources.includes(state.baseSource)) state.baseSource = sources[0] || "TODOS";
+  return filteredLeads().filter((lead) => {
+    const isBaseLead = !lead.inPipeline || lead.sourceStatus || lead.odysseiaStatus;
+    if (!isBaseLead) return false;
+    return state.baseSource === "TODOS" || lead.source === state.baseSource;
+  });
 }
 
 function baseLeadCount() {
@@ -246,6 +274,7 @@ function renderLogin(error = "", message = "") {
         })
       });
       state.user = result.user;
+      resetInactivityTimer();
       await loadState();
       if (state.view === "lead" && state.leadId) {
         routeTo("lead", state.leadId);
@@ -332,6 +361,7 @@ function renderPasswordSetup(message = "", error = "") {
 async function loadState() {
   const data = await api("/api/state");
   state.user = data.user;
+  resetInactivityTimer();
   state.roles = data.roles;
   state.statuses = data.pipelineStatuses;
   state.tagDefinitions = data.tagDefinitions || [];
@@ -384,6 +414,8 @@ function renderShell(content) {
   bindPageFilters();
   bindCreateLeadModal();
   document.querySelector("#logout").addEventListener("click", async () => {
+    clearInactivityTimer();
+    state.user = null;
     await api("/api/logout", { method: "POST" });
     history.pushState({}, "", "/login");
     renderLogin();
@@ -863,7 +895,7 @@ function renderSheet() {
 function renderBaseSources(sources) {
   return `
     <div class="tabs base-tabs">
-      ${sources.map((source) => `<button class="${state.baseSource === source ? "active" : ""}" data-base-source="${escapeHtml(source)}">${escapeHtml(source)}</button>`).join("")}
+      ${sources.map((source) => `<button class="${state.baseSource === source ? "active" : ""}" data-base-source="${escapeHtml(source)}">${escapeHtml(source === "TODOS" ? "Todos" : source)}</button>`).join("")}
     </div>
   `;
 }

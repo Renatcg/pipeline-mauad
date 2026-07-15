@@ -9,7 +9,7 @@ const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? path.join("/tmp",
 const DB_PATH = path.join(DATA_DIR, "db.json");
 const SEED_PATH = path.join(DATA_DIR, "seed.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
-const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const SESSION_TTL_MS = 1000 * 60 * 5;
 const PASSWORD_SETUP_TTL_MS = 1000 * 60 * 60 * 24;
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor"];
 const DEFAULT_TAG_DEFINITIONS = [
@@ -349,6 +349,11 @@ function signSession(payload) {
   return `${body}.${sig}`;
 }
 
+function sessionCookie(userId) {
+  const sid = signSession({ userId, expiresAt: Date.now() + SESSION_TTL_MS });
+  return `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`;
+}
+
 function readSession(req) {
   const token = parseCookies(req).sid;
   if (!token || !token.includes(".")) return null;
@@ -382,6 +387,7 @@ function requireAuth(req, res, db) {
     sendJson(res, 401, { error: "Usuário inativo" });
     return null;
   }
+  res.setHeader("Set-Cookie", sessionCookie(user.id));
   return user;
 }
 
@@ -526,9 +532,8 @@ async function routeApi(req, res, db) {
     }
     if (!user.passwordHash) return sendJson(res, 403, { error: "Senha ainda não cadastrada. Use o link enviado por e-mail." });
     if (!verifyPassword(String(body.password || ""), user.passwordHash)) return sendJson(res, 401, { error: "Usuário ou senha inválidos" });
-    const sid = signSession({ userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
     return sendJson(res, 200, { user: publicUser(user) }, {
-      "Set-Cookie": `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`
+      "Set-Cookie": sessionCookie(user.id)
     });
   }
 
