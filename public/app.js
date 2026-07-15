@@ -15,6 +15,7 @@ const state = {
   previousView: "kanban",
   settingsTab: "users",
   settingsEditing: null,
+  settingsNotice: "",
   creatingLead: false,
   baseSource: "ODYSSEIA",
   favoriteRequests: {},
@@ -1190,6 +1191,7 @@ function settingsLayout(content) {
     button.addEventListener("click", () => {
       state.settingsTab = button.dataset.settingsTab;
       state.settingsEditing = null;
+      state.settingsNotice = "";
       renderSettings();
     });
   });
@@ -1234,6 +1236,7 @@ function renderUserSettings() {
         <h2>Usuários</h2>
         <button class="primary" data-new-user>Cadastrar novo</button>
       </div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
       <div class="table-wrap">
         <table><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th>Senha</th><th>Ações</th></tr></thead><tbody>${users}</tbody></table>
       </div>
@@ -1244,15 +1247,18 @@ function renderUserSettings() {
   document.querySelector("[data-user-modal-backdrop]")?.addEventListener("click", (event) => {
     if (event.target !== event.currentTarget) return;
     state.settingsEditing = null;
+    state.settingsNotice = "";
     renderSettings();
   });
   document.querySelector("[data-new-user]")?.addEventListener("click", () => {
     state.settingsEditing = "new-user";
+    state.settingsNotice = "";
     renderSettings();
   });
   document.querySelectorAll("[data-edit-user]").forEach((button) => {
     button.addEventListener("click", () => {
       state.settingsEditing = button.dataset.editUser;
+      state.settingsNotice = "";
       renderSettings();
     });
   });
@@ -1272,9 +1278,15 @@ function renderUserSettings() {
   });
   document.querySelectorAll("[data-invite-user]").forEach((button) => {
     button.addEventListener("click", async () => {
+      const invitedUser = state.users.find((user) => user.id === button.dataset.inviteUser);
       try {
         setButtonBusy(button, true, "Enviando...");
         const data = await api(`/api/users/${button.dataset.inviteUser}/invite`, { method: "POST" });
+        const email = data.user?.username || invitedUser?.username || "";
+        const invitationLabel = invitedUser?.passwordConfigured ? "Convite de redefinição enviado" : "Convite reenviado";
+        state.settingsNotice = data.invitation?.sent
+          ? `${invitationLabel} com sucesso para o usuário com e-mail ${email}.`
+          : `Convite gerado para o usuário com e-mail ${email}. O envio por e-mail não foi confirmado.`;
         await loadState();
         renderSettings();
         if (!data.invitation?.sent && data.invitation?.link) {
