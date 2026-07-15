@@ -24,7 +24,7 @@ const state = {
 
 const profileAccess = {
   "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "settings"],
-  "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard"],
+  "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "settings"],
   "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard"],
   Diretoria: ["dashboard", "sheet", "odysseia", "kanban"],
   Corretor: ["kanban", "sheet", "odysseia"]
@@ -78,8 +78,26 @@ function canManageLeads() {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(state.user?.role);
 }
 
+function canManageUsers() {
+  return ["Admin TI", "Head Comercial"].includes(state.user?.role);
+}
+
+function canManageSystemSettings() {
+  return state.user?.role === "Admin TI";
+}
+
+function editableRoles() {
+  if (state.user?.role === "Admin TI") return state.roles;
+  if (state.user?.role === "Head Comercial") return ["Supervisor Comercial", "Corretor"];
+  return [];
+}
+
 function canCreateLeads() {
   return canManageLeads() || state.user?.role === "Corretor";
+}
+
+function canRollbackLead(lead) {
+  return canManageLeads() || (state.user?.role === "Corretor" && lead.assignedTo === state.user.id);
 }
 
 function activeBrokerForLead(lead) {
@@ -161,6 +179,20 @@ function metrics(leads = filteredLeads()) {
   const assigned = leads.filter((lead) => lead.assignedTo).length;
   const active = leads.filter((lead) => !["Desqualificado", "Arquivado (Permanentemente)"].includes(lead.status)).length;
   return { total, favorites, assigned, active };
+}
+
+function setButtonBusy(button, busy, label = "Aguarde...") {
+  if (!button) return;
+  if (busy) {
+    button.dataset.previousText = button.textContent;
+    button.textContent = label;
+    button.disabled = true;
+    button.classList.add("is-busy");
+  } else {
+    button.textContent = button.dataset.previousText || button.textContent;
+    button.disabled = false;
+    button.classList.remove("is-busy");
+  }
 }
 
 function renderLogin(error = "", message = "") {
@@ -629,10 +661,16 @@ function bindLeadActions() {
       const lead = state.leads.find((item) => item.id === button.dataset.assignBroker);
       if (!lead) return;
       const assignedTo = button.dataset.brokerId || null;
+      const previous = { assignedTo: lead.assignedTo, assignedName: lead.assignedName };
+      const broker = state.users.find((user) => user.id === assignedTo);
+      lead.assignedTo = assignedTo;
+      lead.assignedName = broker?.name || "";
       try {
+        setButtonBusy(button, true, "Direcionando...");
         await patchLead(lead.id, { assignedTo });
         renderApp();
       } catch (error) {
+        Object.assign(lead, previous);
         alert(error.message);
         renderApp();
       }
@@ -654,8 +692,16 @@ function bindLeadActions() {
       const lead = state.leads.find((item) => item.id === button.dataset.assignTag);
       const tag = button.dataset.tag;
       if (!lead || !tag) return;
-      await patchLead(lead.id, { tags: [...new Set([...leadTags(lead), tag])] });
+      const previous = leadTags(lead);
+      lead.tags = [...new Set([...previous, tag])];
       renderApp();
+      try {
+        await patchLead(lead.id, { tags: lead.tags });
+      } catch (error) {
+        lead.tags = previous;
+        alert(error.message);
+        renderApp();
+      }
     });
   });
   if (!state.brokerMenuBound) {
@@ -669,8 +715,16 @@ function bindLeadActions() {
     button.addEventListener("click", async (event) => {
       event.stopPropagation();
       const lead = state.leads.find((item) => item.id === button.dataset.removeTag);
-      await patchLead(lead.id, { tags: leadTags(lead).filter((tag) => tag !== button.dataset.tag) });
+      const previous = leadTags(lead);
+      lead.tags = previous.filter((tag) => tag !== button.dataset.tag);
       renderApp();
+      try {
+        await patchLead(lead.id, { tags: lead.tags });
+      } catch (error) {
+        lead.tags = previous;
+        alert(error.message);
+        renderApp();
+      }
     });
   });
 }
@@ -750,7 +804,7 @@ function leadRows(leads, options = {}) {
       <td>${escapeHtml(lead.assignedName || userName(lead.assignedTo))}</td>
       <td>${escapeHtml(lead.source)}</td>
       ${options.hideTags ? "" : `<td>${renderLeadTags(lead, !options.withRescue)}</td>`}
-      ${options.withRescue ? `<td>${lead.inPipeline ? '<span class="chip">No pipeline</span>' : `<button class="primary" data-rescue="${escapeHtml(lead.id)}">Resgatar</button>`}</td>` : ""}
+      ${options.withRescue ? `<td>${lead.inPipeline ? (canRollbackLead(lead) ? `<button data-rollback="${escapeHtml(lead.id)}">Rollback</button>` : '<span class="chip">No pipeline</span>') : `<button class="primary" data-rescue="${escapeHtml(lead.id)}">Resgatar</button>`}</td>` : ""}
     </tr>
   `).join("");
 }
@@ -837,11 +891,27 @@ function renderLeadBases() {
   document.querySelectorAll("[data-rescue]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
+        setButtonBusy(button, true, "Resgatando...");
         const result = await api(`/api/leads/${button.dataset.rescue}/rescue`, { method: "POST" });
         const lead = state.leads.find((item) => item.id === result.lead.id);
         Object.assign(lead, result.lead);
         renderLeadBases();
       } catch (error) {
+        setButtonBusy(button, false);
+        alert(error.message);
+      }
+    });
+  });
+  document.querySelectorAll("[data-rollback]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        setButtonBusy(button, true, "Voltando...");
+        const result = await api(`/api/leads/${button.dataset.rollback}/rollback`, { method: "POST" });
+        const lead = state.leads.find((item) => item.id === result.lead.id);
+        Object.assign(lead, result.lead);
+        renderLeadBases();
+      } catch (error) {
+        setButtonBusy(button, false);
         alert(error.message);
       }
     });
@@ -1052,9 +1122,9 @@ function settingsLayout(content) {
     ${renderViewHead("Configurações", "Cadastros administrativos do sistema")}
     <div class="tabs">
       ${settingsTabButton("users", "Usuários")}
-      ${settingsTabButton("integrations", "Integrações")}
-      ${settingsTabButton("statuses", "Status do pipeline")}
-      ${settingsTabButton("tags", "Etiquetas")}
+      ${canManageSystemSettings() ? settingsTabButton("integrations", "Integrações") : ""}
+      ${canManageSystemSettings() ? settingsTabButton("statuses", "Status do pipeline") : ""}
+      ${canManageSystemSettings() ? settingsTabButton("tags", "Etiquetas") : ""}
     </div>
     ${content}
   `);
@@ -1068,6 +1138,7 @@ function settingsLayout(content) {
 }
 
 function renderSettings() {
+  if (!canManageSystemSettings()) state.settingsTab = "users";
   if (state.settingsTab === "integrations") return renderIntegrationSettings();
   if (state.settingsTab === "statuses") return renderStatusSettings();
   if (state.settingsTab === "tags") return renderTagSettings();
@@ -1078,7 +1149,11 @@ function renderUserSettings() {
   const isCreating = state.settingsEditing === "new-user";
   const editUser = state.users.find((user) => user.id === state.settingsEditing);
   const formUser = editUser || {};
-  const users = state.users.map((user) => `
+  const roleOptions = editableRoles();
+  const manageableUserRows = state.user?.role === "Head Comercial"
+    ? state.users.filter((user) => roleOptions.includes(user.role))
+    : state.users;
+  const users = manageableUserRows.map((user) => `
     <tr>
       <td>${escapeHtml(user.name)}</td>
       <td>${escapeHtml(user.username)}</td>
@@ -1089,7 +1164,7 @@ function renderUserSettings() {
         <div class="row-actions">
           <button data-edit-user="${escapeHtml(user.id)}">Editar</button>
           <button data-invite-user="${escapeHtml(user.id)}">${user.passwordConfigured ? "Redefinir senha" : "Reenviar convite"}</button>
-          <button data-delete-user="${escapeHtml(user.id)}">Excluir</button>
+          ${canManageSystemSettings() ? `<button data-delete-user="${escapeHtml(user.id)}">Excluir</button>` : ""}
         </div>
       </td>
     </tr>
@@ -1104,7 +1179,7 @@ function renderUserSettings() {
         <form id="userForm" class="form-grid editor">
           <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(formUser.name || "")}" required></div>
           <div class="field"><label>E-mail de acesso</label><input name="username" type="email" value="${escapeHtml(formUser.username || "")}" ${editUser ? "disabled" : "required"}></div>
-          <div class="field"><label>Perfil</label><select name="role">${state.roles.map((role) => `<option ${role === formUser.role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select></div>
+          <div class="field"><label>Perfil</label><select name="role">${roleOptions.map((role) => `<option ${role === formUser.role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select></div>
           <div class="field"><label>Status</label><select name="active"><option value="true" ${formUser.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${formUser.active === false ? "selected" : ""}>Inativo</option></select></div>
           <div class="field"><label>&nbsp;</label><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
@@ -1128,43 +1203,81 @@ function renderUserSettings() {
   document.querySelectorAll("[data-delete-user]").forEach((button) => {
     button.addEventListener("click", async () => {
       if (!confirm("Excluir este usuário?")) return;
-      await api(`/api/users/${button.dataset.deleteUser}`, { method: "DELETE" });
-      await loadState();
-      renderSettings();
+      try {
+        setButtonBusy(button, true);
+        await api(`/api/users/${button.dataset.deleteUser}`, { method: "DELETE" });
+        await loadState();
+        renderSettings();
+      } catch (error) {
+        setButtonBusy(button, false);
+        alert(error.message);
+      }
     });
   });
   document.querySelectorAll("[data-invite-user]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const data = await api(`/api/users/${button.dataset.inviteUser}/invite`, { method: "POST" });
-      await loadState();
-      renderSettings();
-      if (!data.invitation?.sent && data.invitation?.link) {
-        prompt("Resend ainda não está configurado. Use este link de convite para teste:", data.invitation.link);
+      try {
+        setButtonBusy(button, true, "Enviando...");
+        const data = await api(`/api/users/${button.dataset.inviteUser}/invite`, { method: "POST" });
+        await loadState();
+        renderSettings();
+        if (!data.invitation?.sent && data.invitation?.link) {
+          prompt("Resend ainda não está configurado. Use este link de convite para teste:", data.invitation.link);
+        }
+      } catch (error) {
+        setButtonBusy(button, false);
+        alert(error.message);
       }
     });
   });
   document.querySelector("#userForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const submitButton = event.currentTarget.querySelector('button[type="submit"]');
     const form = new FormData(event.currentTarget);
     const payload = {
       name: form.get("name"),
       role: form.get("role"),
       active: form.get("active") === "true"
     };
-    if (editUser) {
-      await api(`/api/users/${editUser.id}`, { method: "PATCH", body: JSON.stringify(payload) });
-    } else {
-      const data = await api("/api/users", {
-        method: "POST",
-        body: JSON.stringify({ ...payload, username: form.get("username") })
-      });
-      if (!data.invitation?.sent && data.invitation?.link) {
-        prompt("Resend ainda não está configurado. Use este link de convite para teste:", data.invitation.link);
+    if (editUser?.role === "Corretor" && editUser.active && payload.active === false) {
+      const assignedCount = state.leads.filter((lead) => lead.inPipeline && lead.assignedTo === editUser.id).length;
+      if (assignedCount) {
+        const brokers = activeBrokers().filter((broker) => broker.id !== editUser.id);
+        if (!brokers.length) {
+          alert("Não há outro corretor ativo para receber os leads deste corretor.");
+          return;
+        }
+        const options = brokers.map((broker, index) => `${index + 1}. ${broker.name}`).join("\n");
+        const choice = prompt(`Este corretor tem ${assignedCount} lead(s) vinculado(s). Para qual corretor deseja redirecionar?\n\n${options}`);
+        if (!choice) return;
+        const selected = brokers[Number(choice) - 1] || brokers.find((broker) => broker.name.toLowerCase() === choice.trim().toLowerCase());
+        if (!selected) {
+          alert("Opção inválida. A inativação foi cancelada.");
+          return;
+        }
+        payload.reassignTo = selected.id;
       }
     }
-    state.settingsEditing = null;
-    await loadState();
-    renderSettings();
+    try {
+      setButtonBusy(submitButton, true, "Salvando...");
+      if (editUser) {
+        await api(`/api/users/${editUser.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+      } else {
+        const data = await api("/api/users", {
+          method: "POST",
+          body: JSON.stringify({ ...payload, username: form.get("username") })
+        });
+        if (!data.invitation?.sent && data.invitation?.link) {
+          prompt("Resend ainda não está configurado. Use este link de convite para teste:", data.invitation.link);
+        }
+      }
+      state.settingsEditing = null;
+      await loadState();
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(submitButton, false);
+      alert(error.message);
+    }
   });
 }
 

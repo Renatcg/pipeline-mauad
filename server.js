@@ -206,6 +206,10 @@ function migrateDb(db) {
       lead.tags = [];
       changed = true;
     }
+    if (!lead.favoritesByUser || typeof lead.favoritesByUser !== "object" || Array.isArray(lead.favoritesByUser)) {
+      lead.favoritesByUser = {};
+      changed = true;
+    }
     for (const tag of lead.tags) {
       if (!db.tagDefinitions.some((item) => item.name === tag)) {
         db.tagDefinitions.push({
@@ -385,6 +389,16 @@ function canManageSettings(user) {
   return user.role === "Admin TI";
 }
 
+function canManageUsers(user) {
+  return ["Admin TI", "Head Comercial"].includes(user.role);
+}
+
+function manageableRoles(user) {
+  if (user.role === "Admin TI") return ROLES;
+  if (user.role === "Head Comercial") return ["Supervisor Comercial", "Corretor"];
+  return [];
+}
+
 function canManageLeads(user) {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(user.role);
 }
@@ -398,6 +412,14 @@ function visibleLeads(db, user) {
 
 function canEditLead(user, lead) {
   return canManageLeads(user) || (user.role === "Corretor" && lead.assignedTo === user.id);
+}
+
+function publicLead(lead, user) {
+  return {
+    ...lead,
+    favorite: Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite),
+    favoritesByUser: undefined
+  };
 }
 
 async function readBody(req) {
@@ -547,7 +569,7 @@ async function routeApi(req, res, db) {
       pipelineStatuses: db.pipelineStatuses,
       tagDefinitions: db.tagDefinitions || [],
       users: db.users.map(publicUser),
-      leads: visibleLeads(db, user),
+      leads: visibleLeads(db, user).map((lead) => publicLead(lead, user)),
       integrations: canManageSettings(user) ? db.integrations : null,
       auditLog: canManageSettings(user) ? db.auditLog.slice(0, 25) : []
     });
@@ -582,6 +604,7 @@ async function routeApi(req, res, db) {
       status,
       inPipeline: true,
       favorite: false,
+      favoritesByUser: {},
       assignedTo: assignedUser?.id || null,
       assignedName: assignedUser?.name || "",
       desiredProject: String(body.desiredProject || "").trim(),
@@ -597,7 +620,7 @@ async function routeApi(req, res, db) {
     db.leads.push(lead);
     audit(db, user, "CREATE_LEAD", { leadId: lead.id, source: lead.source });
     await saveDb(db);
-    return sendJson(res, 201, { lead });
+    return sendJson(res, 201, { lead: publicLead(lead, user) });
   }
 
   const leadMatch = url.pathname.match(/^\/api\/leads\/([^/]+)$/);
@@ -619,6 +642,10 @@ async function routeApi(req, res, db) {
         lead.tags = Array.isArray(body.tags)
           ? [...new Set(body.tags.map((tag) => String(tag).trim()).filter((tag) => tag && validTags.has(tag)))].slice(0, 12)
           : [];
+      } else if (key === "favorite") {
+        if (!lead.favoritesByUser || typeof lead.favoritesByUser !== "object") lead.favoritesByUser = {};
+        lead.favoritesByUser[user.id] = Boolean(body.favorite);
+        lead.favorite = Object.values(lead.favoritesByUser).some(Boolean);
       } else if (key === "assignedTo") {
         const assignedUser = body.assignedTo ? db.users.find((item) => item.id === body.assignedTo && item.role === "Corretor" && item.active) : null;
         if (body.assignedTo && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
@@ -631,7 +658,7 @@ async function routeApi(req, res, db) {
     lead.updatedAt = new Date().toISOString();
     audit(db, user, "UPDATE_LEAD", { leadId: lead.id, changes: body });
     await saveDb(db);
-    return sendJson(res, 200, { lead });
+    return sendJson(res, 200, { lead: publicLead(lead, user) });
   }
 
   const commentMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments$/);
@@ -654,7 +681,7 @@ async function routeApi(req, res, db) {
     lead.updatedAt = comment.createdAt;
     audit(db, user, "COMMENT_LEAD", { leadId: lead.id });
     await saveDb(db);
-    return sendJson(res, 201, { lead, comment });
+    return sendJson(res, 201, { lead: publicLead(lead, user), comment });
   }
 
   const rescueMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rescue$/);
@@ -675,17 +702,34 @@ async function routeApi(req, res, db) {
     lead.updatedAt = lead.rescuedAt;
     audit(db, user, "RESCUE_BASE_LEAD", { leadId: lead.id, source: lead.source });
     await saveDb(db);
-    return sendJson(res, 200, { lead });
+    return sendJson(res, 200, { lead: publicLead(lead, user) });
+  }
+
+  const rollbackMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rollback$/);
+  if (rollbackMatch && method === "POST") {
+    const lead = db.leads.find((item) => item.id === rollbackMatch[1]);
+    if (!lead) return notFound(res);
+    if (!canManageLeads(user) && !(user.role === "Corretor" && lead.assignedTo === user.id)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!lead.inPipeline) return sendJson(res, 400, { error: "Este lead já está apenas na base" });
+    lead.inPipeline = false;
+    lead.status = lead.sourceStatus || lead.odysseiaStatus || "Base";
+    lead.assignedTo = null;
+    lead.assignedName = "";
+    lead.rolledBackAt = new Date().toISOString();
+    lead.updatedAt = lead.rolledBackAt;
+    audit(db, user, "ROLLBACK_BASE_LEAD", { leadId: lead.id, source: lead.source });
+    await saveDb(db);
+    return sendJson(res, 200, { lead: publicLead(lead, user) });
   }
 
   if (url.pathname === "/api/users" && method === "POST") {
-    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canManageUsers(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
     const username = String(body.username || "").trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(username) || db.users.some((item) => item.username === username)) {
       return sendJson(res, 400, { error: "E-mail inválido ou já existente" });
     }
-    if (!ROLES.includes(body.role)) return sendJson(res, 400, { error: "Perfil inválido" });
+    if (!manageableRoles(user).includes(body.role)) return sendJson(res, 400, { error: "Perfil inválido" });
     const now = new Date().toISOString();
     const newUser = {
       id: `user-${crypto.randomUUID()}`,
@@ -707,24 +751,48 @@ async function routeApi(req, res, db) {
 
   const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
   if (userMatch && method === "PATCH") {
-    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canManageUsers(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const target = db.users.find((item) => item.id === userMatch[1]);
     if (!target) return notFound(res);
+    if (!manageableRoles(user).includes(target.role)) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
+    if (Object.prototype.hasOwnProperty.call(body, "role") && !manageableRoles(user).includes(body.role)) {
+      return sendJson(res, 400, { error: "Perfil inválido" });
+    }
+    const willDeactivateBroker = target.role === "Corretor" && target.active && body.active === false;
+    const assignedLeads = willDeactivateBroker ? db.leads.filter((lead) => lead.inPipeline && lead.assignedTo === target.id) : [];
+    if (assignedLeads.length) {
+      const replacement = body.reassignTo
+        ? db.users.find((item) => item.id === body.reassignTo && item.role === "Corretor" && item.active && item.id !== target.id)
+        : null;
+      if (!replacement) {
+        return sendJson(res, 409, {
+          error: "Escolha um corretor ativo para receber os leads antes de inativar este corretor",
+          requiresReassignment: true,
+          leadCount: assignedLeads.length
+        });
+      }
+      for (const lead of assignedLeads) {
+        lead.assignedTo = replacement.id;
+        lead.assignedName = replacement.name;
+        lead.updatedAt = new Date().toISOString();
+      }
+    }
     for (const key of ["name", "role", "active"]) {
       if (Object.prototype.hasOwnProperty.call(body, key)) target[key] = body[key];
     }
     target.updatedAt = new Date().toISOString();
-    audit(db, user, "UPDATE_USER", { userId: target.id, changes: body });
+    audit(db, user, "UPDATE_USER", { userId: target.id, changes: body, reassignedLeads: assignedLeads.length });
     await saveDb(db);
     return sendJson(res, 200, { user: publicUser(target) });
   }
 
   const inviteMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/invite$/);
   if (inviteMatch && method === "POST") {
-    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canManageUsers(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const target = db.users.find((item) => item.id === inviteMatch[1]);
     if (!target) return notFound(res);
+    if (!manageableRoles(user).includes(target.role)) return sendJson(res, 403, { error: "Sem permissão" });
     if (!target.active) return sendJson(res, 400, { error: "Ative o usuário antes de enviar convite" });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target.username)) return sendJson(res, 400, { error: "Usuário sem e-mail válido" });
     const token = createPasswordSetup(target);
