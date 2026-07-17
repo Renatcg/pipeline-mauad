@@ -24,6 +24,11 @@ const DATABASE_URL = process.env.POSTGRES_URL || process.env.DATABASE_URL || pro
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const EMAIL_FROM = process.env.EMAIL_FROM || "Pipeline Mauad <onboarding@resend.dev>";
+const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || "";
+const META_APP_SECRET = process.env.META_APP_SECRET || "";
+const META_PAGE_ACCESS_TOKEN = process.env.META_PAGE_ACCESS_TOKEN || "";
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
+const META_DEFAULT_ASSIGNED_TO = process.env.META_DEFAULT_ASSIGNED_TO || "";
 let sqlClientPromise = null;
 
 function readJson(file) {
@@ -114,6 +119,7 @@ function buildDefaultDb() {
       inPipeline: false
     })),
     integrations: seed.integrations,
+    integrationLog: [],
     accessLog: [],
     auditLog: [
       {
@@ -206,6 +212,10 @@ function migrateDb(db) {
   }
   if (!Array.isArray(db.accessLog)) {
     db.accessLog = [];
+    changed = true;
+  }
+  if (!Array.isArray(db.integrationLog)) {
+    db.integrationLog = [];
     changed = true;
   }
   if (!Array.isArray(db.pipelineStatuses)) {
@@ -451,10 +461,14 @@ function publicLead(lead, user) {
   };
 }
 
-async function readBody(req) {
+async function readRawBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
-  const raw = Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function readBody(req) {
+  const raw = await readRawBody(req);
   return raw ? JSON.parse(raw) : {};
 }
 
@@ -466,6 +480,16 @@ function audit(db, actor, action, details) {
     details
   });
   db.auditLog = db.auditLog.slice(0, 200);
+}
+
+function integrationEvent(db, provider, action, details = {}) {
+  db.integrationLog.unshift({
+    at: new Date().toISOString(),
+    provider,
+    action,
+    details
+  });
+  db.integrationLog = db.integrationLog.slice(0, 200);
 }
 
 function clientIp(req) {
@@ -486,6 +510,166 @@ function access(db, actor, action, details, req) {
     userAgent: String(req.headers["user-agent"] || "").slice(0, 220)
   });
   db.accessLog = db.accessLog.slice(0, 500);
+}
+
+function verifyMetaSignature(req, rawBody) {
+  if (!META_APP_SECRET) return { ok: false, status: 500, error: "META_APP_SECRET ausente" };
+  const signature = String(req.headers["x-hub-signature-256"] || "");
+  if (!signature.startsWith("sha256=")) return { ok: false, status: 401, error: "Assinatura ausente" };
+  const expected = `sha256=${crypto.createHmac("sha256", META_APP_SECRET).update(rawBody).digest("hex")}`;
+  const receivedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (receivedBuffer.length !== expectedBuffer.length) return { ok: false, status: 401, error: "Assinatura inválida" };
+  if (!crypto.timingSafeEqual(receivedBuffer, expectedBuffer)) return { ok: false, status: 401, error: "Assinatura inválida" };
+  return { ok: true };
+}
+
+function metaFieldValue(fields, names) {
+  const normalizedNames = names.map((name) => name.toLowerCase());
+  const field = fields.find((item) => normalizedNames.includes(String(item.name || "").toLowerCase()));
+  return String(field?.values?.[0] || "").trim();
+}
+
+function normalizePhone(value) {
+  return String(value || "").replace(/[^\d+]/g, "").trim();
+}
+
+function normalizeMetaLeadData(data) {
+  const fields = Array.isArray(data.field_data) ? data.field_data : [];
+  const name = metaFieldValue(fields, ["full_name", "nome", "name", "first_name"]) || "Lead Meta";
+  const phone = normalizePhone(metaFieldValue(fields, ["phone_number", "telefone", "celular", "whatsapp", "phone"]));
+  const email = metaFieldValue(fields, ["email", "e-mail", "email_address"]);
+  const desiredProject = metaFieldValue(fields, ["empreendimento", "empreendimento_desejado", "project", "produto"]);
+  return {
+    name,
+    phone,
+    email,
+    desiredProject,
+    rawFields: fields.reduce((acc, item) => {
+      acc[item.name] = Array.isArray(item.values) ? item.values.join(", ") : "";
+      return acc;
+    }, {})
+  };
+}
+
+async function fetchMetaLead(leadgenId) {
+  if (!META_PAGE_ACCESS_TOKEN) throw new Error("META_PAGE_ACCESS_TOKEN ausente");
+  const fields = [
+    "created_time",
+    "field_data",
+    "ad_id",
+    "ad_name",
+    "adset_id",
+    "adset_name",
+    "campaign_id",
+    "campaign_name",
+    "form_id",
+    "platform",
+    "is_organic"
+  ].join(",");
+  const endpoint = new URL(`https://graph.facebook.com/${META_GRAPH_VERSION}/${encodeURIComponent(leadgenId)}`);
+  endpoint.searchParams.set("fields", fields);
+  endpoint.searchParams.set("access_token", META_PAGE_ACCESS_TOKEN);
+  const response = await fetch(endpoint);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error?.message || "Falha ao buscar lead na Graph API");
+  }
+  return data;
+}
+
+function defaultMetaAssignee(db) {
+  if (!META_DEFAULT_ASSIGNED_TO) return null;
+  return db.users.find((user) => user.id === META_DEFAULT_ASSIGNED_TO && user.role === "Corretor" && user.active) || null;
+}
+
+function createMetaLead(db, leadgenId, metaLead, webhookValue) {
+  const externalId = `META-${leadgenId}`;
+  const localId = `meta-${String(leadgenId).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const existing = db.leads.find((lead) => lead.externalId === externalId || lead.metaLeadId === leadgenId || lead.id === localId);
+  if (existing) return { status: "duplicate", lead: existing };
+  if (!db.pipelineStatuses.length) db.pipelineStatuses.push("Novo Lead");
+  const normalized = normalizeMetaLeadData(metaLead);
+  const assignedUser = defaultMetaAssignee(db);
+  const now = new Date().toISOString();
+  const createdAt = metaLead.created_time || now;
+  const lead = {
+    id: localId,
+    externalId,
+    metaLeadId: leadgenId,
+    name: normalized.name,
+    phone: normalized.phone,
+    email: normalized.email,
+    assistant: "Meta Lead Ads",
+    source: "META",
+    status: db.pipelineStatuses[0],
+    inPipeline: true,
+    favorite: false,
+    favoritesByUser: {},
+    assignedTo: assignedUser?.id || null,
+    assignedName: assignedUser?.name || "",
+    desiredProject: normalized.desiredProject,
+    desiredUnit: "",
+    unitValue: "",
+    notes: "",
+    tags: [],
+    comments: [],
+    order: Date.now(),
+    createdAt,
+    updatedAt: now,
+    meta: {
+      pageId: webhookValue.page_id || "",
+      formId: metaLead.form_id || webhookValue.form_id || "",
+      adId: metaLead.ad_id || webhookValue.ad_id || "",
+      adName: metaLead.ad_name || "",
+      adsetId: metaLead.adset_id || "",
+      adsetName: metaLead.adset_name || "",
+      campaignId: metaLead.campaign_id || "",
+      campaignName: metaLead.campaign_name || "",
+      platform: metaLead.platform || "",
+      isOrganic: Boolean(metaLead.is_organic),
+      rawFields: normalized.rawFields
+    }
+  };
+  db.leads.push(lead);
+  return { status: "created", lead };
+}
+
+async function processMetaWebhook(db, payload) {
+  const changes = [];
+  for (const entry of payload.entry || []) {
+    for (const change of entry.changes || []) {
+      if (change.field === "leadgen" && change.value?.leadgen_id) changes.push(change.value);
+    }
+  }
+  const result = { received: changes.length, created: 0, duplicates: 0, errors: [] };
+  for (const value of changes) {
+    const leadgenId = String(value.leadgen_id || "").trim();
+    try {
+      const localId = `meta-${leadgenId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+      const existing = db.leads.find((lead) => lead.externalId === `META-${leadgenId}` || lead.metaLeadId === leadgenId || lead.id === localId);
+      if (existing) {
+        result.duplicates += 1;
+        integrationEvent(db, "META", "DUPLICATE_LEAD", { leadgenId });
+        continue;
+      }
+      const metaLead = await fetchMetaLead(leadgenId);
+      const created = createMetaLead(db, leadgenId, metaLead, value);
+      if (created.status === "created") {
+        result.created += 1;
+        audit(db, { username: "meta-webhook" }, "CREATE_META_LEAD", { leadId: created.lead.id, leadgenId });
+        integrationEvent(db, "META", "LEAD_IMPORTED", { leadId: created.lead.id, leadgenId });
+      } else {
+        result.duplicates += 1;
+        integrationEvent(db, "META", "DUPLICATE_LEAD", { leadgenId });
+      }
+    } catch (error) {
+      result.errors.push({ leadgenId, error: error.message });
+      integrationEvent(db, "META", "LEAD_ERROR", { leadgenId, error: error.message });
+    }
+  }
+  if (!changes.length) integrationEvent(db, "META", "WEBHOOK_IGNORED", { reason: "sem leadgen" });
+  return result;
 }
 
 function mergeImportedLeads(db, importedLeads, pipelineStatuses = []) {
@@ -562,6 +746,41 @@ async function routeApi(req, res, db) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const method = req.method;
 
+  if (method === "GET" && url.pathname === "/api/webhooks/meta") {
+    const mode = url.searchParams.get("hub.mode");
+    const token = url.searchParams.get("hub.verify_token");
+    const challenge = url.searchParams.get("hub.challenge");
+    if (mode === "subscribe" && META_VERIFY_TOKEN && token === META_VERIFY_TOKEN) {
+      integrationEvent(db, "META", "WEBHOOK_VERIFIED", {});
+      await saveDb(db);
+      return send(res, 200, challenge || "", { "Content-Type": "text/plain; charset=utf-8" });
+    }
+    integrationEvent(db, "META", "WEBHOOK_VERIFY_FAILED", { mode });
+    await saveDb(db);
+    return send(res, 403, "Token inválido", { "Content-Type": "text/plain; charset=utf-8" });
+  }
+
+  if (method === "POST" && url.pathname === "/api/webhooks/meta") {
+    const rawBody = await readRawBody(req);
+    const signature = verifyMetaSignature(req, rawBody);
+    if (!signature.ok) {
+      integrationEvent(db, "META", "WEBHOOK_SIGNATURE_FAILED", { error: signature.error });
+      await saveDb(db);
+      return sendJson(res, signature.status, { error: signature.error });
+    }
+    let payload;
+    try {
+      payload = rawBody ? JSON.parse(rawBody) : {};
+    } catch {
+      integrationEvent(db, "META", "WEBHOOK_INVALID_JSON", {});
+      await saveDb(db);
+      return sendJson(res, 400, { error: "Payload inválido" });
+    }
+    const result = await processMetaWebhook(db, payload);
+    await saveDb(db);
+    return sendJson(res, result.errors.length ? 500 : 200, { ok: !result.errors.length, ...result });
+  }
+
   if (method === "POST" && url.pathname === "/api/login") {
     const body = await readBody(req);
     const login = String(body.username || "").trim().toLowerCase();
@@ -621,6 +840,7 @@ async function routeApi(req, res, db) {
       users: db.users.map(publicUser),
       leads: visibleLeads(db, user).map((lead) => publicLead(lead, user)),
       integrations: canManageSettings(user) ? db.integrations : null,
+      integrationLog: canManageSettings(user) ? db.integrationLog.slice(0, 50) : [],
       auditLog: canManageSettings(user) ? db.auditLog.slice(0, 25) : [],
       accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : []
     });
@@ -690,7 +910,7 @@ async function routeApi(req, res, db) {
     if (!lead) return notFound(res);
     if (user.role === "Corretor" && lead.assignedTo !== user.id) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
-    const detailFields = ["name", "phone", "assistant", "desiredProject", "desiredUnit", "unitValue", "notes", "tags"];
+    const detailFields = ["name", "phone", "email", "assistant", "desiredProject", "desiredUnit", "unitValue", "notes", "tags"];
     const allowed = canManageLeads(user) && lead.inPipeline
       ? ["status", "favorite", "assignedTo", "order", ...detailFields]
       : canEditLead(user, lead) && lead.inPipeline

@@ -11,6 +11,7 @@ const state = {
   integrations: null,
   auditLog: [],
   accessLog: [],
+  integrationLog: [],
   view: "kanban",
   leadId: null,
   previousView: "kanban",
@@ -196,7 +197,7 @@ function filteredLeads() {
   return state.leads.filter((lead) => {
     if (state.favoritesOnly && !lead.favorite) return false;
     if (!term) return true;
-    return [lead.name, lead.phone, lead.assistant, lead.assignedName, lead.externalId, lead.status]
+    return [lead.name, lead.phone, lead.email, lead.assistant, lead.assignedName, lead.externalId, lead.status]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(term));
   });
@@ -396,6 +397,7 @@ async function loadState() {
   state.users = data.users;
   state.leads = data.leads;
   state.integrations = data.integrations;
+  state.integrationLog = data.integrationLog || [];
   state.auditLog = data.auditLog;
   state.accessLog = data.accessLog || [];
   if (state.view !== "lead" && !allowedViews().includes(state.view)) state.view = allowedViews()[0];
@@ -1056,6 +1058,7 @@ function renderLeadDetail() {
           <div class="field"><label>ID importado</label><input value="${escapeHtml(lead.externalId || "")}" disabled></div>
           <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(lead.name)}" required></div>
           <div class="field"><label>Telefone</label><input name="phone" value="${escapeHtml(lead.phone || "")}"></div>
+          <div class="field"><label>E-mail</label><input name="email" type="email" value="${escapeHtml(lead.email || "")}"></div>
           <div class="field"><label>Status do pipeline</label>${statusField}</div>
           <div class="field"><label>Corretor</label>${brokerField}</div>
           <div class="field"><label>Empreendimento desejado</label><select name="desiredProject">
@@ -1545,6 +1548,8 @@ function integrationRows() {
 function renderIntegrationSettings() {
   const editing = state.settingsEditing;
   const integrations = state.integrations || {};
+  const webhookUrl = `${window.location.origin}/api/webhooks/meta`;
+  const metaEvents = (state.integrationLog || []).filter((item) => item.provider === "META").slice(0, 12);
   const rows = integrationRows().map((item) => `
     <tr>
       <td>${escapeHtml(item.name)}</td>
@@ -1564,6 +1569,15 @@ function renderIntegrationSettings() {
       <div class="table-wrap">
         <table><thead><tr><th>Nome</th><th>Tipo</th><th>Status</th><th>Detalhe</th><th>Ações</th></tr></thead><tbody>${rows}</tbody></table>
       </div>
+      <section class="integration-help">
+        <h2>Webhook Meta</h2>
+        <div class="meta">
+          <span>URL de callback: <strong>${escapeHtml(webhookUrl)}</strong></span>
+          <span>Variáveis na Vercel: <strong>META_VERIFY_TOKEN</strong>, <strong>META_APP_SECRET</strong>, <strong>META_PAGE_ACCESS_TOKEN</strong></span>
+        </div>
+      </section>
+      <h2>Eventos de integração</h2>
+      <div class="meta integration-log">${metaEvents.length ? metaEvents.map((item) => `<span>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))} · ${escapeHtml(item.provider)} · ${escapeHtml(item.action)}${item.details?.leadgenId ? ` · ${escapeHtml(item.details.leadgenId)}` : ""}${item.details?.error ? ` · ${escapeHtml(item.details.error)}` : ""}</span>`).join("") : "<span>Nenhum evento de integração registrado ainda.</span>"}</div>
       <h2>Auditoria</h2>
       <div class="meta">${state.auditLog.map((item) => `<span>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))} · ${escapeHtml(item.action)} · ${escapeHtml(item.actor)}</span>`).join("")}</div>
     </section>

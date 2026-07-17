@@ -255,6 +255,18 @@ textarea {
   padding: 10px 12px;
 }
 
+.integration-help {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.integration-log {
+  margin-bottom: 14px;
+}
+
 .password-rules {
   margin: -8px 0 8px;
   padding-left: 18px;
