@@ -1220,7 +1220,6 @@ function settingsLayout(content) {
         ${canManageSystemSettings() ? settingsTabButton("integrations", "Integrações") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("statuses", "Status do pipeline") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("tags", "Etiquetas") : ""}
-        ${canManageSystemSettings() ? settingsTabButton("access", "Acessos") : ""}
     </div>
     ${content}
   `);
@@ -1236,17 +1235,89 @@ function settingsLayout(content) {
 
 function renderSettings() {
   if (state.settingsTab === "integrations" && !canManageSystemSettings()) state.settingsTab = "users";
-  if (state.settingsTab === "access" && !canManageSystemSettings()) state.settingsTab = "users";
   if (["statuses", "tags"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "integrations") return renderIntegrationSettings();
   if (state.settingsTab === "statuses") return renderStatusSettings();
   if (state.settingsTab === "tags") return renderTagSettings();
-  if (state.settingsTab === "access") return renderAccessSettings();
   return renderUserSettings();
+}
+
+function userPasswordChip(user) {
+  if (user.passwordConfigured) return '<span class="chip">Senha criada</span>';
+  if (user.invitePending) return '<span class="chip">Convite pendente</span>';
+  if (user.inviteExpiresAt && new Date(user.inviteExpiresAt).getTime() <= Date.now()) {
+    return '<span class="chip chip-warning">Convite expirado</span>';
+  }
+  return '<span class="chip">Sem senha</span>';
+}
+
+function renderUserActionMenu(user) {
+  const userId = escapeHtml(user.id);
+  const statusAction = user.id === state.user?.id
+    ? ""
+    : user.active
+      ? `<button type="button" data-deactivate-user="${userId}">Inativar</button>`
+      : `<button type="button" data-activate-user="${userId}">Ativar</button>`;
+  return `
+    <div class="action-menu">
+      <button type="button" class="action-menu-button" data-user-action-menu="${userId}" title="Ações" aria-label="Ações do usuário">⋮</button>
+      <div class="action-menu-list">
+        <button type="button" data-edit-user="${userId}">Editar</button>
+        ${statusAction}
+        <button type="button" data-invite-user="${userId}">${user.passwordConfigured ? "Redefinir senha" : "Reenviar convite"}</button>
+        ${canManageSystemSettings() ? `<button type="button" data-view-user-log="${userId}">Ver log</button>` : ""}
+        ${canManageSystemSettings() ? `<button type="button" class="danger-menu-item" data-delete-user="${userId}">Excluir</button>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function closeUserActionMenus() {
+  document.querySelectorAll(".action-menu.open").forEach((item) => item.classList.remove("open"));
+}
+
+function reassignPayloadForBrokerDeactivation(targetUser) {
+  if (targetUser?.role !== "Corretor" || !targetUser.active) return {};
+  const assignedCount = state.leads.filter((lead) => lead.inPipeline && lead.assignedTo === targetUser.id).length;
+  if (!assignedCount) return {};
+  const brokers = activeBrokers().filter((broker) => broker.id !== targetUser.id);
+  if (!brokers.length) {
+    alert("Não há outro corretor ativo para receber os leads deste corretor.");
+    return null;
+  }
+  const options = brokers.map((broker, index) => `${index + 1}. ${broker.name}`).join("\n");
+  const choice = prompt(`Este corretor tem ${assignedCount} lead(s) vinculado(s). Para qual corretor deseja redirecionar?\n\n${options}`);
+  if (!choice) return null;
+  const selected = brokers[Number(choice) - 1] || brokers.find((broker) => broker.name.toLowerCase() === choice.trim().toLowerCase());
+  if (!selected) {
+    alert("Opção inválida. A inativação foi cancelada.");
+    return null;
+  }
+  return { reassignTo: selected.id };
+}
+
+async function updateUserActive(button, userId, active) {
+  const targetUser = state.users.find((user) => user.id === userId);
+  if (!targetUser) return;
+  const reassignment = active ? {} : reassignPayloadForBrokerDeactivation(targetUser);
+  if (reassignment === null) return;
+  try {
+    setButtonBusy(button, true, active ? "Ativando..." : "Inativando...");
+    await api(`/api/users/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ active, ...reassignment })
+    });
+    await loadState();
+    renderSettings();
+  } catch (error) {
+    setButtonBusy(button, false);
+    alert(error.message);
+  }
 }
 
 function renderUserSettings() {
   const isCreating = state.settingsEditing === "new-user";
+  const logUserId = state.settingsEditing?.startsWith("access:") ? state.settingsEditing.replace("access:", "") : null;
   const editUser = state.users.find((user) => user.id === state.settingsEditing);
   const formUser = editUser || {};
   const roleOptions = editableRoles();
@@ -1259,14 +1330,8 @@ function renderUserSettings() {
       <td>${escapeHtml(user.username)}</td>
       <td>${escapeHtml(user.role)}</td>
       <td class="${user.active ? "status-active" : "status-inactive"}">${user.active ? "Ativo" : "Inativo"}</td>
-      <td>${user.passwordConfigured ? '<span class="chip">Senha criada</span>' : user.invitePending ? '<span class="chip">Convite pendente</span>' : '<span class="chip">Sem senha</span>'}</td>
-      <td>
-        <div class="row-actions">
-          <button data-edit-user="${escapeHtml(user.id)}">Editar</button>
-          <button data-invite-user="${escapeHtml(user.id)}">${user.passwordConfigured ? "Redefinir senha" : "Reenviar convite"}</button>
-          ${canManageSystemSettings() ? `<button data-delete-user="${escapeHtml(user.id)}">Excluir</button>` : ""}
-        </div>
-      </td>
+      <td>${userPasswordChip(user)}</td>
+      <td>${renderUserActionMenu(user)}</td>
     </tr>
   `).join("");
   settingsLayout(`
@@ -1281,8 +1346,28 @@ function renderUserSettings() {
       </div>
     </section>
     ${(isCreating || editUser) ? renderUserEditorModal(formUser, Boolean(editUser), roleOptions) : ""}
+    ${logUserId ? renderUserAccessLogModal(logUserId) : ""}
   `);
   bindSettingsCommon();
+  document.querySelectorAll("[data-user-action-menu]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const menu = button.closest(".action-menu");
+      document.querySelectorAll(".action-menu.open").forEach((item) => {
+        if (item !== menu) item.classList.remove("open");
+      });
+      const rect = button.getBoundingClientRect();
+      menu?.style.setProperty("--menu-top", `${rect.bottom + 6}px`);
+      menu?.style.setProperty("--menu-right", `${Math.max(12, window.innerWidth - rect.right)}px`);
+      menu?.classList.toggle("open");
+      if (menu?.classList.contains("open")) {
+        setTimeout(() => document.addEventListener("click", closeUserActionMenus, { once: true }), 0);
+      }
+    });
+  });
+  document.querySelectorAll(".action-menu-list").forEach((menu) => {
+    menu.addEventListener("click", (event) => event.stopPropagation());
+  });
   document.querySelector("[data-user-modal-backdrop]")?.addEventListener("click", (event) => {
     if (event.target !== event.currentTarget) return;
     state.settingsEditing = null;
@@ -1299,6 +1384,23 @@ function renderUserSettings() {
       state.settingsEditing = button.dataset.editUser;
       state.settingsNotice = "";
       renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-view-user-log]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `access:${button.dataset.viewUserLog}`;
+      state.settingsNotice = "";
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-activate-user]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await updateUserActive(button, button.dataset.activateUser, true);
+    });
+  });
+  document.querySelectorAll("[data-deactivate-user]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await updateUserActive(button, button.dataset.deactivateUser, false);
     });
   });
   document.querySelectorAll("[data-delete-user]").forEach((button) => {
@@ -1347,23 +1449,9 @@ function renderUserSettings() {
       active: form.get("active") === "true"
     };
     if (editUser?.role === "Corretor" && editUser.active && payload.active === false) {
-      const assignedCount = state.leads.filter((lead) => lead.inPipeline && lead.assignedTo === editUser.id).length;
-      if (assignedCount) {
-        const brokers = activeBrokers().filter((broker) => broker.id !== editUser.id);
-        if (!brokers.length) {
-          alert("Não há outro corretor ativo para receber os leads deste corretor.");
-          return;
-        }
-        const options = brokers.map((broker, index) => `${index + 1}. ${broker.name}`).join("\n");
-        const choice = prompt(`Este corretor tem ${assignedCount} lead(s) vinculado(s). Para qual corretor deseja redirecionar?\n\n${options}`);
-        if (!choice) return;
-        const selected = brokers[Number(choice) - 1] || brokers.find((broker) => broker.name.toLowerCase() === choice.trim().toLowerCase());
-        if (!selected) {
-          alert("Opção inválida. A inativação foi cancelada.");
-          return;
-        }
-        payload.reassignTo = selected.id;
-      }
+      const reassignment = reassignPayloadForBrokerDeactivation(editUser);
+      if (reassignment === null) return;
+      Object.assign(payload, reassignment);
     }
     try {
       setButtonBusy(submitButton, true, "Salvando...");
@@ -1403,6 +1491,42 @@ function renderUserEditorModal(formUser, isEditing, roleOptions) {
           <div class="field"><label>Status</label><select name="active"><option value="true" ${formUser.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${formUser.active === false ? "selected" : ""}>Inativo</option></select></div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
+      </section>
+    </div>
+  `;
+}
+
+function renderUserAccessLogModal(userId) {
+  const selectedUser = state.users.find((user) => user.id === userId);
+  if (!selectedUser || !canManageSystemSettings()) return "";
+  const actionLabel = {
+    LOGIN: "Login",
+    VIEW: "Abertura de tela"
+  };
+  const rows = (state.accessLog || [])
+    .filter((item) => item.actor === selectedUser.username)
+    .map((item) => `
+      <tr>
+        <td>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))}</td>
+        <td>${escapeHtml(actionLabel[item.action] || item.action)}</td>
+        <td>${escapeHtml(item.details?.view || "")}</td>
+        <td>${escapeHtml(item.details?.path || "")}</td>
+        <td>${escapeHtml(item.ip || "")}</td>
+      </tr>
+    `).join("");
+  return `
+    <div class="modal-backdrop" data-user-modal-backdrop>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="userAccessLogTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="userAccessLogTitle">Log de acesso</h2>
+            <p class="modal-subtitle">${escapeHtml(selectedUser.name)} · ${escapeHtml(selectedUser.username)}</p>
+          </div>
+          <button type="button" class="icon" data-cancel-settings title="Fechar">×</button>
+        </div>
+        <div class="table-wrap">
+          <table class="access-table"><thead><tr><th>Data e hora</th><th>Ação</th><th>Tela</th><th>Rota</th><th>IP</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty">Nenhum acesso registrado para este usuário.</td></tr>'}</tbody></table>
+        </div>
       </section>
     </div>
   `;

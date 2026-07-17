@@ -661,6 +661,11 @@ tr[data-open-lead] {
   font-size: 12px;
 }
 
+.chip-warning {
+  background: #fff7e6;
+  color: var(--warn);
+}
+
 .lead-tags {
   display: flex;
   align-items: center;
@@ -898,6 +903,77 @@ th {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.action-menu {
+  display: inline-grid;
+  place-items: center;
+}
+
+.action-menu-button {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.action-menu-button:hover,
+.action-menu.open .action-menu-button {
+  background: #eef7f6;
+  color: var(--brand);
+}
+
+.action-menu-list {
+  position: fixed;
+  top: var(--menu-top, 0);
+  right: var(--menu-right, 12px);
+  z-index: 30;
+  width: 190px;
+  display: none;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  box-shadow: var(--shadow);
+}
+
+.action-menu.open .action-menu-list {
+  display: grid;
+  gap: 3px;
+}
+
+.action-menu-list button {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.action-menu-list button:hover:not(:disabled) {
+  background: #eef7f6;
+  color: var(--brand-strong);
+}
+
+.action-menu-list .danger-menu-item {
+  color: var(--danger);
+}
+
+.modal-subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .bar-row {
