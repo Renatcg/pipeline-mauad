@@ -10,12 +10,15 @@ const state = {
   leads: [],
   integrations: null,
   auditLog: [],
+  accessLog: [],
   view: "kanban",
   leadId: null,
   previousView: "kanban",
   settingsTab: "users",
   settingsEditing: null,
   settingsNotice: "",
+  mobileNavOpen: false,
+  lastAccessLogKey: "",
   creatingLead: false,
   baseSource: "ODYSSEIA",
   favoriteRequests: {},
@@ -162,6 +165,30 @@ function routeTo(view, leadId = null) {
   const path = view === "lead" ? `/leads/${encodeURIComponent(leadId)}` : routeByView[view] || "/kanban";
   if (window.location.pathname !== path) history.pushState({}, "", path);
   renderApp();
+  trackAccess();
+}
+
+function currentViewLabel() {
+  const labels = {
+    kanban: "Kanban",
+    sheet: "Planilha",
+    odysseia: "Bases",
+    dashboard: "Dashboard",
+    settings: "Configurações",
+    lead: "Detalhe do lead"
+  };
+  return labels[state.view] || state.view;
+}
+
+function trackAccess() {
+  if (!state.user || state.view === "password-setup") return;
+  const key = `${window.location.pathname}|${state.view}|${state.leadId || ""}`;
+  if (state.lastAccessLogKey === key) return;
+  state.lastAccessLogKey = key;
+  api("/api/access-log", {
+    method: "POST",
+    body: JSON.stringify({ path: window.location.pathname, view: currentViewLabel() })
+  }).catch(() => {});
 }
 
 function filteredLeads() {
@@ -370,6 +397,7 @@ async function loadState() {
   state.leads = data.leads;
   state.integrations = data.integrations;
   state.auditLog = data.auditLog;
+  state.accessLog = data.accessLog || [];
   if (state.view !== "lead" && !allowedViews().includes(state.view)) state.view = allowedViews()[0];
 }
 
@@ -382,11 +410,14 @@ function renderShell(content) {
   app.innerHTML = `
     <section class="shell">
       <aside class="side">
-        <div class="brand">
-          <strong>Pipeline Comercial</strong>
-          <span>Construtora Mauad</span>
+        <div class="side-head">
+          <div class="brand">
+            <strong>Pipeline Comercial</strong>
+            <span>Construtora Mauad</span>
+          </div>
+          <button class="mobile-menu-button" type="button" data-mobile-menu aria-expanded="${state.mobileNavOpen ? "true" : "false"}">Menu</button>
         </div>
-        <nav class="nav">
+        <nav class="nav ${state.mobileNavOpen ? "open" : ""}">
           ${navButton("kanban", "▦", "Kanban")}
           ${navButton("sheet", "▤", "Planilha")}
           ${navButton("odysseia", "◎", "Bases")}
@@ -409,8 +440,13 @@ function renderShell(content) {
   `;
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => {
+      state.mobileNavOpen = false;
       routeTo(button.dataset.view);
     });
+  });
+  document.querySelector("[data-mobile-menu]")?.addEventListener("click", () => {
+    state.mobileNavOpen = !state.mobileNavOpen;
+    renderApp();
   });
   bindPageFilters();
   bindCreateLeadModal();
@@ -1184,6 +1220,7 @@ function settingsLayout(content) {
         ${canManageSystemSettings() ? settingsTabButton("integrations", "Integrações") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("statuses", "Status do pipeline") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("tags", "Etiquetas") : ""}
+        ${canManageSystemSettings() ? settingsTabButton("access", "Acessos") : ""}
     </div>
     ${content}
   `);
@@ -1199,10 +1236,12 @@ function settingsLayout(content) {
 
 function renderSettings() {
   if (state.settingsTab === "integrations" && !canManageSystemSettings()) state.settingsTab = "users";
+  if (state.settingsTab === "access" && !canManageSystemSettings()) state.settingsTab = "users";
   if (["statuses", "tags"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "integrations") return renderIntegrationSettings();
   if (state.settingsTab === "statuses") return renderStatusSettings();
   if (state.settingsTab === "tags") return renderTagSettings();
+  if (state.settingsTab === "access") return renderAccessSettings();
   return renderUserSettings();
 }
 
@@ -1429,6 +1468,35 @@ function renderIntegrationSettings() {
   });
 }
 
+function renderAccessSettings() {
+  const actionLabel = {
+    LOGIN: "Login",
+    VIEW: "Abertura de tela"
+  };
+  const rows = (state.accessLog || []).map((item) => `
+    <tr>
+      <td>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))}</td>
+      <td>${escapeHtml(item.actorName || item.actor)}</td>
+      <td>${escapeHtml(item.actor || "")}</td>
+      <td>${escapeHtml(item.role || "")}</td>
+      <td>${escapeHtml(actionLabel[item.action] || item.action)}</td>
+      <td>${escapeHtml(item.details?.view || "")}</td>
+      <td>${escapeHtml(item.details?.path || "")}</td>
+      <td>${escapeHtml(item.ip || "")}</td>
+    </tr>
+  `).join("");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Acessos recentes</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="access-table"><thead><tr><th>Data e hora</th><th>Usuário</th><th>E-mail</th><th>Perfil</th><th>Ação</th><th>Tela</th><th>Rota</th><th>IP</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhum acesso registrado ainda.</td></tr>'}</tbody></table>
+      </div>
+    </section>
+  `);
+}
+
 function renderIntegrationForm(type, integrations) {
   const endpoint = integrations.proprietaryEndpoints?.[0] || {};
   return `
@@ -1617,6 +1685,7 @@ function renderApp() {
     }
     await loadState();
     renderApp();
+    trackAccess();
   } catch {
     renderLogin();
   }
@@ -1628,5 +1697,8 @@ window.addEventListener("popstate", () => {
     renderPasswordSetup();
     return;
   }
-  if (state.user) renderApp();
+  if (state.user) {
+    renderApp();
+    trackAccess();
+  }
 });

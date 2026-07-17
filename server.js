@@ -114,6 +114,7 @@ function buildDefaultDb() {
       inPipeline: false
     })),
     integrations: seed.integrations,
+    accessLog: [],
     auditLog: [
       {
         at: now,
@@ -183,10 +184,28 @@ async function saveDb(db) {
   `;
 }
 
+async function saveAccessLog(db) {
+  if (!DATABASE_URL) {
+    writeDb(db);
+    return;
+  }
+  const sql = await getSql();
+  await sql`
+    UPDATE app_state
+    SET data = jsonb_set(data, '{accessLog}', ${JSON.stringify(db.accessLog || [])}::jsonb, true),
+        updated_at = now()
+    WHERE id = 'main'
+  `;
+}
+
 function migrateDb(db) {
   let changed = false;
   if (!Array.isArray(db.auditLog)) {
     db.auditLog = [];
+    changed = true;
+  }
+  if (!Array.isArray(db.accessLog)) {
+    db.accessLog = [];
     changed = true;
   }
   if (!Array.isArray(db.pipelineStatuses)) {
@@ -449,6 +468,26 @@ function audit(db, actor, action, details) {
   db.auditLog = db.auditLog.slice(0, 200);
 }
 
+function clientIp(req) {
+  return String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "")
+    .split(",")[0]
+    .trim();
+}
+
+function access(db, actor, action, details, req) {
+  db.accessLog.unshift({
+    at: new Date().toISOString(),
+    actor: actor.username,
+    actorName: actor.name,
+    role: actor.role,
+    action,
+    details,
+    ip: clientIp(req),
+    userAgent: String(req.headers["user-agent"] || "").slice(0, 220)
+  });
+  db.accessLog = db.accessLog.slice(0, 500);
+}
+
 function mergeImportedLeads(db, importedLeads, pipelineStatuses = []) {
   const now = new Date().toISOString();
   const existingById = new Map(db.leads.map((lead) => [lead.id, lead]));
@@ -532,6 +571,8 @@ async function routeApi(req, res, db) {
     }
     if (!user.passwordHash) return sendJson(res, 403, { error: "Senha ainda não cadastrada. Use o link enviado por e-mail." });
     if (!verifyPassword(String(body.password || ""), user.passwordHash)) return sendJson(res, 401, { error: "Usuário ou senha inválidos" });
+    access(db, user, "LOGIN", { path: "/login", view: "Login" }, req);
+    await saveAccessLog(db);
     return sendJson(res, 200, { user: publicUser(user) }, {
       "Set-Cookie": sessionCookie(user.id)
     });
@@ -580,8 +621,19 @@ async function routeApi(req, res, db) {
       users: db.users.map(publicUser),
       leads: visibleLeads(db, user).map((lead) => publicLead(lead, user)),
       integrations: canManageSettings(user) ? db.integrations : null,
-      auditLog: canManageSettings(user) ? db.auditLog.slice(0, 25) : []
+      auditLog: canManageSettings(user) ? db.auditLog.slice(0, 25) : [],
+      accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : []
     });
+  }
+
+  if (method === "POST" && url.pathname === "/api/access-log") {
+    const body = await readBody(req);
+    access(db, user, "VIEW", {
+      path: String(body.path || "").slice(0, 160),
+      view: String(body.view || "").slice(0, 80)
+    }, req);
+    await saveAccessLog(db);
+    return sendJson(res, 200, { ok: true });
   }
 
   if (method === "POST" && url.pathname === "/api/leads") {
