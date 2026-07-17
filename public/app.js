@@ -1011,6 +1011,36 @@ function leadProjectValue(lead) {
   return "";
 }
 
+function renderMetaLeadInfo(lead) {
+  if (lead.source !== "META" || !lead.meta) return "";
+  const metaRows = [
+    ["Formulário", lead.meta.formId],
+    ["Campanha", lead.meta.campaignName || lead.meta.campaignId],
+    ["Conjunto", lead.meta.adsetName || lead.meta.adsetId],
+    ["Anúncio", lead.meta.adName || lead.meta.adId],
+    ["Plataforma", lead.meta.platform],
+    ["Lead ID Meta", lead.metaLeadId]
+  ].filter(([, value]) => value);
+  const answerRows = Object.entries(lead.meta.rawFields || {}).map(([question, answer]) => `
+    <tr>
+      <td>${escapeHtml(question)}</td>
+      <td>${escapeHtml(answer)}</td>
+    </tr>
+  `).join("");
+  return `
+    <section class="panel meta-detail-panel">
+      <h2>Origem Meta</h2>
+      <div class="meta-grid">
+        ${metaRows.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}
+      </div>
+      <h2>Respostas do formulário</h2>
+      <div class="table-wrap">
+        <table class="answers-table"><thead><tr><th>Pergunta</th><th>Resposta</th></tr></thead><tbody>${answerRows || '<tr><td colspan="2" class="empty">Nenhuma resposta recebida.</td></tr>'}</tbody></table>
+      </div>
+    </section>
+  `;
+}
+
 function renderLeadDetail() {
   const lead = state.leads.find((item) => item.id === state.leadId);
   if (!lead) {
@@ -1092,6 +1122,7 @@ function renderLeadDetail() {
         </div>
       </div>
     </section>
+    ${renderMetaLeadInfo(lead)}
   `);
 
   document.querySelector("[data-back-lead]")?.addEventListener("click", () => routeTo(state.previousView || "kanban"));
@@ -1115,6 +1146,7 @@ function renderLeadDetail() {
     const payload = {
       name: form.get("name"),
       phone: form.get("phone"),
+      email: form.get("email"),
       desiredProject: form.get("desiredProject"),
       desiredUnit: form.get("desiredUnit"),
       unitValue: form.get("unitValue"),
@@ -1550,8 +1582,17 @@ function integrationRows() {
 function renderIntegrationSettings() {
   const editing = state.settingsEditing;
   const integrations = state.integrations || {};
+  const metaMappings = integrations.metaForms?.mappings || [];
   const webhookUrl = `${window.location.origin}/api/webhooks/meta`;
   const metaEvents = (state.integrationLog || []).filter((item) => item.provider === "META").slice(0, 12);
+  const mappingRows = metaMappings.map((rule, index) => `
+    <tr>
+      <td>${escapeHtml(metaMappingTypeLabel(rule.type))}</td>
+      <td>${escapeHtml(rule.value)}</td>
+      <td>${escapeHtml(rule.project)}</td>
+      <td><button data-delete-meta-mapping="${index}">Excluir</button></td>
+    </tr>
+  `).join("");
   const rows = integrationRows().map((item) => `
     <tr>
       <td>${escapeHtml(item.name)}</td>
@@ -1578,8 +1619,31 @@ function renderIntegrationSettings() {
           <span>Variáveis na Vercel: <strong>META_VERIFY_TOKEN</strong>, <strong>META_APP_SECRET</strong>, <strong>META_PAGE_ACCESS_TOKEN</strong></span>
         </div>
       </section>
+      <section class="integration-help">
+        <div class="panel-head">
+          <h2>Mapeamento anúncio x empreendimento</h2>
+        </div>
+        <form id="metaMappingForm" class="form-grid compact-form">
+          <div class="field"><label>Tipo</label><select name="type">
+            <option value="ad_id">ID do anúncio</option>
+            <option value="form_id">ID do formulário</option>
+            <option value="campaign_id">ID da campanha</option>
+            <option value="ad_name_contains">Nome do anúncio contém</option>
+            <option value="campaign_name_contains">Nome da campanha contém</option>
+          </select></div>
+          <div class="field"><label>ID ou texto</label><input name="value" required placeholder="Cole o ID ou parte do nome"></div>
+          <div class="field"><label>Empreendimento</label><select name="project">
+            <option>Reserva Guinle</option>
+            <option>Golf Club Resort</option>
+          </select></div>
+          <div class="field"><label>&nbsp;</label><button class="primary" type="submit">Adicionar regra</button></div>
+        </form>
+        <div class="table-wrap">
+          <table class="mapping-table"><thead><tr><th>Tipo</th><th>ID/texto</th><th>Empreendimento</th><th>Ação</th></tr></thead><tbody>${mappingRows || '<tr><td colspan="4" class="empty">Nenhuma regra cadastrada ainda.</td></tr>'}</tbody></table>
+        </div>
+      </section>
       <h2>Eventos de integração</h2>
-      <div class="meta integration-log">${metaEvents.length ? metaEvents.map((item) => `<span>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))} · ${escapeHtml(item.provider)} · ${escapeHtml(item.action)}${item.details?.leadgenId ? ` · ${escapeHtml(item.details.leadgenId)}` : ""}${item.details?.error ? ` · ${escapeHtml(item.details.error)}` : ""}</span>`).join("") : "<span>Nenhum evento de integração registrado ainda.</span>"}</div>
+      <div class="meta integration-log">${metaEvents.length ? metaEvents.map((item) => `<span>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))} · ${escapeHtml(item.provider)} · ${escapeHtml(item.action)}${item.details?.leadgenId ? ` · ${escapeHtml(item.details.leadgenId)}` : ""}${item.details?.project ? ` · ${escapeHtml(item.details.project)}` : ""}${item.details?.error ? ` · ${escapeHtml(item.details.error)}` : ""}</span>`).join("") : "<span>Nenhum evento de integração registrado ainda.</span>"}</div>
       <h2>Auditoria</h2>
       <div class="meta">${state.auditLog.map((item) => `<span>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))} · ${escapeHtml(item.action)} · ${escapeHtml(item.actor)}</span>`).join("")}</div>
     </section>
@@ -1606,6 +1670,40 @@ function renderIntegrationSettings() {
     const form = new FormData(event.currentTarget);
     await saveIntegration(form.get("type"), Object.fromEntries(form.entries()));
   });
+  document.querySelector("#metaMappingForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const rule = {
+      type: form.get("type"),
+      value: String(form.get("value") || "").trim(),
+      project: form.get("project")
+    };
+    if (!rule.value) return;
+    const next = JSON.parse(JSON.stringify(state.integrations || {}));
+    const metaForms = next.metaForms || { enabled: false, forms: [] };
+    metaForms.mappings = [...(metaForms.mappings || []), rule];
+    next.metaForms = metaForms;
+    await saveIntegrations(next);
+  });
+  document.querySelectorAll("[data-delete-meta-mapping]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const next = JSON.parse(JSON.stringify(state.integrations || {}));
+      const metaForms = next.metaForms || { enabled: false, forms: [] };
+      metaForms.mappings = (metaForms.mappings || []).filter((_, index) => index !== Number(button.dataset.deleteMetaMapping));
+      next.metaForms = metaForms;
+      await saveIntegrations(next);
+    });
+  });
+}
+
+function metaMappingTypeLabel(type) {
+  return {
+    ad_id: "ID do anúncio",
+    form_id: "ID do formulário",
+    campaign_id: "ID da campanha",
+    ad_name_contains: "Nome do anúncio contém",
+    campaign_name_contains: "Nome da campanha contém"
+  }[type] || type;
 }
 
 function renderAccessSettings() {
@@ -1655,10 +1753,14 @@ function renderIntegrationForm(type, integrations) {
 async function saveIntegration(type, values) {
   const integrations = JSON.parse(JSON.stringify(state.integrations || {}));
   const enabled = values.enabled === "true";
-  if (type === "metaForms") integrations.metaForms = { enabled, forms: integrations.metaForms?.forms || [] };
+  if (type === "metaForms") integrations.metaForms = { enabled, forms: integrations.metaForms?.forms || [], mappings: integrations.metaForms?.mappings || [] };
   if (type === "whatsapp") integrations.whatsapp = { enabled, provider: values.primary || "", tokenSet: integrations.whatsapp?.tokenSet || false };
   if (type === "email") integrations.email = { enabled, sender: values.primary || "", smtpHost: values.secondary || "" };
   if (type === "endpoint") integrations.proprietaryEndpoints = values.secondary ? [{ name: "Endpoint principal", url: values.secondary, enabled }] : [];
+  await saveIntegrations(integrations);
+}
+
+async function saveIntegrations(integrations) {
   await api("/api/integrations", { method: "PUT", body: JSON.stringify({ integrations }) });
   state.settingsEditing = null;
   await loadState();

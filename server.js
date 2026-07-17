@@ -262,6 +262,10 @@ function migrateDb(db) {
       changed = true;
     }
   }
+  if (db.integrations?.metaForms && !Array.isArray(db.integrations.metaForms.mappings)) {
+    db.integrations.metaForms.mappings = [];
+    changed = true;
+  }
   if (changed) Object.defineProperty(db, "__dirty", { value: true, enumerable: false, configurable: true });
   return db;
 }
@@ -552,6 +556,39 @@ function normalizeMetaLeadData(data) {
   };
 }
 
+function normalizeMetaMappingRules(integrations) {
+  const rules = integrations?.metaForms?.mappings || integrations?.metaForms?.rules || [];
+  return Array.isArray(rules)
+    ? rules.map((rule) => ({
+        type: String(rule.type || "").trim(),
+        value: String(rule.value || "").trim(),
+        project: String(rule.project || "").trim()
+      })).filter((rule) => rule.type && rule.value && rule.project)
+    : [];
+}
+
+function metaRuleMatches(rule, metaLead) {
+  const value = String(rule.value || "").trim();
+  const lowerValue = value.toLowerCase();
+  const comparisons = {
+    ad_id: metaLead.ad_id,
+    form_id: metaLead.form_id,
+    campaign_id: metaLead.campaign_id,
+    ad_name_contains: metaLead.ad_name,
+    campaign_name_contains: metaLead.campaign_name
+  };
+  const target = String(comparisons[rule.type] || "").trim();
+  if (!target) return false;
+  if (rule.type.endsWith("_contains")) return target.toLowerCase().includes(lowerValue);
+  return target === value;
+}
+
+function mappedMetaProject(db, metaLead) {
+  const match = normalizeMetaMappingRules(db.integrations)
+    .find((rule) => metaRuleMatches(rule, metaLead));
+  return match?.project || "";
+}
+
 async function fetchMetaLead(leadgenId) {
   if (!META_PAGE_ACCESS_TOKEN) throw new Error("META_PAGE_ACCESS_TOKEN ausente");
   const fields = [
@@ -608,7 +645,7 @@ function createMetaLead(db, leadgenId, metaLead, webhookValue) {
     favoritesByUser: {},
     assignedTo: assignedUser?.id || null,
     assignedName: assignedUser?.name || "",
-    desiredProject: normalized.desiredProject,
+    desiredProject: mappedMetaProject(db, metaLead) || normalized.desiredProject,
     desiredUnit: "",
     unitValue: "",
     notes: "",
@@ -658,7 +695,24 @@ async function processMetaWebhook(db, payload) {
       if (created.status === "created") {
         result.created += 1;
         audit(db, { username: "meta-webhook" }, "CREATE_META_LEAD", { leadId: created.lead.id, leadgenId });
-        integrationEvent(db, "META", "LEAD_IMPORTED", { leadId: created.lead.id, leadgenId });
+        integrationEvent(db, "META", "LEAD_IMPORTED", {
+          leadId: created.lead.id,
+          leadgenId,
+          project: created.lead.desiredProject || "",
+          adId: created.lead.meta?.adId || "",
+          formId: created.lead.meta?.formId || ""
+        });
+        if (!created.lead.desiredProject) {
+          integrationEvent(db, "META", "PROJECT_NOT_MAPPED", {
+            leadId: created.lead.id,
+            leadgenId,
+            adId: created.lead.meta?.adId || "",
+            formId: created.lead.meta?.formId || "",
+            campaignId: created.lead.meta?.campaignId || "",
+            adName: created.lead.meta?.adName || "",
+            campaignName: created.lead.meta?.campaignName || ""
+          });
+        }
       } else {
         result.duplicates += 1;
         integrationEvent(db, "META", "DUPLICATE_LEAD", { leadgenId });
