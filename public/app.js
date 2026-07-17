@@ -213,7 +213,7 @@ function odysseiaLeads() {
 
 function baseSources() {
   const sources = [...new Set(state.leads
-    .filter((lead) => !lead.inPipeline || lead.sourceStatus || lead.odysseiaStatus)
+    .filter((lead) => !lead.inPipeline || lead.sourceStatus || lead.odysseiaStatus || lead.source === "META")
     .map((lead) => lead.source)
     .filter(Boolean))].sort();
   if (sources.includes("ODYSSEIA")) sources.unshift(...sources.splice(sources.indexOf("ODYSSEIA"), 1));
@@ -225,6 +225,7 @@ function baseLeads() {
   if (!sources.includes(state.baseSource)) state.baseSource = sources[0] || "TODOS";
   return filteredLeads().filter((lead) => {
     const isBaseLead = !lead.inPipeline || lead.sourceStatus || lead.odysseiaStatus;
+    if (state.baseSource === "META") return lead.source === "META";
     if (!isBaseLead) return false;
     return state.baseSource === "TODOS" || lead.source === state.baseSource;
   });
@@ -940,9 +941,10 @@ function renderSheet() {
 }
 
 function renderBaseSources(sources) {
+  const sourceLabel = (source) => ({ TODOS: "Todos", META: "Meta" }[source] || source);
   return `
     <div class="tabs base-tabs">
-      ${sources.map((source) => `<button class="${state.baseSource === source ? "active" : ""}" data-base-source="${escapeHtml(source)}">${escapeHtml(source === "TODOS" ? "Todos" : source)}</button>`).join("")}
+      ${sources.map((source) => `<button class="${state.baseSource === source ? "active" : ""}" data-base-source="${escapeHtml(source)}">${escapeHtml(sourceLabel(source))}</button>`).join("")}
     </div>
   `;
 }
