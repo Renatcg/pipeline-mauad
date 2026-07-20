@@ -446,9 +446,21 @@ function canManageLeads(user) {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(user.role);
 }
 
+function hasBaseHistory(lead) {
+  return Boolean(lead.sourceStatus || lead.odysseiaStatus);
+}
+
+function isAvailableBaseLead(lead) {
+  if (!lead.inPipeline) return true;
+  return hasBaseHistory(lead) && !lead.assignedTo;
+}
+
 function visibleLeads(db, user) {
   if (user.role === "Corretor") {
-    return db.leads.filter((lead) => lead.assignedTo === user.id || !lead.inPipeline || lead.sourceStatus || lead.odysseiaStatus);
+    return db.leads.filter((lead) => {
+      if (lead.inPipeline && lead.assignedTo) return lead.assignedTo === user.id;
+      return isAvailableBaseLead(lead);
+    });
   }
   return db.leads;
 }

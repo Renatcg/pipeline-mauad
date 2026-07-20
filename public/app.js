@@ -211,9 +211,18 @@ function odysseiaLeads() {
   return filteredLeads().filter((lead) => lead.source === "ODYSSEIA");
 }
 
+function hasBaseHistory(lead) {
+  return Boolean(lead.sourceStatus || lead.odysseiaStatus);
+}
+
+function isAvailableBaseLead(lead) {
+  if (!lead.inPipeline) return true;
+  return hasBaseHistory(lead) && !lead.assignedTo;
+}
+
 function baseSources() {
   const sources = [...new Set(state.leads
-    .filter((lead) => !lead.inPipeline || lead.sourceStatus || lead.odysseiaStatus || lead.source === "META")
+    .filter((lead) => isAvailableBaseLead(lead) || lead.source === "META")
     .map((lead) => lead.source)
     .filter(Boolean))].sort();
   if (sources.includes("ODYSSEIA")) sources.unshift(...sources.splice(sources.indexOf("ODYSSEIA"), 1));
@@ -224,9 +233,8 @@ function baseLeads() {
   const sources = baseSources();
   if (!sources.includes(state.baseSource)) state.baseSource = sources[0] || "TODOS";
   return filteredLeads().filter((lead) => {
-    const isBaseLead = !lead.inPipeline || lead.sourceStatus || lead.odysseiaStatus;
     if (state.baseSource === "META") return lead.source === "META";
-    if (!isBaseLead) return false;
+    if (!isAvailableBaseLead(lead)) return false;
     return state.baseSource === "TODOS" || lead.source === state.baseSource;
   });
 }
