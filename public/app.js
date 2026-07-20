@@ -21,7 +21,7 @@ const state = {
   mobileNavOpen: false,
   lastAccessLogKey: "",
   creatingLead: false,
-  baseSource: "ODYSSEIA",
+  baseSource: "TODOS",
   favoriteRequests: {},
   brokerMenuBound: false,
   inactivityTimer: null,
@@ -226,7 +226,7 @@ function baseSources() {
     .map((lead) => lead.source)
     .filter(Boolean))].sort();
   if (sources.includes("ODYSSEIA")) sources.unshift(...sources.splice(sources.indexOf("ODYSSEIA"), 1));
-  return sources.length ? ["TODOS", ...sources] : [];
+  return sources.length ? ["TODOS", ...sources.filter((source) => source !== "TODOS")] : [];
 }
 
 function baseLeads() {
@@ -1616,6 +1616,7 @@ function renderIntegrationSettings() {
         <h2>Integrações</h2>
         <button class="primary" data-new-integration>Cadastrar novo</button>
       </div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
       ${editing?.startsWith("integration:") ? renderIntegrationForm(editing.replace("integration:", ""), integrations) : ""}
       <div class="table-wrap">
         <table><thead><tr><th>Nome</th><th>Tipo</th><th>Status</th><th>Detalhe</th><th>Ações</th></tr></thead><tbody>${rows}</tbody></table>
@@ -1626,6 +1627,13 @@ function renderIntegrationSettings() {
           <span>URL de callback: <strong>${escapeHtml(webhookUrl)}</strong></span>
           <span>Variáveis na Vercel: <strong>META_VERIFY_TOKEN</strong>, <strong>META_APP_SECRET</strong>, <strong>META_PAGE_ACCESS_TOKEN</strong></span>
         </div>
+      </section>
+      <section class="integration-help">
+        <h2>Importar lead Meta por ID</h2>
+        <form id="metaLeadImportForm" class="form-grid compact-form">
+          <div class="field"><label>Leadgen ID</label><input name="leadgenId" required placeholder="Cole o leadgen_id do teste"></div>
+          <div class="field"><label>&nbsp;</label><button class="primary" type="submit">Importar lead</button></div>
+        </form>
       </section>
       <section class="integration-help">
         <div class="panel-head">
@@ -1677,6 +1685,27 @@ function renderIntegrationSettings() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     await saveIntegration(form.get("type"), Object.fromEntries(form.entries()));
+  });
+  document.querySelector("#metaLeadImportForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+    try {
+      setButtonBusy(submitButton, true, "Importando...");
+      const data = await api("/api/integrations/meta/import-lead", {
+        method: "POST",
+        body: JSON.stringify({ leadgenId: form.get("leadgenId") })
+      });
+      state.settingsNotice = data.status === "duplicate"
+        ? "Lead Meta já existia no CRM."
+        : "Lead Meta importado com sucesso.";
+      await loadState();
+      state.settingsTab = "integrations";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(submitButton, false);
+      alert(error.message);
+    }
   });
   document.querySelector("#metaMappingForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();

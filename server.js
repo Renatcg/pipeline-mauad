@@ -684,6 +684,41 @@ function createMetaLead(db, leadgenId, metaLead, webhookValue) {
   return { status: "created", lead };
 }
 
+async function importMetaLeadById(db, actor, leadgenId, webhookValue = {}) {
+  const id = String(leadgenId || "").trim();
+  if (!id) throw new Error("Leadgen ID obrigatório");
+  const localId = `meta-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const existing = db.leads.find((lead) => lead.externalId === `META-${id}` || lead.metaLeadId === id || lead.id === localId);
+  if (existing) {
+    integrationEvent(db, "META", "DUPLICATE_LEAD", { leadgenId: id });
+    return { status: "duplicate", lead: existing };
+  }
+  const metaLead = await fetchMetaLead(id);
+  const created = createMetaLead(db, id, metaLead, webhookValue);
+  if (created.status === "created") {
+    audit(db, actor, "CREATE_META_LEAD", { leadId: created.lead.id, leadgenId: id });
+    integrationEvent(db, "META", "LEAD_IMPORTED", {
+      leadId: created.lead.id,
+      leadgenId: id,
+      project: created.lead.desiredProject || "",
+      adId: created.lead.meta?.adId || "",
+      formId: created.lead.meta?.formId || ""
+    });
+    if (!created.lead.desiredProject) {
+      integrationEvent(db, "META", "PROJECT_NOT_MAPPED", {
+        leadId: created.lead.id,
+        leadgenId: id,
+        adId: created.lead.meta?.adId || "",
+        formId: created.lead.meta?.formId || "",
+        campaignId: created.lead.meta?.campaignId || "",
+        adName: created.lead.meta?.adName || "",
+        campaignName: created.lead.meta?.campaignName || ""
+      });
+    }
+  }
+  return created;
+}
+
 async function processMetaWebhook(db, payload) {
   const changes = [];
   for (const entry of payload.entry || []) {
@@ -695,39 +730,11 @@ async function processMetaWebhook(db, payload) {
   for (const value of changes) {
     const leadgenId = String(value.leadgen_id || "").trim();
     try {
-      const localId = `meta-${leadgenId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-      const existing = db.leads.find((lead) => lead.externalId === `META-${leadgenId}` || lead.metaLeadId === leadgenId || lead.id === localId);
-      if (existing) {
-        result.duplicates += 1;
-        integrationEvent(db, "META", "DUPLICATE_LEAD", { leadgenId });
-        continue;
-      }
-      const metaLead = await fetchMetaLead(leadgenId);
-      const created = createMetaLead(db, leadgenId, metaLead, value);
+      const created = await importMetaLeadById(db, { username: "meta-webhook" }, leadgenId, value);
       if (created.status === "created") {
         result.created += 1;
-        audit(db, { username: "meta-webhook" }, "CREATE_META_LEAD", { leadId: created.lead.id, leadgenId });
-        integrationEvent(db, "META", "LEAD_IMPORTED", {
-          leadId: created.lead.id,
-          leadgenId,
-          project: created.lead.desiredProject || "",
-          adId: created.lead.meta?.adId || "",
-          formId: created.lead.meta?.formId || ""
-        });
-        if (!created.lead.desiredProject) {
-          integrationEvent(db, "META", "PROJECT_NOT_MAPPED", {
-            leadId: created.lead.id,
-            leadgenId,
-            adId: created.lead.meta?.adId || "",
-            formId: created.lead.meta?.formId || "",
-            campaignId: created.lead.meta?.campaignId || "",
-            adName: created.lead.meta?.adName || "",
-            campaignName: created.lead.meta?.campaignName || ""
-          });
-        }
       } else {
         result.duplicates += 1;
-        integrationEvent(db, "META", "DUPLICATE_LEAD", { leadgenId });
       }
     } catch (error) {
       result.errors.push({ leadgenId, error: error.message });
@@ -844,7 +851,7 @@ async function routeApi(req, res, db) {
     }
     const result = await processMetaWebhook(db, payload);
     await saveDb(db);
-    return sendJson(res, result.errors.length ? 500 : 200, { ok: !result.errors.length, ...result });
+    return sendJson(res, 200, { ok: !result.errors.length, ...result });
   }
 
   if (method === "POST" && url.pathname === "/api/login") {
@@ -1184,6 +1191,21 @@ async function routeApi(req, res, db) {
     audit(db, user, "UPDATE_INTEGRATIONS", {});
     await saveDb(db);
     return sendJson(res, 200, { integrations: db.integrations });
+  }
+
+  if (url.pathname === "/api/integrations/meta/import-lead" && method === "POST") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const leadgenId = String(body.leadgenId || "").trim();
+    try {
+      const imported = await importMetaLeadById(db, user, leadgenId, {});
+      await saveDb(db);
+      return sendJson(res, 200, { ok: true, status: imported.status, lead: publicLead(imported.lead, user) });
+    } catch (error) {
+      integrationEvent(db, "META", "MANUAL_IMPORT_ERROR", { leadgenId, error: error.message });
+      await saveDb(db);
+      return sendJson(res, 400, { error: error.message });
+    }
   }
 
   if (url.pathname === "/api/statuses" && method === "POST") {
