@@ -12,6 +12,7 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const SESSION_TTL_MS = 1000 * 60 * 5;
 const PASSWORD_SETUP_TTL_MS = 1000 * 60 * 60 * 24;
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor"];
+const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
 const DEFAULT_TAG_DEFINITIONS = [
   { id: "tag-quente", name: "Quente", color: "#d92d20" },
   { id: "tag-morno", name: "Morno", color: "#f79009" },
@@ -78,6 +79,7 @@ function buildDefaultDb() {
     ? readJson(SEED_PATH)
     : {
         roles: ROLES,
+        projects: DEFAULT_PROJECTS,
         pipelineStatuses: ["Novo Lead", "Encaminhado ao Corretor", "Interesse Definido", "Simulação de Financiamento", "Desqualificado", "Arquivado (Permanentemente)", "Sem status"],
         users: [],
         leads: [],
@@ -93,6 +95,7 @@ function buildDefaultDb() {
   const now = new Date().toISOString();
   const db = {
     roles: seed.roles || ROLES,
+    projects: seed.projects || DEFAULT_PROJECTS,
     pipelineStatuses: [],
     tagDefinitions: DEFAULT_TAG_DEFINITIONS,
     users: [
@@ -222,6 +225,10 @@ function migrateDb(db) {
     db.pipelineStatuses = [];
     changed = true;
   }
+  if (!Array.isArray(db.projects)) {
+    db.projects = [...DEFAULT_PROJECTS];
+    changed = true;
+  }
   if (!Array.isArray(db.tagDefinitions)) {
     db.tagDefinitions = DEFAULT_TAG_DEFINITIONS.map((tag) => ({ ...tag }));
     changed = true;
@@ -276,7 +283,8 @@ function migrateDb(db) {
         if (typeof form === "string") return { id: form, name: "" };
         return {
           id: String(form.id || form.formId || "").trim(),
-          name: String(form.name || "").trim()
+          name: String(form.name || "").trim(),
+          project: String(form.project || "").trim()
         };
       })
       .filter((form, index, forms) => form.id && forms.findIndex((item) => item.id === form.id) === index);
@@ -611,9 +619,19 @@ function metaRuleMatches(rule, metaLead) {
 }
 
 function mappedMetaProject(db, metaLead) {
+  const formProject = projectForMetaForm(db, metaLead.form_id);
+  if (formProject) return formProject;
   const match = normalizeMetaMappingRules(db.integrations)
     .find((rule) => metaRuleMatches(rule, metaLead));
   return match?.project || "";
+}
+
+function projectForMetaForm(db, formId) {
+  const id = String(formId || "").trim();
+  if (!id) return "";
+  const form = (db.integrations?.metaForms?.forms || [])
+    .find((item) => String(item.id || item.formId || "").trim() === id);
+  return String(form?.project || "").trim();
 }
 
 async function fetchMetaLead(leadgenId) {
@@ -679,7 +697,11 @@ function configuredMetaForms(db) {
   for (const form of [...forms, ...mappingForms]) {
     const id = String(form.id || form.formId || "").trim();
     if (!id || unique.has(id)) continue;
-    unique.set(id, { id, name: String(form.name || "").trim() });
+    unique.set(id, {
+      id,
+      name: String(form.name || "").trim(),
+      project: String(form.project || "").trim()
+    });
   }
   return [...unique.values()];
 }
@@ -714,7 +736,7 @@ function createMetaLead(db, leadgenId, metaLead, webhookValue) {
     favoritesByUser: {},
     assignedTo: assignedUser?.id || null,
     assignedName: assignedUser?.name || "",
-    desiredProject: mappedMetaProject(db, metaLead) || normalized.desiredProject,
+    desiredProject: projectForMetaForm(db, metaLead.form_id || webhookValue.form_id) || mappedMetaProject(db, metaLead) || normalized.desiredProject,
     desiredUnit: "",
     unitValue: "",
     notes: "",
@@ -1034,6 +1056,7 @@ async function routeApi(req, res, db) {
     return sendJson(res, 200, {
       user: publicUser(user),
       roles: db.roles,
+      projects: db.projects || DEFAULT_PROJECTS,
       pipelineStatuses: db.pipelineStatuses,
       tagDefinitions: db.tagDefinitions || [],
       users: db.users.map(publicUser),
@@ -1346,6 +1369,55 @@ async function routeApi(req, res, db) {
       await saveDb(db);
       return sendJson(res, 400, { error: error.message });
     }
+  }
+
+  if (url.pathname === "/api/projects" && method === "POST") {
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const name = String(body.name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+    if ((db.projects || []).includes(name)) return sendJson(res, 400, { error: "Empreendimento já existe" });
+    db.projects = [...(db.projects || DEFAULT_PROJECTS), name];
+    audit(db, user, "CREATE_PROJECT", { name });
+    await saveDb(db);
+    return sendJson(res, 201, { projects: db.projects });
+  }
+
+  const projectMatch = url.pathname.match(/^\/api\/projects\/(\d+)$/);
+  if (projectMatch && method === "PATCH") {
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const index = Number(projectMatch[1]);
+    const oldName = db.projects?.[index];
+    if (!oldName) return notFound(res);
+    const body = await readBody(req);
+    const name = String(body.name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+    if (db.projects.some((project, projectIndex) => project === name && projectIndex !== index)) {
+      return sendJson(res, 400, { error: "Empreendimento já existe" });
+    }
+    db.projects[index] = name;
+    for (const lead of db.leads) {
+      if (lead.desiredProject === oldName) lead.desiredProject = name;
+    }
+    for (const form of db.integrations?.metaForms?.forms || []) {
+      if (form.project === oldName) form.project = name;
+    }
+    audit(db, user, "UPDATE_PROJECT", { oldName, name });
+    await saveDb(db);
+    return sendJson(res, 200, { projects: db.projects });
+  }
+
+  if (projectMatch && method === "DELETE") {
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const index = Number(projectMatch[1]);
+    const [deleted] = db.projects?.splice(index, 1) || [];
+    if (!deleted) return notFound(res);
+    for (const form of db.integrations?.metaForms?.forms || []) {
+      if (form.project === deleted) form.project = "";
+    }
+    audit(db, user, "DELETE_PROJECT", { name: deleted });
+    await saveDb(db);
+    return sendJson(res, 200, { projects: db.projects });
   }
 
   if (url.pathname === "/api/statuses" && method === "POST") {

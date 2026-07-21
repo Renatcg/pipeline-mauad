@@ -5,6 +5,7 @@ const state = {
   user: null,
   roles: [],
   statuses: [],
+  projects: [],
   tagDefinitions: [],
   users: [],
   leads: [],
@@ -18,6 +19,7 @@ const state = {
   settingsTab: "users",
   settingsEditing: null,
   settingsNotice: "",
+  settingsLogSearch: "",
   mobileNavOpen: false,
   lastAccessLogKey: "",
   creatingLead: false,
@@ -243,6 +245,12 @@ function baseLeadCount() {
   return state.leads.filter((lead) => !lead.inPipeline).length;
 }
 
+function projectOptions(selected = "") {
+  return (state.projects || [])
+    .map((project) => `<option value="${escapeHtml(project)}" ${project === selected ? "selected" : ""}>${escapeHtml(project)}</option>`)
+    .join("");
+}
+
 function metrics(leads = filteredLeads()) {
   const total = leads.length;
   const favorites = leads.filter((lead) => lead.favorite).length;
@@ -402,6 +410,7 @@ async function loadState() {
   resetInactivityTimer();
   state.roles = data.roles;
   state.statuses = data.pipelineStatuses;
+  state.projects = data.projects || ["Reserva Guinle", "Golf Club Resort"];
   state.tagDefinitions = data.tagDefinitions || [];
   state.users = data.users;
   state.leads = data.leads;
@@ -535,8 +544,7 @@ function renderCreateLeadModal() {
           <div class="field"><label>Corretor</label><select name="assignedTo">${brokerOptions}</select></div>
           <div class="field"><label>Empreendimento desejado</label><select name="desiredProject">
             <option value="">Selecione</option>
-            <option>Reserva Guinle</option>
-            <option>Golf Club Resort</option>
+            ${projectOptions()}
           </select></div>
           <div class="field"><label>Unidade</label><input name="desiredUnit"></div>
           <div class="field"><label>Valor da unidade</label><input name="unitValue"></div>
@@ -1103,7 +1111,7 @@ function renderLeadDetail() {
           <div class="field"><label>Corretor</label>${brokerField}</div>
           <div class="field"><label>Empreendimento desejado</label><select name="desiredProject">
             <option value="">Selecione</option>
-            ${["Reserva Guinle", "Golf Club Resort"].map((item) => `<option value="${item}" ${item === project ? "selected" : ""}>${item}</option>`).join("")}
+            ${projectOptions(project)}
           </select></div>
           <div class="field"><label>Unidade</label><input name="desiredUnit" value="${escapeHtml(lead.desiredUnit || lead.unit || "")}"></div>
           <div class="field"><label>Valor da unidade</label><input name="unitValue" value="${escapeHtml(lead.unitValue || lead.value || "")}"></div>
@@ -1265,6 +1273,9 @@ function settingsLayout(content) {
         ${canManageSystemSettings() ? settingsTabButton("integrations", "Integrações") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("statuses", "Status do pipeline") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("tags", "Etiquetas") : ""}
+        ${canManageSystemSettings() ? settingsTabButton("logs", "Logs") : ""}
+        ${canManagePipelineSettings() ? settingsTabButton("projects", "Empreendimentos") : ""}
+        ${canManageSystemSettings() ? settingsTabButton("knowledge", "Base de conhecimento") : ""}
     </div>
     ${content}
   `);
@@ -1279,11 +1290,14 @@ function settingsLayout(content) {
 }
 
 function renderSettings() {
-  if (state.settingsTab === "integrations" && !canManageSystemSettings()) state.settingsTab = "users";
-  if (["statuses", "tags"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
+  if (["integrations", "logs", "knowledge"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
+  if (["statuses", "tags", "projects"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "integrations") return renderIntegrationSettings();
   if (state.settingsTab === "statuses") return renderStatusSettings();
   if (state.settingsTab === "tags") return renderTagSettings();
+  if (state.settingsTab === "logs") return renderLogSettings();
+  if (state.settingsTab === "projects") return renderProjectSettings();
+  if (state.settingsTab === "knowledge") return renderKnowledgeSettings();
   return renderUserSettings();
 }
 
@@ -1577,77 +1591,37 @@ function renderUserAccessLogModal(userId) {
   `;
 }
 
-function integrationRows() {
-  const integrations = state.integrations || {};
-  return [
-    { id: "metaForms", name: "Forms do Meta", type: "Meta", status: integrations.metaForms?.enabled, detail: `${integrations.metaForms?.forms?.length || 0} forms` },
-    { id: "whatsapp", name: "WhatsApp", type: "Mensageria", status: integrations.whatsapp?.enabled, detail: integrations.whatsapp?.provider || "Sem provedor" },
-    { id: "email", name: "E-mail", type: "E-mail", status: integrations.email?.enabled, detail: integrations.email?.sender || integrations.email?.smtpHost || "Sem remetente" },
-    { id: "endpoint", name: "Endpoint proprietário", type: "API", status: Boolean(integrations.proprietaryEndpoints?.[0]?.enabled), detail: integrations.proprietaryEndpoints?.[0]?.url || "Sem endpoint" }
-  ];
-}
-
 function renderIntegrationSettings() {
-  const editing = state.settingsEditing;
   const integrations = state.integrations || {};
-  const metaMappings = integrations.metaForms?.mappings || [];
   const metaForms = integrations.metaForms?.forms || [];
-  const webhookUrl = `${window.location.origin}/api/webhooks/meta`;
-  const metaEvents = (state.integrationLog || []).filter((item) => item.provider === "META").slice(0, 12);
+  const editIndex = state.settingsEditing?.startsWith("meta-form:") ? Number(state.settingsEditing.replace("meta-form:", "")) : null;
+  const formValue = editIndex != null ? metaForms[editIndex] || {} : {};
   const formRows = metaForms.map((form, index) => `
     <tr>
       <td>${escapeHtml(form.name || "Sem nome")}</td>
       <td>${escapeHtml(form.id)}</td>
-      <td><button data-delete-meta-form="${index}">Excluir</button></td>
-    </tr>
-  `).join("");
-  const mappingRows = metaMappings.map((rule, index) => `
-    <tr>
-      <td>${escapeHtml(metaMappingTypeLabel(rule.type))}</td>
-      <td>${escapeHtml(rule.value)}</td>
-      <td>${escapeHtml(rule.project)}</td>
-      <td><button data-delete-meta-mapping="${index}">Excluir</button></td>
-    </tr>
-  `).join("");
-  const rows = integrationRows().map((item) => `
-    <tr>
-      <td>${escapeHtml(item.name)}</td>
-      <td>${escapeHtml(item.type)}</td>
-      <td class="${item.status ? "status-active" : "status-inactive"}">${item.status ? "Ativo" : "Inativo"}</td>
-      <td>${escapeHtml(item.detail)}</td>
-      <td><div class="row-actions"><button data-edit-integration="${item.id}">Editar</button><button data-delete-integration="${item.id}">Excluir</button></div></td>
+      <td>${escapeHtml(form.project || "Sem empreendimento")}</td>
+      <td><div class="row-actions"><button data-edit-meta-form="${index}">Editar</button><button data-delete-meta-form="${index}">Excluir</button></div></td>
     </tr>
   `).join("");
   settingsLayout(`
     <section class="panel">
-      <div class="panel-head">
-        <h2>Integrações</h2>
-        <button class="primary" data-new-integration>Cadastrar novo</button>
-      </div>
+      <h2>Integrações Meta</h2>
       ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
-      ${editing?.startsWith("integration:") ? renderIntegrationForm(editing.replace("integration:", ""), integrations) : ""}
-      <div class="table-wrap">
-        <table><thead><tr><th>Nome</th><th>Tipo</th><th>Status</th><th>Detalhe</th><th>Ações</th></tr></thead><tbody>${rows}</tbody></table>
-      </div>
-      <section class="integration-help">
-        <h2>Webhook Meta</h2>
-        <div class="meta">
-          <span>URL de callback: <strong>${escapeHtml(webhookUrl)}</strong></span>
-          <span>Variáveis na Vercel: <strong>META_VERIFY_TOKEN</strong>, <strong>META_APP_SECRET</strong>, <strong>META_PAGE_ACCESS_TOKEN</strong>, <strong>CRON_SECRET</strong></span>
-        </div>
-      </section>
       <section class="integration-help">
         <div class="panel-head">
           <h2>Formulários monitorados</h2>
           <button class="primary" data-sync-meta-recent>Sincronizar Meta</button>
         </div>
         <form id="metaFormMonitorForm" class="form-grid compact-form">
-          <div class="field"><label>ID do formulário</label><input name="id" required placeholder="Ex.: 4475904736028264"></div>
-          <div class="field"><label>Nome interno</label><input name="name" placeholder="Ex.: Golf Club - Julho"></div>
-          <div class="field"><label>&nbsp;</label><button class="primary" type="submit">Adicionar form</button></div>
+          <div class="field"><label>ID do formulário</label><input name="id" value="${escapeHtml(formValue.id || "")}" required placeholder="Ex.: 4475904736028264"></div>
+          <div class="field"><label>Nome interno</label><input name="name" value="${escapeHtml(formValue.name || "")}" placeholder="Ex.: Golf Club - Julho"></div>
+          <div class="field"><label>Empreendimento</label><select name="project" required><option value="">Selecione</option>${projectOptions(formValue.project || "")}</select></div>
+          <div class="field"><label>&nbsp;</label><button class="primary" type="submit">${editIndex != null ? "Salvar form" : "Adicionar form"}</button></div>
+          ${editIndex != null ? '<div class="field full"><button type="button" data-cancel-settings>Cancelar edição</button></div>' : ""}
         </form>
         <div class="table-wrap">
-          <table class="mapping-table"><thead><tr><th>Nome</th><th>ID do formulário</th><th>Ação</th></tr></thead><tbody>${formRows || '<tr><td colspan="3" class="empty">Nenhum formulário monitorado ainda.</td></tr>'}</tbody></table>
+          <table class="mapping-table"><thead><tr><th>Nome</th><th>ID do formulário</th><th>Empreendimento</th><th>Ações</th></tr></thead><tbody>${formRows || '<tr><td colspan="4" class="empty">Nenhum formulário monitorado ainda.</td></tr>'}</tbody></table>
         </div>
       </section>
       <section class="integration-help">
@@ -1657,57 +1631,9 @@ function renderIntegrationSettings() {
           <div class="field"><label>&nbsp;</label><button class="primary" type="submit">Importar lead</button></div>
         </form>
       </section>
-      <section class="integration-help">
-        <div class="panel-head">
-          <h2>Mapeamento anúncio x empreendimento</h2>
-        </div>
-        <form id="metaMappingForm" class="form-grid compact-form">
-          <div class="field"><label>Tipo</label><select name="type">
-            <option value="ad_id">ID do anúncio</option>
-            <option value="form_id">ID do formulário</option>
-            <option value="campaign_id">ID da campanha</option>
-            <option value="ad_name_contains">Nome do anúncio contém</option>
-            <option value="campaign_name_contains">Nome da campanha contém</option>
-          </select></div>
-          <div class="field"><label>ID ou texto</label><input name="value" required placeholder="Cole o ID ou parte do nome"></div>
-          <div class="field"><label>Empreendimento</label><select name="project">
-            <option>Reserva Guinle</option>
-            <option>Golf Club Resort</option>
-          </select></div>
-          <div class="field"><label>&nbsp;</label><button class="primary" type="submit">Adicionar regra</button></div>
-        </form>
-        <div class="table-wrap">
-          <table class="mapping-table"><thead><tr><th>Tipo</th><th>ID/texto</th><th>Empreendimento</th><th>Ação</th></tr></thead><tbody>${mappingRows || '<tr><td colspan="4" class="empty">Nenhuma regra cadastrada ainda.</td></tr>'}</tbody></table>
-        </div>
-      </section>
-      <h2>Eventos de integração</h2>
-      <div class="meta integration-log">${metaEvents.length ? metaEvents.map((item) => `<span>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))} · ${escapeHtml(item.provider)} · ${escapeHtml(item.action)}${item.details?.leadgenId ? ` · ${escapeHtml(item.details.leadgenId)}` : ""}${item.details?.project ? ` · ${escapeHtml(item.details.project)}` : ""}${item.details?.error ? ` · ${escapeHtml(item.details.error)}` : ""}</span>`).join("") : "<span>Nenhum evento de integração registrado ainda.</span>"}</div>
-      <h2>Auditoria</h2>
-      <div class="meta">${state.auditLog.map((item) => `<span>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))} · ${escapeHtml(item.action)} · ${escapeHtml(item.actor)}</span>`).join("")}</div>
     </section>
   `);
   bindSettingsCommon();
-  document.querySelector("[data-new-integration]")?.addEventListener("click", () => {
-    state.settingsEditing = "integration:metaForms";
-    renderSettings();
-  });
-  document.querySelectorAll("[data-edit-integration]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.settingsEditing = `integration:${button.dataset.editIntegration}`;
-      renderSettings();
-    });
-  });
-  document.querySelectorAll("[data-delete-integration]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      if (!confirm("Excluir esta integração?")) return;
-      await saveIntegration(button.dataset.deleteIntegration, {});
-    });
-  });
-  document.querySelector("#integrationForm")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    await saveIntegration(form.get("type"), Object.fromEntries(form.entries()));
-  });
   document.querySelector("#metaFormMonitorForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -1716,13 +1642,21 @@ function renderIntegrationSettings() {
     const next = JSON.parse(JSON.stringify(state.integrations || {}));
     const metaForms = next.metaForms || { enabled: true, forms: [], mappings: [] };
     metaForms.enabled = true;
-    metaForms.forms = [
-      ...(metaForms.forms || []).filter((item) => item.id !== id),
-      { id, name: String(form.get("name") || "").trim() }
-    ];
+    const nextForm = { id, name: String(form.get("name") || "").trim(), project: String(form.get("project") || "").trim() };
+    if (!nextForm.project) return;
+    metaForms.forms = editIndex != null
+      ? (metaForms.forms || []).map((item, index) => index === editIndex ? nextForm : item)
+      : [...(metaForms.forms || []).filter((item) => item.id !== id), nextForm];
     next.metaForms = metaForms;
-    state.settingsNotice = "Formulário Meta adicionado ao monitoramento.";
+    state.settingsEditing = null;
+    state.settingsNotice = editIndex != null ? "Formulário Meta atualizado." : "Formulário Meta adicionado ao monitoramento.";
     await saveIntegrations(next);
+  });
+  document.querySelectorAll("[data-edit-meta-form]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `meta-form:${button.dataset.editMetaForm}`;
+      renderSettings();
+    });
   });
   document.querySelectorAll("[data-delete-meta-form]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -1772,40 +1706,86 @@ function renderIntegrationSettings() {
       alert(error.message);
     }
   });
-  document.querySelector("#metaMappingForm")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const rule = {
-      type: form.get("type"),
-      value: String(form.get("value") || "").trim(),
-      project: form.get("project")
-    };
-    if (!rule.value) return;
-    const next = JSON.parse(JSON.stringify(state.integrations || {}));
-    const metaForms = next.metaForms || { enabled: false, forms: [] };
-    metaForms.mappings = [...(metaForms.mappings || []), rule];
-    next.metaForms = metaForms;
-    await saveIntegrations(next);
-  });
-  document.querySelectorAll("[data-delete-meta-mapping]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const next = JSON.parse(JSON.stringify(state.integrations || {}));
-      const metaForms = next.metaForms || { enabled: false, forms: [] };
-      metaForms.mappings = (metaForms.mappings || []).filter((_, index) => index !== Number(button.dataset.deleteMetaMapping));
-      next.metaForms = metaForms;
-      await saveIntegrations(next);
+}
+
+function renderLogSettings() {
+  const term = state.settingsLogSearch.trim().toLowerCase();
+  const matches = (value) => !term || String(value || "").toLowerCase().includes(term);
+  const integrationRows = (state.integrationLog || [])
+    .filter((item) => {
+      const details = JSON.stringify(item.details || {});
+      return [item.provider, item.action, details, item.details?.leadgenId, item.details?.error].some(matches);
+    })
+    .map((item) => `
+      <tr>
+        <td>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))}</td>
+        <td>${escapeHtml(item.provider || "")}</td>
+        <td>${escapeHtml(item.action || "")}</td>
+        <td>${escapeHtml(item.details?.leadgenId || item.details?.formId || "")}</td>
+        <td>${escapeHtml(item.details?.project || item.details?.error || "")}</td>
+      </tr>
+    `).join("");
+  const auditRows = (state.auditLog || [])
+    .filter((item) => {
+      const details = JSON.stringify(item.details || {});
+      return [item.actor, item.action, details].some(matches);
+    })
+    .map((item) => `
+      <tr>
+        <td>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))}</td>
+        <td>${escapeHtml(item.actor || "")}</td>
+        <td>${escapeHtml(item.action || "")}</td>
+        <td>${escapeHtml(JSON.stringify(item.details || {}))}</td>
+      </tr>
+    `).join("");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Logs</h2>
+        <input id="settingsLogSearch" class="settings-search" placeholder="Pesquisar nos logs" value="${escapeHtml(state.settingsLogSearch)}">
+      </div>
+      <div class="logs-grid">
+        <section>
+          <h2>Eventos de integração</h2>
+          <div class="table-wrap">
+            <table><thead><tr><th>Data</th><th>Origem</th><th>Evento</th><th>ID</th><th>Detalhe</th></tr></thead><tbody>${integrationRows || '<tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>
+          </div>
+        </section>
+        <section>
+          <h2>Auditoria</h2>
+          <div class="table-wrap">
+            <table><thead><tr><th>Data</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr></thead><tbody>${auditRows || '<tr><td colspan="4" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>
+          </div>
+        </section>
+      </div>
+    </section>
+  `);
+  document.querySelector("#settingsLogSearch")?.addEventListener("input", (event) => {
+    state.settingsLogSearch = event.target.value;
+    renderLogSettings();
+    requestAnimationFrame(() => {
+      const input = document.querySelector("#settingsLogSearch");
+      input?.focus();
+      input?.setSelectionRange(state.settingsLogSearch.length, state.settingsLogSearch.length);
     });
   });
 }
 
-function metaMappingTypeLabel(type) {
-  return {
-    ad_id: "ID do anúncio",
-    form_id: "ID do formulário",
-    campaign_id: "ID da campanha",
-    ad_name_contains: "Nome do anúncio contém",
-    campaign_name_contains: "Nome da campanha contém"
-  }[type] || type;
+function renderKnowledgeSettings() {
+  const webhookUrl = `${window.location.origin}/api/webhooks/meta`;
+  settingsLayout(`
+    <section class="panel">
+      <h2>Base de conhecimento</h2>
+      <section class="integration-help">
+        <h2>Webhook Meta</h2>
+        <div class="meta">
+          <span>URL de callback: <strong>${escapeHtml(webhookUrl)}</strong></span>
+          <span>Variáveis na Vercel: <strong>META_VERIFY_TOKEN</strong>, <strong>META_APP_SECRET</strong>, <strong>META_PAGE_ACCESS_TOKEN</strong>, <strong>CRON_SECRET</strong></span>
+          <span>Evento assinado no Meta: <strong>Page / leadgen</strong></span>
+        </div>
+      </section>
+    </section>
+  `);
 }
 
 function renderAccessSettings() {
@@ -1837,36 +1817,78 @@ function renderAccessSettings() {
   `);
 }
 
-function renderIntegrationForm(type, integrations) {
-  const endpoint = integrations.proprietaryEndpoints?.[0] || {};
-  return `
-    <form id="integrationForm" class="form-grid editor">
-      <div class="field"><label>Tipo</label><select name="type">
-        ${["metaForms", "whatsapp", "email", "endpoint"].map((item) => `<option value="${item}" ${item === type ? "selected" : ""}>${escapeHtml({ metaForms: "Forms do Meta", whatsapp: "WhatsApp", email: "E-mail", endpoint: "Endpoint proprietário" }[item])}</option>`).join("")}
-      </select></div>
-      <div class="field"><label>Status</label><select name="enabled"><option value="true">Ativo</option><option value="false">Inativo</option></select></div>
-      <div class="field"><label>Provedor / Remetente</label><input name="primary" value="${escapeHtml(integrations.whatsapp?.provider || integrations.email?.sender || "")}"></div>
-      <div class="field"><label>SMTP / URL</label><input name="secondary" value="${escapeHtml(integrations.email?.smtpHost || endpoint.url || "")}"></div>
-      <div class="field full"><label>&nbsp;</label><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
-    </form>
-  `;
-}
-
-async function saveIntegration(type, values) {
-  const integrations = JSON.parse(JSON.stringify(state.integrations || {}));
-  const enabled = values.enabled === "true";
-  if (type === "metaForms") integrations.metaForms = { enabled, forms: integrations.metaForms?.forms || [], mappings: integrations.metaForms?.mappings || [] };
-  if (type === "whatsapp") integrations.whatsapp = { enabled, provider: values.primary || "", tokenSet: integrations.whatsapp?.tokenSet || false };
-  if (type === "email") integrations.email = { enabled, sender: values.primary || "", smtpHost: values.secondary || "" };
-  if (type === "endpoint") integrations.proprietaryEndpoints = values.secondary ? [{ name: "Endpoint principal", url: values.secondary, enabled }] : [];
-  await saveIntegrations(integrations);
-}
-
 async function saveIntegrations(integrations) {
   await api("/api/integrations", { method: "PUT", body: JSON.stringify({ integrations }) });
   state.settingsEditing = null;
   await loadState();
   renderSettings();
+}
+
+function renderProjectSettings() {
+  const isCreating = state.settingsEditing === "new-project";
+  const editIndex = state.settingsEditing?.startsWith("project:") ? Number(state.settingsEditing.replace("project:", "")) : null;
+  const formValue = editIndex != null ? state.projects[editIndex] || "" : "";
+  const rows = (state.projects || []).map((project, index) => {
+    const leadCount = state.leads.filter((lead) => lead.desiredProject === project).length;
+    const formCount = (state.integrations?.metaForms?.forms || []).filter((form) => form.project === project).length;
+    return `
+      <tr>
+        <td>${escapeHtml(project)}</td>
+        <td>${leadCount}</td>
+        <td>${formCount}</td>
+        <td><div class="row-actions"><button data-edit-project="${index}">Editar</button><button data-delete-project="${index}">Excluir</button></div></td>
+      </tr>
+    `;
+  }).join("");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Empreendimentos</h2>
+        <button class="primary" data-new-project>Cadastrar novo</button>
+      </div>
+      ${(isCreating || editIndex != null) ? `
+        <form id="projectForm" class="form-grid editor">
+          <div class="field full"><label>Nome do empreendimento</label><input name="name" value="${escapeHtml(formValue)}" required></div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
+        </form>
+      ` : ""}
+      <div class="table-wrap">
+        <table><thead><tr><th>Empreendimento</th><th>Leads usando</th><th>Forms Meta</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="empty">Nenhum empreendimento cadastrado</td></tr>'}</tbody></table>
+      </div>
+    </section>
+  `);
+  bindSettingsCommon();
+  document.querySelector("[data-new-project]")?.addEventListener("click", () => {
+    state.settingsEditing = "new-project";
+    renderSettings();
+  });
+  document.querySelectorAll("[data-edit-project]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `project:${button.dataset.editProject}`;
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-delete-project]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Excluir este empreendimento? Ele deixará de aparecer nos menus suspensos.")) return;
+      const data = await api(`/api/projects/${button.dataset.deleteProject}`, { method: "DELETE" });
+      state.projects = data.projects;
+      await loadState();
+      renderSettings();
+    });
+  });
+  document.querySelector("#projectForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const payload = { name: form.get("name") };
+    const data = editIndex != null
+      ? await api(`/api/projects/${editIndex}`, { method: "PATCH", body: JSON.stringify(payload) })
+      : await api("/api/projects", { method: "POST", body: JSON.stringify(payload) });
+    state.projects = data.projects;
+    state.settingsEditing = null;
+    await loadState();
+    renderSettings();
+  });
 }
 
 function renderStatusSettings() {

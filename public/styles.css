@@ -275,6 +275,24 @@ textarea {
   min-width: 640px;
 }
 
+.settings-search {
+  max-width: 360px;
+}
+
+.logs-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.logs-grid section {
+  min-width: 0;
+}
+
+.logs-grid h2 {
+  margin-bottom: 10px;
+}
+
 .password-rules {
   margin: -8px 0 8px;
   padding-left: 18px;
@@ -1254,6 +1272,7 @@ th {
   .lead-detail,
   .meta-grid,
   .settings-grid,
+  .logs-grid,
   .form-grid {
     grid-template-columns: 1fr;
   }
