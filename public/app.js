@@ -224,11 +224,12 @@ function isAvailableBaseLead(lead) {
 }
 
 function baseSources() {
-  const sources = [...new Set(state.leads
+  let sources = [...new Set(state.leads
     .filter((lead) => isAvailableBaseLead(lead) || lead.source === "META")
     .map((lead) => lead.source)
     .filter(Boolean))].sort();
   if (sources.includes("ODYSSEIA")) sources.unshift(...sources.splice(sources.indexOf("ODYSSEIA"), 1));
+  if (sources.includes("META")) sources.push(...sources.splice(sources.indexOf("META"), 1));
   return sources.length ? ["TODOS", ...sources.filter((source) => source !== "TODOS")] : [];
 }
 
@@ -244,6 +245,14 @@ function baseLeads() {
 
 function baseLeadCount() {
   return state.leads.filter((lead) => !lead.inPipeline).length;
+}
+
+function leadBaseStatus(lead, options = {}) {
+  const source = String(lead.source || "").toUpperCase();
+  if (options.blankHistoricalBaseStatus && (source.includes("RD") || source.includes("VINHOS") || source.includes("OAB"))) {
+    return "";
+  }
+  return lead.sourceStatus || lead.odysseiaStatus || lead.status;
 }
 
 function projectOptions(selected = "") {
@@ -898,7 +907,7 @@ function leadRows(leads, options = {}) {
       <td>${escapeHtml(lead.phone)}</td>
       ${options.hideAssistant ? "" : `<td>${escapeHtml(lead.assistant)}</td>`}
       <td>
-        ${(options.readOnlyStatus || options.textStatus) ? escapeHtml(lead.sourceStatus || lead.odysseiaStatus || lead.status) : `<select data-status-select="${escapeHtml(lead.id)}">
+        ${(options.readOnlyStatus || options.textStatus) ? escapeHtml(leadBaseStatus(lead, options)) : `<select data-status-select="${escapeHtml(lead.id)}">
           ${state.statuses.map((status) => `<option value="${escapeHtml(status)}" ${status === lead.status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
         </select>`}
       </td>
@@ -958,7 +967,7 @@ function renderSheet() {
 }
 
 function renderBaseSources(sources) {
-  const sourceLabel = (source) => ({ TODOS: "Todos", META: "Meta" }[source] || source);
+  const sourceLabel = (source) => ({ TODOS: "Todos", META: "META" }[source] || source);
   return `
     <div class="tabs base-tabs">
       ${sources.map((source) => `<button class="${state.baseSource === source ? "active" : ""}" data-base-source="${escapeHtml(source)}">${escapeHtml(sourceLabel(source))}</button>`).join("")}
@@ -969,7 +978,7 @@ function renderBaseSources(sources) {
 function renderLeadBases() {
   const sources = baseSources();
   const leads = baseLeads();
-  const rows = leadRows(leads, { readOnlyStatus: true, withRescue: true });
+  const rows = leadRows(leads, { hideId: true, readOnlyStatus: true, withRescue: true, blankHistoricalBaseStatus: true });
   const pending = leads.filter((lead) => !lead.inPipeline).length;
   const rescued = leads.filter((lead) => lead.inPipeline).length;
   renderShell(`
@@ -981,7 +990,7 @@ function renderLeadBases() {
       <div class="metric"><span>Resgatados</span><strong>${rescued}</strong></div>
       <div class="metric"><span>Origem</span><strong>${escapeHtml(state.baseSource)}</strong></div>
     </section>
-    ${renderLeadsTable(rows, { withRescue: true })}
+    ${renderLeadsTable(rows, { hideId: true, withRescue: true })}
   `);
   bindLeadActions();
   document.querySelectorAll("[data-base-source]").forEach((button) => {
@@ -1302,6 +1311,39 @@ function renderSettings() {
   return renderUserSettings();
 }
 
+function renderSettingsActionMenu(menuId, actions) {
+  return `
+    <div class="action-menu">
+      <button type="button" class="action-menu-button" data-settings-action-menu="${escapeHtml(menuId)}" title="Ações" aria-label="Ações">⋮</button>
+      <div class="action-menu-list">
+        ${actions.filter(Boolean).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function bindSettingsActionMenus() {
+  document.querySelectorAll("[data-settings-action-menu]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const menu = button.closest(".action-menu");
+      document.querySelectorAll(".action-menu.open").forEach((item) => {
+        if (item !== menu) item.classList.remove("open");
+      });
+      const rect = button.getBoundingClientRect();
+      menu?.style.setProperty("--menu-top", `${rect.bottom + 6}px`);
+      menu?.style.setProperty("--menu-right", `${Math.max(12, window.innerWidth - rect.right)}px`);
+      menu?.classList.toggle("open");
+      if (menu?.classList.contains("open")) {
+        setTimeout(() => document.addEventListener("click", closeUserActionMenus, { once: true }), 0);
+      }
+    });
+  });
+  document.querySelectorAll(".action-menu-list").forEach((menu) => {
+    menu.addEventListener("click", (event) => event.stopPropagation());
+  });
+}
+
 function userPasswordChip(user) {
   if (user.passwordConfigured) return '<span class="chip">Senha criada</span>';
   if (user.invitePending) return '<span class="chip">Convite pendente</span>';
@@ -1319,16 +1361,13 @@ function renderUserActionMenu(user) {
       ? `<button type="button" data-deactivate-user="${userId}">Inativar</button>`
       : `<button type="button" data-activate-user="${userId}">Ativar</button>`;
   return `
-    <div class="action-menu">
-      <button type="button" class="action-menu-button" data-user-action-menu="${userId}" title="Ações" aria-label="Ações do usuário">⋮</button>
-      <div class="action-menu-list">
-        <button type="button" data-edit-user="${userId}">Editar</button>
-        ${statusAction}
-        <button type="button" data-invite-user="${userId}">${user.passwordConfigured ? "Redefinir senha" : "Reenviar convite"}</button>
-        ${canManageSystemSettings() ? `<button type="button" data-view-user-log="${userId}">Ver log</button>` : ""}
-        ${canManageSystemSettings() ? `<button type="button" class="danger-menu-item" data-delete-user="${userId}">Excluir</button>` : ""}
-      </div>
-    </div>
+    ${renderSettingsActionMenu(`user-${userId}`, [
+      `<button type="button" data-edit-user="${userId}">Editar</button>`,
+      statusAction,
+      `<button type="button" data-invite-user="${userId}">${user.passwordConfigured ? "Redefinir senha" : "Reenviar convite"}</button>`,
+      canManageSystemSettings() ? `<button type="button" data-view-user-log="${userId}">Ver log</button>` : "",
+      canManageSystemSettings() ? `<button type="button" class="danger-menu-item" data-delete-user="${userId}">Excluir</button>` : ""
+    ])}
   `;
 }
 
@@ -1409,25 +1448,7 @@ function renderUserSettings() {
     ${logUserId ? renderUserAccessLogModal(logUserId) : ""}
   `);
   bindSettingsCommon();
-  document.querySelectorAll("[data-user-action-menu]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      const menu = button.closest(".action-menu");
-      document.querySelectorAll(".action-menu.open").forEach((item) => {
-        if (item !== menu) item.classList.remove("open");
-      });
-      const rect = button.getBoundingClientRect();
-      menu?.style.setProperty("--menu-top", `${rect.bottom + 6}px`);
-      menu?.style.setProperty("--menu-right", `${Math.max(12, window.innerWidth - rect.right)}px`);
-      menu?.classList.toggle("open");
-      if (menu?.classList.contains("open")) {
-        setTimeout(() => document.addEventListener("click", closeUserActionMenus, { once: true }), 0);
-      }
-    });
-  });
-  document.querySelectorAll(".action-menu-list").forEach((menu) => {
-    menu.addEventListener("click", (event) => event.stopPropagation());
-  });
+  bindSettingsActionMenus();
   document.querySelector("[data-user-modal-backdrop]")?.addEventListener("click", (event) => {
     if (event.target !== event.currentTarget) return;
     state.settingsEditing = null;
@@ -1627,12 +1648,12 @@ function renderIntegrationSettings() {
       <td>${escapeHtml(form.id)}</td>
       <td>${escapeHtml(form.project || "Sem empreendimento")}</td>
       <td>
-        <div class="icon-actions">
-          <button class="icon action-icon" data-edit-meta-form="${form.index}" title="Editar" aria-label="Editar formulário">✎</button>
-          ${form.archived
-            ? `<button class="icon action-icon" data-restore-meta-form="${form.index}" title="Restaurar" aria-label="Restaurar formulário">↩</button>`
-            : `<button class="icon action-icon" data-archive-meta-form="${form.index}" title="Arquivar" aria-label="Arquivar formulário">▣</button>`}
-        </div>
+        ${renderSettingsActionMenu(`meta-form-${form.index}`, [
+          `<button type="button" data-edit-meta-form="${form.index}">Editar</button>`,
+          form.archived
+            ? `<button type="button" data-restore-meta-form="${form.index}">Restaurar</button>`
+            : `<button type="button" data-archive-meta-form="${form.index}">Arquivar</button>`
+        ])}
       </td>
     </tr>
   `).join("");
@@ -1667,6 +1688,7 @@ function renderIntegrationSettings() {
     ${isFormModalOpen ? renderMetaFormModal(formValue, editIndex != null) : ""}
   `);
   bindSettingsCommon();
+  bindSettingsActionMenus();
   document.querySelector("[data-new-meta-form]")?.addEventListener("click", () => {
     state.settingsEditing = "new-meta-form";
     renderSettings();
@@ -1896,7 +1918,10 @@ function renderProjectSettings() {
         <td>${escapeHtml(project)}</td>
         <td>${leadCount}</td>
         <td>${formCount}</td>
-        <td><div class="row-actions"><button data-edit-project="${index}">Editar</button><button data-delete-project="${index}">Excluir</button></div></td>
+        <td>${renderSettingsActionMenu(`project-${index}`, [
+          `<button type="button" data-edit-project="${index}">Editar</button>`,
+          `<button type="button" class="danger-menu-item" data-delete-project="${index}">Excluir</button>`
+        ])}</td>
       </tr>
     `;
   }).join("");
@@ -1918,6 +1943,7 @@ function renderProjectSettings() {
     </section>
   `);
   bindSettingsCommon();
+  bindSettingsActionMenus();
   document.querySelector("[data-new-project]")?.addEventListener("click", () => {
     state.settingsEditing = "new-project";
     renderSettings();
@@ -1962,7 +1988,10 @@ function renderStatusSettings() {
         <td>${escapeHtml(status)}</td>
         <td>${index + 1}</td>
         <td>${count}</td>
-        <td><div class="row-actions"><button data-edit-status="${index}">Editar</button><button data-delete-status="${index}">Excluir</button></div></td>
+        <td>${renderSettingsActionMenu(`status-${index}`, [
+          `<button type="button" data-edit-status="${index}">Editar</button>`,
+          `<button type="button" class="danger-menu-item" data-delete-status="${index}">Excluir</button>`
+        ])}</td>
       </tr>
     `;
   }).join("");
@@ -1984,6 +2013,7 @@ function renderStatusSettings() {
     </section>
   `);
   bindSettingsCommon();
+  bindSettingsActionMenus();
   document.querySelector("[data-new-status]")?.addEventListener("click", () => {
     state.settingsEditing = "new-status";
     renderSettings();
@@ -2027,7 +2057,10 @@ function renderTagSettings() {
         <td><span class="tag static-tag" style="--tag-color:${escapeHtml(tag.color)}">${escapeHtml(tag.name)}</span></td>
         <td><span class="color-swatch" style="background:${escapeHtml(tag.color)}"></span>${escapeHtml(tag.color)}</td>
         <td>${count}</td>
-        <td><div class="row-actions"><button data-edit-tag="${escapeHtml(tag.id)}">Editar</button><button data-delete-tag="${escapeHtml(tag.id)}">Excluir</button></div></td>
+        <td>${renderSettingsActionMenu(`tag-${tag.id}`, [
+          `<button type="button" data-edit-tag="${escapeHtml(tag.id)}">Editar</button>`,
+          `<button type="button" class="danger-menu-item" data-delete-tag="${escapeHtml(tag.id)}">Excluir</button>`
+        ])}</td>
       </tr>
     `;
   }).join("");
@@ -2050,6 +2083,7 @@ function renderTagSettings() {
     </section>
   `);
   bindSettingsCommon();
+  bindSettingsActionMenus();
   document.querySelector("[data-new-tag]")?.addEventListener("click", () => {
     state.settingsEditing = "new-tag";
     renderSettings();
