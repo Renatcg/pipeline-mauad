@@ -879,6 +879,7 @@ th {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 14px;
+  min-width: 0;
 }
 
 .panel h2 {
@@ -900,7 +901,7 @@ th {
 
 .lead-detail {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.75fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.75fr);
   gap: 14px;
   align-items: start;
 }
@@ -959,6 +960,38 @@ th {
   white-space: normal;
 }
 
+.answers-list {
+  display: grid;
+  gap: 10px;
+}
+
+.answer-item {
+  display: grid;
+  gap: 5px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.answer-item:last-child {
+  border-bottom: 0;
+}
+
+.answer-item span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+}
+
+.answer-item strong {
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .meta-ad-link {
   display: grid;
   gap: 4px;
@@ -982,6 +1015,12 @@ th {
 
 .comment-form button {
   justify-self: start;
+}
+
+.field small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .timeline {

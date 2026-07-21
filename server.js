@@ -280,12 +280,18 @@ function migrateDb(db) {
   if (db.integrations?.metaForms?.forms) {
     db.integrations.metaForms.forms = db.integrations.metaForms.forms
       .map((form) => {
-        if (typeof form === "string") return { id: form, name: "", project: "", adUrl: "", archived: false };
+        if (typeof form === "string") return { id: form, name: "", project: "", adUrl: "", adLinks: [], questionLabels: {}, answerLabels: {}, archived: false };
         return {
           id: String(form.id || form.formId || "").trim(),
           name: String(form.name || "").trim(),
           project: String(form.project || "").trim(),
           adUrl: String(form.adUrl || form.ad_url || "").trim(),
+          adLinks: Array.isArray(form.adLinks) ? form.adLinks.map((ad) => ({
+            id: String(ad.id || ad.adId || "").trim(),
+            url: String(ad.url || ad.adUrl || "").trim()
+          })).filter((ad) => ad.id && ad.url) : [],
+          questionLabels: form.questionLabels && typeof form.questionLabels === "object" ? form.questionLabels : {},
+          answerLabels: form.answerLabels && typeof form.answerLabels === "object" ? form.answerLabels : {},
           archived: Boolean(form.archived)
         };
       })
@@ -699,10 +705,19 @@ function configuredMetaForms(db) {
       id,
       name: String(form.name || "").trim(),
       project: String(form.project || "").trim(),
-      adUrl: String(form.adUrl || "").trim()
+      adUrl: String(form.adUrl || "").trim(),
+      adLinks: Array.isArray(form.adLinks) ? form.adLinks : [],
+      questionLabels: form.questionLabels || {},
+      answerLabels: form.answerLabels || {}
     });
   }
   return [...unique.values()];
+}
+
+function metaAdUrlForForm(form, adId) {
+  const id = String(adId || "").trim();
+  const adLink = (form?.adLinks || []).find((item) => String(item.id || "").trim() === id);
+  return String(adLink?.url || form?.adUrl || "").trim();
 }
 
 function defaultMetaAssignee(db) {
@@ -750,7 +765,7 @@ function createMetaLead(db, leadgenId, metaLead, webhookValue) {
       formId: metaLead.form_id || webhookValue.form_id || "",
       adId: metaLead.ad_id || webhookValue.ad_id || "",
       adName: metaLead.ad_name || "",
-      adUrl: monitoredForm?.adUrl || "",
+      adUrl: metaAdUrlForForm(monitoredForm, metaLead.ad_id || webhookValue.ad_id),
       adsetId: metaLead.adset_id || "",
       adsetName: metaLead.adset_name || "",
       campaignId: metaLead.campaign_id || "",

@@ -1058,24 +1058,40 @@ function metaAdUrlForLead(lead) {
   if (!formId) return "";
   const form = (state.integrations?.metaForms?.forms || [])
     .find((item) => String(item.id || "").trim() === formId);
-  return String(form?.adUrl || "").trim();
+  const adId = String(lead.meta?.adId || "").trim();
+  const adLink = (form?.adLinks || []).find((item) => String(item.id || "").trim() === adId);
+  return String(adLink?.url || form?.adUrl || "").trim();
+}
+
+function metaFormConfigForLead(lead) {
+  const formId = String(lead.meta?.formId || "").trim();
+  if (!formId) return {};
+  return (state.integrations?.metaForms?.forms || [])
+    .find((item) => String(item.id || "").trim() === formId) || {};
+}
+
+function friendlyMetaValue(value, labels = {}) {
+  const text = String(value || "");
+  return labels[text] || text;
 }
 
 function renderMetaLeadInfo(lead) {
   if (lead.source !== "META" || !lead.meta) return "";
-  const answerRows = Object.entries(lead.meta.rawFields || {}).map(([question, answer]) => `
-    <tr>
-      <td>${escapeHtml(question)}</td>
-      <td>${escapeHtml(answer)}</td>
-    </tr>
+  const formConfig = metaFormConfigForLead(lead);
+  const ignoredFields = new Set(["email", "full_name", "phone_number", "nome", "telefone", "celular"]);
+  const answerRows = Object.entries(lead.meta.rawFields || {})
+    .filter(([question]) => !ignoredFields.has(String(question || "").toLowerCase()))
+    .map(([question, answer]) => `
+    <article class="answer-item">
+      <span>${escapeHtml(friendlyMetaValue(question, formConfig.questionLabels))}</span>
+      <strong>${escapeHtml(friendlyMetaValue(answer, formConfig.answerLabels))}</strong>
+    </article>
   `).join("");
   const adUrl = metaAdUrlForLead(lead);
   return `
     <section class="panel meta-detail-panel">
       <h2>Respostas do formulário</h2>
-      <div class="table-wrap">
-        <table class="answers-table"><thead><tr><th>Pergunta</th><th>Resposta</th></tr></thead><tbody>${answerRows || '<tr><td colspan="2" class="empty">Nenhuma resposta recebida.</td></tr>'}</tbody></table>
-      </div>
+      <div class="answers-list">${answerRows || '<div class="empty">Nenhuma resposta recebida.</div>'}</div>
       <div class="meta-ad-link">
         <span>URL do anúncio</span>
         ${adUrl ? `<a href="${escapeHtml(adUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(adUrl)}</a>` : "<strong>Não cadastrada</strong>"}
@@ -1633,6 +1649,12 @@ function renderUserAccessLogModal(userId) {
 }
 
 function renderMetaFormModal(formValue = {}, isEditing = false) {
+  const formatMapping = (mapping = {}) => Object.entries(mapping || {})
+    .map(([from, to]) => `${from} = ${to}`)
+    .join("\n");
+  const formatAdLinks = (links = []) => (Array.isArray(links) ? links : [])
+    .map((item) => `${item.id || ""} = ${item.url || ""}`)
+    .join("\n");
   return `
     <div class="modal-backdrop" data-meta-form-modal-backdrop>
       <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="metaFormModalTitle">
@@ -1643,13 +1665,35 @@ function renderMetaFormModal(formValue = {}, isEditing = false) {
         <form id="metaFormMonitorForm" class="form-grid">
           <div class="field"><label>ID do formulário</label><input name="id" value="${escapeHtml(formValue.id || "")}" required autofocus placeholder="Ex.: 4475904736028264"></div>
           <div class="field"><label>Nome interno</label><input name="name" value="${escapeHtml(formValue.name || "")}" placeholder="Ex.: Golf Club - Julho"></div>
-          <div class="field"><label>Empreendimento</label><select name="project" required><option value="">Selecione</option>${projectOptions(formValue.project || "")}</select></div>
-          <div class="field"><label>URL do anúncio</label><input name="adUrl" type="url" value="${escapeHtml(formValue.adUrl || "")}" placeholder="https://..."></div>
+          <div class="field"><label>Empreendimento</label><select name="project" required><option value="">Selecione</option>${projectOptions(formValue.project || "")}</select><small>Usado para preencher automaticamente a obra desejada quando o lead entrar.</small></div>
+          <div class="field"><label>URL padrão do anúncio</label><input name="adUrl" type="url" value="${escapeHtml(formValue.adUrl || "")}" placeholder="https://..."><small>Será usada quando o ID do anúncio não tiver uma URL específica cadastrada.</small></div>
+          <div class="field full"><label>URLs por anúncio</label><textarea name="adLinks" placeholder="123456789 = https://www.instagram.com/p/...">${escapeHtml(formatAdLinks(formValue.adLinks))}</textarea><small>Uma linha por anúncio, no formato ID do anúncio = URL.</small></div>
+          <div class="field full"><label>Perguntas amigáveis</label><textarea name="questionLabels" placeholder="quanto_você_pretende_investir? = Quanto pretende investir?">${escapeHtml(formatMapping(formValue.questionLabels))}</textarea></div>
+          <div class="field full"><label>Respostas amigáveis</label><textarea name="answerLabels" placeholder="até_r$_600_mil_ = Até R$ 600 mil">${escapeHtml(formatMapping(formValue.answerLabels))}</textarea></div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">${isEditing ? "Salvar form" : "Adicionar form"}</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       </section>
     </div>
   `;
+}
+
+function parseKeyValueLines(text) {
+  return String(text || "").split(/\r?\n/).reduce((acc, line) => {
+    const clean = line.trim();
+    if (!clean) return acc;
+    const separator = clean.includes("=>") ? "=>" : clean.includes("=") ? "=" : null;
+    if (!separator) return acc;
+    const [key, ...valueParts] = clean.split(separator);
+    const from = key.trim();
+    const to = valueParts.join(separator).trim();
+    if (from && to) acc[from] = to;
+    return acc;
+  }, {});
+}
+
+function parseAdLinks(text) {
+  const mapping = parseKeyValueLines(text);
+  return Object.entries(mapping).map(([id, url]) => ({ id, url }));
 }
 
 function renderIntegrationSettings() {
@@ -1738,6 +1782,9 @@ function renderIntegrationSettings() {
       name: String(form.get("name") || "").trim(),
       project: String(form.get("project") || "").trim(),
       adUrl: String(form.get("adUrl") || "").trim(),
+      adLinks: parseAdLinks(form.get("adLinks")),
+      questionLabels: parseKeyValueLines(form.get("questionLabels")),
+      answerLabels: parseKeyValueLines(form.get("answerLabels")),
       archived: Boolean(formValue.archived)
     };
     if (!nextForm.project) return;
