@@ -965,6 +965,10 @@ th {
   color: white;
 }
 
+.compact-tabs {
+  margin: 2px 0 10px;
+}
+
 .editor {
   margin-bottom: 14px;
   padding: 12px;
@@ -978,6 +982,27 @@ th {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.icon-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.action-icon {
+  width: 32px;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.action-icon:hover {
+  background: #eef7f6;
+  color: var(--brand);
 }
 
 .action-menu {

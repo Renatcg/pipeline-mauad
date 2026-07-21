@@ -280,11 +280,12 @@ function migrateDb(db) {
   if (db.integrations?.metaForms?.forms) {
     db.integrations.metaForms.forms = db.integrations.metaForms.forms
       .map((form) => {
-        if (typeof form === "string") return { id: form, name: "" };
+        if (typeof form === "string") return { id: form, name: "", project: "", archived: false };
         return {
           id: String(form.id || form.formId || "").trim(),
           name: String(form.name || "").trim(),
-          project: String(form.project || "").trim()
+          project: String(form.project || "").trim(),
+          archived: Boolean(form.archived)
         };
       })
       .filter((form, index, forms) => form.id && forms.findIndex((item) => item.id === form.id) === index);
@@ -689,12 +690,9 @@ async function fetchMetaFormLeads(formId, { sinceIso = "", limit = 200 } = {}) {
 }
 
 function configuredMetaForms(db) {
-  const forms = db.integrations?.metaForms?.forms || [];
-  const mappingForms = normalizeMetaMappingRules(db.integrations)
-    .filter((rule) => rule.type === "form_id")
-    .map((rule) => ({ id: rule.value, name: rule.project ? `Form ${rule.project}` : "" }));
+  const forms = (db.integrations?.metaForms?.forms || []).filter((form) => !form.archived);
   const unique = new Map();
-  for (const form of [...forms, ...mappingForms]) {
+  for (const form of forms) {
     const id = String(form.id || form.formId || "").trim();
     if (!id || unique.has(id)) continue;
     unique.set(id, {

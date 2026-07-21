@@ -20,6 +20,7 @@ const state = {
   settingsEditing: null,
   settingsNotice: "",
   settingsLogSearch: "",
+  metaFormsTab: "active",
   mobileNavOpen: false,
   lastAccessLogKey: "",
   creatingLead: false,
@@ -1591,17 +1592,48 @@ function renderUserAccessLogModal(userId) {
   `;
 }
 
+function renderMetaFormModal(formValue = {}, isEditing = false) {
+  return `
+    <div class="modal-backdrop" data-meta-form-modal-backdrop>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="metaFormModalTitle">
+        <div class="panel-head">
+          <h2 id="metaFormModalTitle">${isEditing ? "Editar Form Meta" : "Adicionar Form"}</h2>
+          <button type="button" class="icon" data-cancel-settings title="Fechar">×</button>
+        </div>
+        <form id="metaFormMonitorForm" class="form-grid">
+          <div class="field"><label>ID do formulário</label><input name="id" value="${escapeHtml(formValue.id || "")}" required autofocus placeholder="Ex.: 4475904736028264"></div>
+          <div class="field"><label>Nome interno</label><input name="name" value="${escapeHtml(formValue.name || "")}" placeholder="Ex.: Golf Club - Julho"></div>
+          <div class="field full"><label>Empreendimento</label><select name="project" required><option value="">Selecione</option>${projectOptions(formValue.project || "")}</select></div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">${isEditing ? "Salvar form" : "Adicionar form"}</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
 function renderIntegrationSettings() {
   const integrations = state.integrations || {};
   const metaForms = integrations.metaForms?.forms || [];
   const editIndex = state.settingsEditing?.startsWith("meta-form:") ? Number(state.settingsEditing.replace("meta-form:", "")) : null;
+  const isCreatingForm = state.settingsEditing === "new-meta-form";
+  const isFormModalOpen = isCreatingForm || editIndex != null;
   const formValue = editIndex != null ? metaForms[editIndex] || {} : {};
-  const formRows = metaForms.map((form, index) => `
+  const visibleForms = metaForms
+    .map((form, index) => ({ ...form, index }))
+    .filter((form) => state.metaFormsTab === "archived" ? form.archived : !form.archived);
+  const formRows = visibleForms.map((form) => `
     <tr>
       <td>${escapeHtml(form.name || "Sem nome")}</td>
       <td>${escapeHtml(form.id)}</td>
       <td>${escapeHtml(form.project || "Sem empreendimento")}</td>
-      <td><div class="row-actions"><button data-edit-meta-form="${index}">Editar</button><button data-delete-meta-form="${index}">Excluir</button></div></td>
+      <td>
+        <div class="icon-actions">
+          <button class="icon action-icon" data-edit-meta-form="${form.index}" title="Editar" aria-label="Editar formulário">✎</button>
+          ${form.archived
+            ? `<button class="icon action-icon" data-restore-meta-form="${form.index}" title="Restaurar" aria-label="Restaurar formulário">↩</button>`
+            : `<button class="icon action-icon" data-archive-meta-form="${form.index}" title="Arquivar" aria-label="Arquivar formulário">▣</button>`}
+        </div>
+      </td>
     </tr>
   `).join("");
   settingsLayout(`
@@ -1611,17 +1643,17 @@ function renderIntegrationSettings() {
       <section class="integration-help">
         <div class="panel-head">
           <h2>Formulários monitorados</h2>
-          <button class="primary" data-sync-meta-recent>Sincronizar Meta</button>
+          <div class="row-actions">
+            <button class="primary" data-new-meta-form>Adicionar Form</button>
+            <button class="primary" data-sync-meta-recent>Sincronizar Meta</button>
+          </div>
         </div>
-        <form id="metaFormMonitorForm" class="form-grid compact-form">
-          <div class="field"><label>ID do formulário</label><input name="id" value="${escapeHtml(formValue.id || "")}" required placeholder="Ex.: 4475904736028264"></div>
-          <div class="field"><label>Nome interno</label><input name="name" value="${escapeHtml(formValue.name || "")}" placeholder="Ex.: Golf Club - Julho"></div>
-          <div class="field"><label>Empreendimento</label><select name="project" required><option value="">Selecione</option>${projectOptions(formValue.project || "")}</select></div>
-          <div class="field"><label>&nbsp;</label><button class="primary" type="submit">${editIndex != null ? "Salvar form" : "Adicionar form"}</button></div>
-          ${editIndex != null ? '<div class="field full"><button type="button" data-cancel-settings>Cancelar edição</button></div>' : ""}
-        </form>
+        <div class="tabs compact-tabs">
+          <button class="${state.metaFormsTab === "active" ? "active" : ""}" data-meta-forms-tab="active">Ativos</button>
+          <button class="${state.metaFormsTab === "archived" ? "active" : ""}" data-meta-forms-tab="archived">Arquivados</button>
+        </div>
         <div class="table-wrap">
-          <table class="mapping-table"><thead><tr><th>Nome</th><th>ID do formulário</th><th>Empreendimento</th><th>Ações</th></tr></thead><tbody>${formRows || '<tr><td colspan="4" class="empty">Nenhum formulário monitorado ainda.</td></tr>'}</tbody></table>
+          <table class="mapping-table"><thead><tr><th>Nome</th><th>ID do formulário</th><th>Empreendimento</th><th>Ações</th></tr></thead><tbody>${formRows || `<tr><td colspan="4" class="empty">Nenhum formulário ${state.metaFormsTab === "archived" ? "arquivado" : "ativo"}.</td></tr>`}</tbody></table>
         </div>
       </section>
       <section class="integration-help">
@@ -1632,8 +1664,25 @@ function renderIntegrationSettings() {
         </form>
       </section>
     </section>
+    ${isFormModalOpen ? renderMetaFormModal(formValue, editIndex != null) : ""}
   `);
   bindSettingsCommon();
+  document.querySelector("[data-new-meta-form]")?.addEventListener("click", () => {
+    state.settingsEditing = "new-meta-form";
+    renderSettings();
+  });
+  document.querySelectorAll("[data-meta-forms-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.metaFormsTab = button.dataset.metaFormsTab;
+      state.settingsEditing = null;
+      renderSettings();
+    });
+  });
+  document.querySelector("[data-meta-form-modal-backdrop]")?.addEventListener("click", (event) => {
+    if (event.target !== event.currentTarget) return;
+    state.settingsEditing = null;
+    renderSettings();
+  });
   document.querySelector("#metaFormMonitorForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -1642,7 +1691,12 @@ function renderIntegrationSettings() {
     const next = JSON.parse(JSON.stringify(state.integrations || {}));
     const metaForms = next.metaForms || { enabled: true, forms: [], mappings: [] };
     metaForms.enabled = true;
-    const nextForm = { id, name: String(form.get("name") || "").trim(), project: String(form.get("project") || "").trim() };
+    const nextForm = {
+      id,
+      name: String(form.get("name") || "").trim(),
+      project: String(form.get("project") || "").trim(),
+      archived: Boolean(formValue.archived)
+    };
     if (!nextForm.project) return;
     metaForms.forms = editIndex != null
       ? (metaForms.forms || []).map((item, index) => index === editIndex ? nextForm : item)
@@ -1658,13 +1712,19 @@ function renderIntegrationSettings() {
       renderSettings();
     });
   });
-  document.querySelectorAll("[data-delete-meta-form]").forEach((button) => {
+  document.querySelectorAll("[data-archive-meta-form], [data-restore-meta-form]").forEach((button) => {
     button.addEventListener("click", async () => {
       const next = JSON.parse(JSON.stringify(state.integrations || {}));
       const metaForms = next.metaForms || { enabled: true, forms: [], mappings: [] };
-      metaForms.forms = (metaForms.forms || []).filter((_, index) => index !== Number(button.dataset.deleteMetaForm));
+      const index = Number(button.dataset.archiveMetaForm ?? button.dataset.restoreMetaForm);
+      metaForms.forms = (metaForms.forms || []).map((item, itemIndex) => {
+        if (itemIndex !== index) return item;
+        return { ...item, archived: Boolean(button.dataset.archiveMetaForm) };
+      });
       next.metaForms = metaForms;
-      state.settingsNotice = "Formulário Meta removido do monitoramento.";
+      state.settingsNotice = button.dataset.archiveMetaForm
+        ? "Formulário Meta arquivado."
+        : "Formulário Meta restaurado.";
       await saveIntegrations(next);
     });
   });
