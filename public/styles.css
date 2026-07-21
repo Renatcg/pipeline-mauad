@@ -808,6 +808,46 @@ table {
   min-width: 980px;
 }
 
+.leads-table {
+  table-layout: fixed;
+}
+
+.lead-col-favorite {
+  width: 58px;
+}
+
+.lead-col-name {
+  width: 22%;
+}
+
+.lead-col-phone {
+  width: 15%;
+}
+
+.lead-col-email {
+  width: 18%;
+}
+
+.lead-col-status {
+  width: 13%;
+}
+
+.lead-col-broker {
+  width: 12%;
+}
+
+.lead-col-source {
+  width: 8%;
+}
+
+.lead-col-tags {
+  width: 10%;
+}
+
+.lead-col-action {
+  width: 110px;
+}
+
 th,
 td {
   border-bottom: 1px solid var(--line);
@@ -815,6 +855,8 @@ td {
   text-align: left;
   vertical-align: middle;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 th {
@@ -863,8 +905,18 @@ th {
   align-items: start;
 }
 
+.lead-detail .field {
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.lead-side-panels {
+  display: grid;
+  gap: 14px;
+}
+
 .meta-detail-panel {
-  margin-top: 14px;
+  margin-top: 0;
 }
 
 .meta-grid {
@@ -898,6 +950,28 @@ th {
 
 .answers-table {
   min-width: 620px;
+}
+
+.answers-table th,
+.answers-table td {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.meta-ad-link {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.meta-ad-link a,
+.meta-ad-link strong {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .comment-form {

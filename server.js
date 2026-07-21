@@ -280,11 +280,12 @@ function migrateDb(db) {
   if (db.integrations?.metaForms?.forms) {
     db.integrations.metaForms.forms = db.integrations.metaForms.forms
       .map((form) => {
-        if (typeof form === "string") return { id: form, name: "", project: "", archived: false };
+        if (typeof form === "string") return { id: form, name: "", project: "", adUrl: "", archived: false };
         return {
           id: String(form.id || form.formId || "").trim(),
           name: String(form.name || "").trim(),
           project: String(form.project || "").trim(),
+          adUrl: String(form.adUrl || form.ad_url || "").trim(),
           archived: Boolean(form.archived)
         };
       })
@@ -620,19 +621,18 @@ function metaRuleMatches(rule, metaLead) {
 }
 
 function mappedMetaProject(db, metaLead) {
-  const formProject = projectForMetaForm(db, metaLead.form_id);
+  const formProject = metaFormForId(db, metaLead.form_id)?.project || "";
   if (formProject) return formProject;
   const match = normalizeMetaMappingRules(db.integrations)
     .find((rule) => metaRuleMatches(rule, metaLead));
   return match?.project || "";
 }
 
-function projectForMetaForm(db, formId) {
+function metaFormForId(db, formId) {
   const id = String(formId || "").trim();
-  if (!id) return "";
-  const form = (db.integrations?.metaForms?.forms || [])
+  if (!id) return null;
+  return (db.integrations?.metaForms?.forms || [])
     .find((item) => String(item.id || item.formId || "").trim() === id);
-  return String(form?.project || "").trim();
 }
 
 async function fetchMetaLead(leadgenId) {
@@ -698,7 +698,8 @@ function configuredMetaForms(db) {
     unique.set(id, {
       id,
       name: String(form.name || "").trim(),
-      project: String(form.project || "").trim()
+      project: String(form.project || "").trim(),
+      adUrl: String(form.adUrl || "").trim()
     });
   }
   return [...unique.values()];
@@ -717,6 +718,7 @@ function createMetaLead(db, leadgenId, metaLead, webhookValue) {
   if (!db.pipelineStatuses.length) db.pipelineStatuses.push("Novo Lead");
   const normalized = normalizeMetaLeadData(metaLead);
   const assignedUser = defaultMetaAssignee(db);
+  const monitoredForm = metaFormForId(db, metaLead.form_id || webhookValue.form_id);
   const now = new Date().toISOString();
   const createdAt = metaLead.created_time || now;
   const lead = {
@@ -734,7 +736,7 @@ function createMetaLead(db, leadgenId, metaLead, webhookValue) {
     favoritesByUser: {},
     assignedTo: assignedUser?.id || null,
     assignedName: assignedUser?.name || "",
-    desiredProject: projectForMetaForm(db, metaLead.form_id || webhookValue.form_id) || mappedMetaProject(db, metaLead) || normalized.desiredProject,
+    desiredProject: monitoredForm?.project || mappedMetaProject(db, metaLead) || normalized.desiredProject,
     desiredUnit: "",
     unitValue: "",
     notes: "",
@@ -748,6 +750,7 @@ function createMetaLead(db, leadgenId, metaLead, webhookValue) {
       formId: metaLead.form_id || webhookValue.form_id || "",
       adId: metaLead.ad_id || webhookValue.ad_id || "",
       adName: metaLead.ad_name || "",
+      adUrl: monitoredForm?.adUrl || "",
       adsetId: metaLead.adset_id || "",
       adsetName: metaLead.adset_name || "",
       campaignId: metaLead.campaign_id || "",

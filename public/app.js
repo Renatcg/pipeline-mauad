@@ -255,6 +255,13 @@ function leadBaseStatus(lead, options = {}) {
   return lead.sourceStatus || lead.odysseiaStatus || lead.status;
 }
 
+function leadEmailForTable(lead) {
+  if (lead.email) return lead.email;
+  const source = String(lead.source || "").toUpperCase();
+  if (source.includes("RD") || source.includes("VINHOS") || source.includes("OAB")) return lead.assistant || "";
+  return "";
+}
+
 function projectOptions(selected = "") {
   return (state.projects || [])
     .map((project) => `<option value="${escapeHtml(project)}" ${project === selected ? "selected" : ""}>${escapeHtml(project)}</option>`)
@@ -902,10 +909,9 @@ function leadRows(leads, options = {}) {
   return leads.map((lead) => `
     <tr data-open-lead="${escapeHtml(lead.id)}">
       <td><button class="icon favorite" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button></td>
-      ${options.hideId ? "" : `<td>${escapeHtml(lead.externalId)}</td>`}
       <td>${escapeHtml(lead.name)}</td>
       <td>${escapeHtml(lead.phone)}</td>
-      ${options.hideAssistant ? "" : `<td>${escapeHtml(lead.assistant)}</td>`}
+      <td>${escapeHtml(leadEmailForTable(lead))}</td>
       <td>
         ${(options.readOnlyStatus || options.textStatus) ? escapeHtml(leadBaseStatus(lead, options)) : `<select data-status-select="${escapeHtml(lead.id)}">
           ${state.statuses.map((status) => `<option value="${escapeHtml(status)}" ${status === lead.status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
@@ -913,8 +919,8 @@ function leadRows(leads, options = {}) {
       </td>
       <td>${escapeHtml(lead.assignedName || userName(lead.assignedTo))}</td>
       <td>${escapeHtml(lead.source)}</td>
-      ${options.hideTags ? "" : `<td>${renderLeadTags(lead, !options.withRescue)}</td>`}
-      ${options.withRescue ? `<td>${lead.inPipeline ? (canRollbackLead(lead) ? `<button data-rollback="${escapeHtml(lead.id)}">Rollback</button>` : '<span class="chip">No pipeline</span>') : `<button class="primary" data-rescue="${escapeHtml(lead.id)}">Resgatar</button>`}</td>` : ""}
+      <td>${renderLeadTags(lead, !options.withRescue)}</td>
+      <td>${options.withRescue ? (lead.inPipeline ? (canRollbackLead(lead) ? `<button data-rollback="${escapeHtml(lead.id)}">Rollback</button>` : '<span class="chip">No pipeline</span>') : `<button class="primary" data-rescue="${escapeHtml(lead.id)}">Resgatar</button>`) : ""}</td>
     </tr>
   `).join("");
 }
@@ -922,31 +928,40 @@ function leadRows(leads, options = {}) {
 function renderLeadsTable(rows, options = {}) {
   const headers = [
     "<th>★</th>",
-    options.hideId ? "" : "<th>ID</th>",
     "<th>Nome</th>",
     "<th>Celular</th>",
-    options.hideAssistant ? "" : "<th>Assistente</th>",
+    "<th>E-mail</th>",
     "<th>Fase atual</th>",
     "<th>Corretor</th>",
     "<th>Origem</th>",
-    options.hideTags ? "" : "<th>Etiquetas</th>",
-    options.withRescue ? "<th>Ação</th>" : ""
+    "<th>Etiquetas</th>",
+    "<th>Ação</th>"
   ].join("");
   const columnCount = [
     true,
-    !options.hideId,
-    true,
-    true,
-    !options.hideAssistant,
     true,
     true,
     true,
-    !options.hideTags,
-    options.withRescue
+    true,
+    true,
+    true,
+    true,
+    true
   ].filter(Boolean).length;
   return `
     <div class="table-wrap">
-      <table>
+      <table class="leads-table">
+        <colgroup>
+          <col class="lead-col-favorite">
+          <col class="lead-col-name">
+          <col class="lead-col-phone">
+          <col class="lead-col-email">
+          <col class="lead-col-status">
+          <col class="lead-col-broker">
+          <col class="lead-col-source">
+          <col class="lead-col-tags">
+          <col class="lead-col-action">
+        </colgroup>
         <thead><tr>${headers}</tr></thead>
         <tbody>${rows || `<tr><td colspan="${columnCount}" class="empty">Nenhum lead nesta visão</td></tr>`}</tbody>
       </table>
@@ -956,7 +971,7 @@ function renderLeadsTable(rows, options = {}) {
 
 function renderSheet() {
   const leads = pipelineLeads();
-  const tableOptions = { hideId: true, hideAssistant: true, hideTags: true, textStatus: true };
+  const tableOptions = { textStatus: true };
   const rows = leadRows(leads, tableOptions);
   renderShell(`
     ${renderViewHead("Planilha", "Leads vindos do Meta, importações de pipeline e resgates das bases", { filters: true, addLead: true })}
@@ -978,7 +993,7 @@ function renderBaseSources(sources) {
 function renderLeadBases() {
   const sources = baseSources();
   const leads = baseLeads();
-  const rows = leadRows(leads, { hideId: true, readOnlyStatus: true, withRescue: true, blankHistoricalBaseStatus: true });
+  const rows = leadRows(leads, { readOnlyStatus: true, withRescue: true, blankHistoricalBaseStatus: true });
   const pending = leads.filter((lead) => !lead.inPipeline).length;
   const rescued = leads.filter((lead) => lead.inPipeline).length;
   renderShell(`
@@ -990,7 +1005,7 @@ function renderLeadBases() {
       <div class="metric"><span>Resgatados</span><strong>${rescued}</strong></div>
       <div class="metric"><span>Origem</span><strong>${escapeHtml(state.baseSource)}</strong></div>
     </section>
-    ${renderLeadsTable(rows, { hideId: true, withRescue: true })}
+    ${renderLeadsTable(rows, { withRescue: true })}
   `);
   bindLeadActions();
   document.querySelectorAll("[data-base-source]").forEach((button) => {
@@ -1037,31 +1052,33 @@ function leadProjectValue(lead) {
   return "";
 }
 
+function metaAdUrlForLead(lead) {
+  if (lead.meta?.adUrl) return lead.meta.adUrl;
+  const formId = String(lead.meta?.formId || "").trim();
+  if (!formId) return "";
+  const form = (state.integrations?.metaForms?.forms || [])
+    .find((item) => String(item.id || "").trim() === formId);
+  return String(form?.adUrl || "").trim();
+}
+
 function renderMetaLeadInfo(lead) {
   if (lead.source !== "META" || !lead.meta) return "";
-  const metaRows = [
-    ["Formulário", lead.meta.formId],
-    ["Campanha", lead.meta.campaignName || lead.meta.campaignId],
-    ["Conjunto", lead.meta.adsetName || lead.meta.adsetId],
-    ["Anúncio", lead.meta.adName || lead.meta.adId],
-    ["Plataforma", lead.meta.platform],
-    ["Lead ID Meta", lead.metaLeadId]
-  ].filter(([, value]) => value);
   const answerRows = Object.entries(lead.meta.rawFields || {}).map(([question, answer]) => `
     <tr>
       <td>${escapeHtml(question)}</td>
       <td>${escapeHtml(answer)}</td>
     </tr>
   `).join("");
+  const adUrl = metaAdUrlForLead(lead);
   return `
     <section class="panel meta-detail-panel">
-      <h2>Origem Meta</h2>
-      <div class="meta-grid">
-        ${metaRows.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}
-      </div>
       <h2>Respostas do formulário</h2>
       <div class="table-wrap">
         <table class="answers-table"><thead><tr><th>Pergunta</th><th>Resposta</th></tr></thead><tbody>${answerRows || '<tr><td colspan="2" class="empty">Nenhuma resposta recebida.</td></tr>'}</tbody></table>
+      </div>
+      <div class="meta-ad-link">
+        <span>URL do anúncio</span>
+        ${adUrl ? `<a href="${escapeHtml(adUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(adUrl)}</a>` : "<strong>Não cadastrada</strong>"}
       </div>
     </section>
   `;
@@ -1129,26 +1146,28 @@ function renderLeadDetail() {
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar detalhes</button></div></div>
         </form>
       </div>
-      <div class="panel">
-        <h2>Comentários</h2>
-        <form id="commentForm" class="comment-form">
-          <textarea name="text" placeholder="Adicionar comentário"></textarea>
-          <button class="primary" type="submit">Comentar</button>
-        </form>
-        <div class="timeline">
-          ${comments.map((comment) => `
-            <article class="timeline-item">
-              <div>
-                <strong>${escapeHtml(comment.authorName || "Usuário")}</strong>
-                <span>${escapeHtml(new Date(comment.createdAt).toLocaleString("pt-BR"))}</span>
-              </div>
-              <p>${escapeHtml(comment.text)}</p>
-            </article>
-          `).join("") || '<div class="empty">Nenhum comentário ainda</div>'}
+      <div class="lead-side-panels">
+        ${renderMetaLeadInfo(lead)}
+        <div class="panel">
+          <h2>Comentários</h2>
+          <form id="commentForm" class="comment-form">
+            <textarea name="text" placeholder="Adicionar comentário"></textarea>
+            <button class="primary" type="submit">Comentar</button>
+          </form>
+          <div class="timeline">
+            ${comments.map((comment) => `
+              <article class="timeline-item">
+                <div>
+                  <strong>${escapeHtml(comment.authorName || "Usuário")}</strong>
+                  <span>${escapeHtml(new Date(comment.createdAt).toLocaleString("pt-BR"))}</span>
+                </div>
+                <p>${escapeHtml(comment.text)}</p>
+              </article>
+            `).join("") || '<div class="empty">Nenhum comentário ainda</div>'}
+          </div>
         </div>
       </div>
     </section>
-    ${renderMetaLeadInfo(lead)}
   `);
 
   document.querySelector("[data-back-lead]")?.addEventListener("click", () => routeTo(state.previousView || "kanban"));
@@ -1624,7 +1643,8 @@ function renderMetaFormModal(formValue = {}, isEditing = false) {
         <form id="metaFormMonitorForm" class="form-grid">
           <div class="field"><label>ID do formulário</label><input name="id" value="${escapeHtml(formValue.id || "")}" required autofocus placeholder="Ex.: 4475904736028264"></div>
           <div class="field"><label>Nome interno</label><input name="name" value="${escapeHtml(formValue.name || "")}" placeholder="Ex.: Golf Club - Julho"></div>
-          <div class="field full"><label>Empreendimento</label><select name="project" required><option value="">Selecione</option>${projectOptions(formValue.project || "")}</select></div>
+          <div class="field"><label>Empreendimento</label><select name="project" required><option value="">Selecione</option>${projectOptions(formValue.project || "")}</select></div>
+          <div class="field"><label>URL do anúncio</label><input name="adUrl" type="url" value="${escapeHtml(formValue.adUrl || "")}" placeholder="https://..."></div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">${isEditing ? "Salvar form" : "Adicionar form"}</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       </section>
@@ -1717,6 +1737,7 @@ function renderIntegrationSettings() {
       id,
       name: String(form.get("name") || "").trim(),
       project: String(form.get("project") || "").trim(),
+      adUrl: String(form.get("adUrl") || "").trim(),
       archived: Boolean(formValue.archived)
     };
     if (!nextForm.project) return;
