@@ -1591,8 +1591,16 @@ function renderIntegrationSettings() {
   const editing = state.settingsEditing;
   const integrations = state.integrations || {};
   const metaMappings = integrations.metaForms?.mappings || [];
+  const metaForms = integrations.metaForms?.forms || [];
   const webhookUrl = `${window.location.origin}/api/webhooks/meta`;
   const metaEvents = (state.integrationLog || []).filter((item) => item.provider === "META").slice(0, 12);
+  const formRows = metaForms.map((form, index) => `
+    <tr>
+      <td>${escapeHtml(form.name || "Sem nome")}</td>
+      <td>${escapeHtml(form.id)}</td>
+      <td><button data-delete-meta-form="${index}">Excluir</button></td>
+    </tr>
+  `).join("");
   const mappingRows = metaMappings.map((rule, index) => `
     <tr>
       <td>${escapeHtml(metaMappingTypeLabel(rule.type))}</td>
@@ -1625,7 +1633,21 @@ function renderIntegrationSettings() {
         <h2>Webhook Meta</h2>
         <div class="meta">
           <span>URL de callback: <strong>${escapeHtml(webhookUrl)}</strong></span>
-          <span>Variáveis na Vercel: <strong>META_VERIFY_TOKEN</strong>, <strong>META_APP_SECRET</strong>, <strong>META_PAGE_ACCESS_TOKEN</strong></span>
+          <span>Variáveis na Vercel: <strong>META_VERIFY_TOKEN</strong>, <strong>META_APP_SECRET</strong>, <strong>META_PAGE_ACCESS_TOKEN</strong>, <strong>CRON_SECRET</strong></span>
+        </div>
+      </section>
+      <section class="integration-help">
+        <div class="panel-head">
+          <h2>Formulários monitorados</h2>
+          <button class="primary" data-sync-meta-recent>Sincronizar Meta</button>
+        </div>
+        <form id="metaFormMonitorForm" class="form-grid compact-form">
+          <div class="field"><label>ID do formulário</label><input name="id" required placeholder="Ex.: 4475904736028264"></div>
+          <div class="field"><label>Nome interno</label><input name="name" placeholder="Ex.: Golf Club - Julho"></div>
+          <div class="field"><label>&nbsp;</label><button class="primary" type="submit">Adicionar form</button></div>
+        </form>
+        <div class="table-wrap">
+          <table class="mapping-table"><thead><tr><th>Nome</th><th>ID do formulário</th><th>Ação</th></tr></thead><tbody>${formRows || '<tr><td colspan="3" class="empty">Nenhum formulário monitorado ainda.</td></tr>'}</tbody></table>
         </div>
       </section>
       <section class="integration-help">
@@ -1685,6 +1707,49 @@ function renderIntegrationSettings() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     await saveIntegration(form.get("type"), Object.fromEntries(form.entries()));
+  });
+  document.querySelector("#metaFormMonitorForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const id = String(form.get("id") || "").trim();
+    if (!id) return;
+    const next = JSON.parse(JSON.stringify(state.integrations || {}));
+    const metaForms = next.metaForms || { enabled: true, forms: [], mappings: [] };
+    metaForms.enabled = true;
+    metaForms.forms = [
+      ...(metaForms.forms || []).filter((item) => item.id !== id),
+      { id, name: String(form.get("name") || "").trim() }
+    ];
+    next.metaForms = metaForms;
+    state.settingsNotice = "Formulário Meta adicionado ao monitoramento.";
+    await saveIntegrations(next);
+  });
+  document.querySelectorAll("[data-delete-meta-form]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const next = JSON.parse(JSON.stringify(state.integrations || {}));
+      const metaForms = next.metaForms || { enabled: true, forms: [], mappings: [] };
+      metaForms.forms = (metaForms.forms || []).filter((_, index) => index !== Number(button.dataset.deleteMetaForm));
+      next.metaForms = metaForms;
+      state.settingsNotice = "Formulário Meta removido do monitoramento.";
+      await saveIntegrations(next);
+    });
+  });
+  document.querySelector("[data-sync-meta-recent]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Sincronizando...");
+      const data = await api("/api/integrations/meta/sync-recent", {
+        method: "POST",
+        body: JSON.stringify({ days: 7 })
+      });
+      state.settingsNotice = `Sincronização concluída: ${data.created} novo(s), ${data.duplicates} já existente(s), ${data.errors.length} erro(s).`;
+      await loadState();
+      state.settingsTab = "integrations";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
   });
   document.querySelector("#metaLeadImportForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();

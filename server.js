@@ -266,6 +266,21 @@ function migrateDb(db) {
     db.integrations.metaForms.mappings = [];
     changed = true;
   }
+  if (db.integrations?.metaForms && !Array.isArray(db.integrations.metaForms.forms)) {
+    db.integrations.metaForms.forms = [];
+    changed = true;
+  }
+  if (db.integrations?.metaForms?.forms) {
+    db.integrations.metaForms.forms = db.integrations.metaForms.forms
+      .map((form) => {
+        if (typeof form === "string") return { id: form, name: "" };
+        return {
+          id: String(form.id || form.formId || "").trim(),
+          name: String(form.name || "").trim()
+        };
+      })
+      .filter((form, index, forms) => form.id && forms.findIndex((item) => item.id === form.id) === index);
+  }
   if (changed) Object.defineProperty(db, "__dirty", { value: true, enumerable: false, configurable: true });
   return db;
 }
@@ -627,6 +642,48 @@ async function fetchMetaLead(leadgenId) {
   return data;
 }
 
+async function fetchMetaFormLeads(formId, { sinceIso = "", limit = 200 } = {}) {
+  if (!META_PAGE_ACCESS_TOKEN) throw new Error("META_PAGE_ACCESS_TOKEN ausente");
+  const leads = [];
+  let url = new URL(`https://graph.facebook.com/${META_GRAPH_VERSION}/${encodeURIComponent(formId)}/leads`);
+  url.searchParams.set("fields", "id,created_time");
+  url.searchParams.set("limit", "100");
+  url.searchParams.set("access_token", META_PAGE_ACCESS_TOKEN);
+  const sinceMs = sinceIso ? new Date(sinceIso).getTime() : 0;
+
+  while (url && leads.length < limit) {
+    const response = await fetch(url);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error?.message || "Falha ao buscar leads recentes do formulário");
+    }
+    const pageLeads = Array.isArray(data.data) ? data.data : [];
+    for (const lead of pageLeads) {
+      const createdMs = lead.created_time ? new Date(lead.created_time).getTime() : 0;
+      if (sinceMs && createdMs && createdMs < sinceMs) return leads;
+      if (lead.id) leads.push(lead);
+      if (leads.length >= limit) break;
+    }
+    url = data.paging?.next ? new URL(data.paging.next) : null;
+    if (!pageLeads.length) break;
+  }
+  return leads;
+}
+
+function configuredMetaForms(db) {
+  const forms = db.integrations?.metaForms?.forms || [];
+  const mappingForms = normalizeMetaMappingRules(db.integrations)
+    .filter((rule) => rule.type === "form_id")
+    .map((rule) => ({ id: rule.value, name: rule.project ? `Form ${rule.project}` : "" }));
+  const unique = new Map();
+  for (const form of [...forms, ...mappingForms]) {
+    const id = String(form.id || form.formId || "").trim();
+    if (!id || unique.has(id)) continue;
+    unique.set(id, { id, name: String(form.name || "").trim() });
+  }
+  return [...unique.values()];
+}
+
 function defaultMetaAssignee(db) {
   if (!META_DEFAULT_ASSIGNED_TO) return null;
   return db.users.find((user) => user.id === META_DEFAULT_ASSIGNED_TO && user.role === "Corretor" && user.active) || null;
@@ -717,6 +774,60 @@ async function importMetaLeadById(db, actor, leadgenId, webhookValue = {}) {
     }
   }
   return created;
+}
+
+async function syncRecentMetaLeads(db, actor, { days = 7, limitPerForm = 200 } = {}) {
+  const forms = configuredMetaForms(db);
+  if (!forms.length) throw new Error("Cadastre pelo menos um ID de formulário do Meta");
+  const sinceIso = new Date(Date.now() - Math.max(1, Number(days) || 7) * 24 * 60 * 60 * 1000).toISOString();
+  const result = {
+    forms: forms.length,
+    found: 0,
+    created: 0,
+    duplicates: 0,
+    errors: []
+  };
+
+  for (const form of forms) {
+    let recentLeads = [];
+    try {
+      recentLeads = await fetchMetaFormLeads(form.id, { sinceIso, limit: limitPerForm });
+      result.found += recentLeads.length;
+    } catch (error) {
+      result.errors.push({ formId: form.id, error: error.message });
+      integrationEvent(db, "META", "SYNC_FORM_ERROR", { formId: form.id, error: error.message });
+      continue;
+    }
+
+    for (const item of recentLeads) {
+      try {
+        const imported = await importMetaLeadById(db, actor, item.id, { form_id: form.id });
+        if (imported.status === "created") result.created += 1;
+        else result.duplicates += 1;
+      } catch (error) {
+        result.errors.push({ formId: form.id, leadgenId: item.id, error: error.message });
+        integrationEvent(db, "META", "SYNC_LEAD_ERROR", { formId: form.id, leadgenId: item.id, error: error.message });
+      }
+    }
+  }
+
+  integrationEvent(db, "META", "SYNC_RECENT", {
+    days,
+    forms: result.forms,
+    found: result.found,
+    created: result.created,
+    duplicates: result.duplicates,
+    errors: result.errors.length
+  });
+  audit(db, actor, "SYNC_META_RECENT", {
+    days,
+    forms: result.forms,
+    found: result.found,
+    created: result.created,
+    duplicates: result.duplicates,
+    errors: result.errors.length
+  });
+  return result;
 }
 
 async function processMetaWebhook(db, payload) {
@@ -852,6 +963,21 @@ async function routeApi(req, res, db) {
     const result = await processMetaWebhook(db, payload);
     await saveDb(db);
     return sendJson(res, 200, { ok: !result.errors.length, ...result });
+  }
+
+  if (method === "GET" && url.pathname === "/api/cron/meta-sync") {
+    const secret = process.env.CRON_SECRET || "";
+    if (!secret) return sendJson(res, 500, { error: "CRON_SECRET ausente" });
+    if (req.headers.authorization !== `Bearer ${secret}`) return sendJson(res, 401, { error: "Não autorizado" });
+    try {
+      const result = await syncRecentMetaLeads(db, { username: "meta-cron" }, { days: Number(url.searchParams.get("days") || 2) });
+      await saveDb(db);
+      return sendJson(res, 200, { ok: true, ...result });
+    } catch (error) {
+      integrationEvent(db, "META", "SYNC_CRON_ERROR", { error: error.message });
+      await saveDb(db);
+      return sendJson(res, 400, { error: error.message });
+    }
   }
 
   if (method === "POST" && url.pathname === "/api/login") {
@@ -1203,6 +1329,20 @@ async function routeApi(req, res, db) {
       return sendJson(res, 200, { ok: true, status: imported.status, lead: publicLead(imported.lead, user) });
     } catch (error) {
       integrationEvent(db, "META", "MANUAL_IMPORT_ERROR", { leadgenId, error: error.message });
+      await saveDb(db);
+      return sendJson(res, 400, { error: error.message });
+    }
+  }
+
+  if (url.pathname === "/api/integrations/meta/sync-recent" && method === "POST") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    try {
+      const result = await syncRecentMetaLeads(db, user, { days: Number(body.days || 7) });
+      await saveDb(db);
+      return sendJson(res, 200, { ok: true, ...result });
+    } catch (error) {
+      integrationEvent(db, "META", "SYNC_MANUAL_ERROR", { error: error.message });
       await saveDb(db);
       return sendJson(res, 400, { error: error.message });
     }

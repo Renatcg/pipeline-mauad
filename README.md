@@ -39,7 +39,7 @@ Configure as variaveis no projeto da Vercel:
 - `META_APP_SECRET`: App Secret do app Meta.
 - `META_PAGE_ACCESS_TOKEN`: token da pagina com permissao para leitura dos leads.
 - `META_GRAPH_VERSION`: opcional, padrao `v25.0`.
-- `META_DEFAULT_ASSIGNED_TO`: opcional, id de um corretor ativo para receber leads Meta por padrao.
+- `CRON_SECRET`: segredo para permitir sincronizacao automatica protegida.
 
 No Meta Developers, use a URL de callback:
 
@@ -48,3 +48,16 @@ https://pipeline-mauad.vercel.app/api/webhooks/meta
 ```
 
 Assine o evento `leadgen` da pagina. Os leads recebidos entram no pipeline com origem `META`, no primeiro status cadastrado.
+
+### Fallback de sincronizacao Meta
+
+Se o webhook do Meta ficar pendente, cadastre os IDs dos formularios em `Configuracoes > Integracoes > Formularios monitorados` e use `Sincronizar Meta`. O sistema consulta a Graph API, busca os leads recentes dos forms cadastrados e evita duplicidade pelo `leadgen_id`.
+
+Para automatizar por uma agenda externa, chame:
+
+```text
+GET https://pipeline-mauad.vercel.app/api/cron/meta-sync?days=2
+Authorization: Bearer SEU_CRON_SECRET
+```
+
+Na Vercel Hobby, cron nativo roda no maximo uma vez por dia. Para sincronizacao frequente, use Vercel Pro ou um agendador externo chamando essa URL protegida.
