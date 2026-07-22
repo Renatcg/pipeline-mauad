@@ -1105,10 +1105,11 @@ function renderMetaLeadInfo(lead) {
   `;
 }
 
-function renderCommentBubble(comment) {
+function renderCommentBubble(comment, lead) {
   const deleted = Boolean(comment.deletedAt);
   const incoming = Boolean(comment.fromUser);
   const canOpenDeleted = deleted && state.user?.role === "Admin TI" && comment.deletedText;
+  const displayName = incoming ? lead.name : (comment.authorName || "Usuário");
   const text = deleted
     ? "Mensagem excluída"
     : comment.text;
@@ -1116,7 +1117,7 @@ function renderCommentBubble(comment) {
     <article class="chat-message ${incoming ? "incoming" : "outgoing"} ${deleted ? "deleted" : ""}">
       <div class="chat-bubble ${canOpenDeleted ? "clickable" : ""}" ${canOpenDeleted ? `data-show-deleted-comment="${escapeHtml(comment.id)}"` : ""}>
         <div class="chat-meta">
-          <strong>${escapeHtml(comment.authorName || "Usuário")}</strong>
+          <strong>${escapeHtml(displayName)}</strong>
           <span>${escapeHtml(new Date(comment.createdAt).toLocaleString("pt-BR"))}</span>
           ${canDeleteComments() && (!deleted || state.user?.role === "Admin TI") ? renderSettingsActionMenu(`comment-${comment.id}`, [
             `<button type="button" class="danger-menu-item" data-delete-comment="${escapeHtml(comment.id)}">${state.user?.role === "Admin TI" ? "Excluir permanentemente" : "Excluir mensagem"}</button>`
@@ -1129,12 +1130,12 @@ function renderCommentBubble(comment) {
   `;
 }
 
-function renderLeadComments(comments) {
+function renderLeadComments(comments, lead) {
   return `
     <div class="panel">
       <h2>Comentários</h2>
       <div class="chat-timeline">
-        ${comments.map(renderCommentBubble).join("") || '<div class="empty">Nenhum comentário ainda</div>'}
+        ${comments.map((comment) => renderCommentBubble(comment, lead)).join("") || '<div class="empty">Nenhum comentário ainda</div>'}
       </div>
     </div>
   `;
@@ -1228,7 +1229,7 @@ function renderLeadDetail() {
             <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar detalhes</button></div></div>
           </form>
         </div>
-        ${renderLeadComments(comments)}
+        ${renderLeadComments(comments, lead)}
       </div>
       <div class="lead-side-panels">
         ${renderLeadInterest(project, lead)}
