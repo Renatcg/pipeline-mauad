@@ -13,6 +13,7 @@ const state = {
   auditLog: [],
   accessLog: [],
   integrationLog: [],
+  metaDiagnostics: null,
   view: "kanban",
   leadId: null,
   previousView: "kanban",
@@ -107,6 +108,10 @@ function userName(id) {
 }
 
 function canManageLeads() {
+  return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(state.user?.role);
+}
+
+function canDeleteComments() {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(state.user?.role);
 }
 
@@ -1100,6 +1105,30 @@ function renderMetaLeadInfo(lead) {
   `;
 }
 
+function renderCommentBubble(comment) {
+  const deleted = Boolean(comment.deletedAt);
+  const incoming = Boolean(comment.fromUser);
+  const canOpenDeleted = deleted && state.user?.role === "Admin TI" && comment.deletedText;
+  const text = deleted
+    ? "Mensagem excluída"
+    : comment.text;
+  return `
+    <article class="chat-message ${incoming ? "incoming" : "outgoing"} ${deleted ? "deleted" : ""}">
+      <div class="chat-bubble ${canOpenDeleted ? "clickable" : ""}" ${canOpenDeleted ? `data-show-deleted-comment="${escapeHtml(comment.id)}"` : ""}>
+        <div class="chat-meta">
+          <strong>${escapeHtml(comment.authorName || "Usuário")}</strong>
+          <span>${escapeHtml(new Date(comment.createdAt).toLocaleString("pt-BR"))}</span>
+          ${canDeleteComments() && (!deleted || state.user?.role === "Admin TI") ? renderSettingsActionMenu(`comment-${comment.id}`, [
+            `<button type="button" class="danger-menu-item" data-delete-comment="${escapeHtml(comment.id)}">${state.user?.role === "Admin TI" ? "Excluir permanentemente" : "Excluir mensagem"}</button>`
+          ]) : ""}
+        </div>
+        <p>${escapeHtml(text)}</p>
+        ${deleted && comment.deletedByName ? `<small>Excluída por ${escapeHtml(comment.deletedByName)}</small>` : ""}
+      </div>
+    </article>
+  `;
+}
+
 function renderLeadDetail() {
   const lead = state.leads.find((item) => item.id === state.leadId);
   if (!lead) {
@@ -1168,18 +1197,13 @@ function renderLeadDetail() {
           <h2>Comentários</h2>
           <form id="commentForm" class="comment-form">
             <textarea name="text" placeholder="Adicionar comentário"></textarea>
-            <button class="primary" type="submit">Comentar</button>
+            <div class="comment-actions">
+              <button class="primary" type="submit">Comentar</button>
+              <label class="checkline"><input type="checkbox" name="fromUser"> Mensagem do usuário</label>
+            </div>
           </form>
-          <div class="timeline">
-            ${comments.map((comment) => `
-              <article class="timeline-item">
-                <div>
-                  <strong>${escapeHtml(comment.authorName || "Usuário")}</strong>
-                  <span>${escapeHtml(new Date(comment.createdAt).toLocaleString("pt-BR"))}</span>
-                </div>
-                <p>${escapeHtml(comment.text)}</p>
-              </article>
-            `).join("") || '<div class="empty">Nenhum comentário ainda</div>'}
+          <div class="chat-timeline">
+            ${comments.map(renderCommentBubble).join("") || '<div class="empty">Nenhum comentário ainda</div>'}
           </div>
         </div>
       </div>
@@ -1201,6 +1225,24 @@ function renderLeadDetail() {
     }
   });
   bindLeadActions();
+  bindSettingsActionMenus();
+  document.querySelectorAll("[data-delete-comment]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const message = state.user?.role === "Admin TI"
+        ? "Excluir este comentário permanentemente?"
+        : "Excluir esta mensagem? Ela aparecerá como mensagem excluída.";
+      if (!confirm(message)) return;
+      const result = await api(`/api/leads/${encodeURIComponent(lead.id)}/comments/${encodeURIComponent(button.dataset.deleteComment)}`, { method: "DELETE" });
+      Object.assign(lead, result.lead);
+      renderLeadDetail();
+    });
+  });
+  document.querySelectorAll("[data-show-deleted-comment]").forEach((bubble) => {
+    bubble.addEventListener("click", () => {
+      const comment = (lead.comments || []).find((item) => item.id === bubble.dataset.showDeletedComment);
+      if (comment?.deletedText) alert(comment.deletedText);
+    });
+  });
   document.querySelector("#leadDetailForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -1227,7 +1269,7 @@ function renderLeadDetail() {
     if (!text) return;
     const result = await api(`/api/leads/${encodeURIComponent(lead.id)}/comments`, {
       method: "POST",
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text, fromUser: Boolean(form.get("fromUser")) })
     });
     Object.assign(lead, result.lead);
     renderLeadDetail();
@@ -1696,6 +1738,42 @@ function parseAdLinks(text) {
   return Object.entries(mapping).map(([id, url]) => ({ id, url }));
 }
 
+function renderMetaDiagnostics() {
+  if (!state.metaDiagnostics) {
+    return '<div class="empty">Execute o diagnóstico para verificar token, Página, webhook e forms monitorados.</div>';
+  }
+  const statusLabel = {
+    ok: "OK",
+    warning: "Atenção",
+    error: "Erro"
+  };
+  const checkRows = (state.metaDiagnostics.checks || []).map((check) => `
+    <tr>
+      <td><span class="diagnostic-pill ${escapeHtml(check.status)}">${escapeHtml(statusLabel[check.status] || check.status)}</span></td>
+      <td>${escapeHtml(check.name)}</td>
+      <td>${escapeHtml(check.detail || "")}</td>
+    </tr>
+  `).join("");
+  const formRows = (state.metaDiagnostics.forms || []).map((form) => `
+    <tr>
+      <td><span class="diagnostic-pill ${escapeHtml(form.status)}">${escapeHtml(statusLabel[form.status] || form.status)}</span></td>
+      <td>${escapeHtml(form.name || "Sem nome")}</td>
+      <td>${escapeHtml(form.id || "")}</td>
+      <td>${escapeHtml(form.detail || "")}</td>
+    </tr>
+  `).join("");
+  return `
+    <div class="diagnostic-grid">
+      <div class="table-wrap">
+        <table><thead><tr><th>Status</th><th>Item</th><th>Detalhe</th></tr></thead><tbody>${checkRows || '<tr><td colspan="3" class="empty">Nenhum diagnóstico retornado.</td></tr>'}</tbody></table>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Status</th><th>Form</th><th>ID</th><th>Detalhe</th></tr></thead><tbody>${formRows || '<tr><td colspan="4" class="empty">Nenhum form monitorado.</td></tr>'}</tbody></table>
+      </div>
+    </div>
+  `;
+}
+
 function renderIntegrationSettings() {
   const integrations = state.integrations || {};
   const metaForms = integrations.metaForms?.forms || [];
@@ -1740,6 +1818,13 @@ function renderIntegrationSettings() {
         <div class="table-wrap">
           <table class="mapping-table"><thead><tr><th>Nome</th><th>ID do formulário</th><th>Empreendimento</th><th>Ações</th></tr></thead><tbody>${formRows || `<tr><td colspan="4" class="empty">Nenhum formulário ${state.metaFormsTab === "archived" ? "arquivado" : "ativo"}.</td></tr>`}</tbody></table>
         </div>
+      </section>
+      <section class="integration-help">
+        <div class="panel-head">
+          <h2>Diagnóstico Meta</h2>
+          <button data-diagnose-meta>Diagnosticar Meta</button>
+        </div>
+        ${renderMetaDiagnostics()}
       </section>
       <section class="integration-help">
         <h2>Importar lead Meta por ID</h2>
@@ -1817,6 +1902,19 @@ function renderIntegrationSettings() {
         : "Formulário Meta restaurado.";
       await saveIntegrations(next);
     });
+  });
+  document.querySelector("[data-diagnose-meta]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Diagnosticando...");
+      const data = await api("/api/integrations/meta/diagnostics", { method: "POST" });
+      state.metaDiagnostics = data.diagnostics;
+      state.settingsNotice = "Diagnóstico Meta atualizado.";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
   });
   document.querySelector("[data-sync-meta-recent]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
@@ -1930,7 +2028,7 @@ function renderKnowledgeSettings() {
         <h2>Webhook Meta</h2>
         <div class="meta">
           <span>URL de callback: <strong>${escapeHtml(webhookUrl)}</strong></span>
-          <span>Variáveis na Vercel: <strong>META_VERIFY_TOKEN</strong>, <strong>META_APP_SECRET</strong>, <strong>META_PAGE_ACCESS_TOKEN</strong>, <strong>CRON_SECRET</strong></span>
+          <span>Variáveis na Vercel: <strong>META_VERIFY_TOKEN</strong>, <strong>META_APP_ID</strong>, <strong>META_APP_SECRET</strong>, <strong>META_PAGE_ACCESS_TOKEN</strong>, <strong>CRON_SECRET</strong></span>
           <span>Evento assinado no Meta: <strong>Page / leadgen</strong></span>
         </div>
       </section>

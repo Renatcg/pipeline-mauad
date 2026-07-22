@@ -279,6 +279,39 @@ textarea {
   max-width: 360px;
 }
 
+.diagnostic-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.diagnostic-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #eef2f6;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.diagnostic-pill.ok {
+  background: #e6f7eb;
+  color: #087443;
+}
+
+.diagnostic-pill.warning {
+  background: #fff4e5;
+  color: #b54708;
+}
+
+.diagnostic-pill.error {
+  background: #fee4e2;
+  color: #b42318;
+}
+
 .logs-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1013,8 +1046,20 @@ th {
   margin-bottom: 14px;
 }
 
-.comment-form button {
-  justify-self: start;
+.comment-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.checkline {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .field small {
@@ -1023,31 +1068,51 @@ th {
   line-height: 1.35;
 }
 
-.timeline {
+.chat-timeline {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
-.timeline-item {
-  position: relative;
+.chat-message {
+  display: flex;
+}
+
+.chat-message.outgoing {
+  justify-content: flex-end;
+}
+
+.chat-message.incoming {
+  justify-content: flex-start;
+}
+
+.chat-bubble {
+  max-width: min(100%, 420px);
+  min-width: 190px;
   display: grid;
-  gap: 6px;
-  padding: 0 0 14px 18px;
-  border-left: 2px solid var(--line);
+  gap: 5px;
+  padding: 9px 11px;
+  border: 1px solid #bce8cd;
+  border-radius: 8px 8px 2px 8px;
+  background: #e6f7eb;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04);
 }
 
-.timeline-item::before {
-  content: "";
-  position: absolute;
-  left: -6px;
-  top: 2px;
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: var(--brand);
+.chat-message.incoming .chat-bubble {
+  border-color: var(--line);
+  border-radius: 8px 8px 8px 2px;
+  background: white;
 }
 
-.timeline-item div {
+.chat-message.deleted .chat-bubble {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.chat-bubble.clickable {
+  cursor: pointer;
+}
+
+.chat-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1056,14 +1121,26 @@ th {
   font-size: 12px;
 }
 
-.timeline-item div strong {
+.chat-meta strong {
   color: var(--ink);
   font-size: 13px;
 }
 
-.timeline-item p {
+.chat-bubble p {
   margin: 0;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-bubble small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.chat-meta .action-menu-button {
+  width: 24px;
+  min-height: 24px;
+  font-size: 18px;
 }
 
 .tabs {

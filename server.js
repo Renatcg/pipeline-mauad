@@ -26,6 +26,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_P
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const EMAIL_FROM = process.env.EMAIL_FROM || "Pipeline Mauad <onboarding@resend.dev>";
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || "";
+const META_APP_ID = process.env.META_APP_ID || "";
 const META_APP_SECRET = process.env.META_APP_SECRET || "";
 const META_PAGE_ACCESS_TOKEN = process.env.META_PAGE_ACCESS_TOKEN || "";
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
@@ -501,8 +502,17 @@ function canEditLead(user, lead) {
 }
 
 function publicLead(lead, user) {
+  const comments = Array.isArray(lead.comments) ? lead.comments.map((comment) => {
+    if (!comment.deletedAt || user.role === "Admin TI") return comment;
+    return {
+      ...comment,
+      text: "",
+      deletedText: undefined
+    };
+  }) : [];
   return {
     ...lead,
+    comments,
     favorite: Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite),
     favoritesByUser: undefined
   };
@@ -693,6 +703,70 @@ async function fetchMetaFormLeads(formId, { sinceIso = "", limit = 200 } = {}) {
     if (!pageLeads.length) break;
   }
   return leads;
+}
+
+async function metaGraphGet(pathname, params = {}, token = META_PAGE_ACCESS_TOKEN) {
+  const url = new URL(`https://graph.facebook.com/${META_GRAPH_VERSION}/${pathname.replace(/^\/+/, "")}`);
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null && value !== "") url.searchParams.set(key, value);
+  }
+  url.searchParams.set("access_token", token);
+  const response = await fetch(url);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error?.message || "Falha na Graph API");
+  return data;
+}
+
+async function diagnoseMeta(db) {
+  const checks = [];
+  const add = (name, status, detail = "") => checks.push({ name, status, detail });
+  add("META_PAGE_ACCESS_TOKEN", META_PAGE_ACCESS_TOKEN ? "ok" : "error", META_PAGE_ACCESS_TOKEN ? "Configurado na Vercel" : "Ausente");
+  add("META_APP_SECRET", META_APP_SECRET ? "ok" : "error", META_APP_SECRET ? "Configurado na Vercel" : "Ausente");
+  add("META_VERIFY_TOKEN", META_VERIFY_TOKEN ? "ok" : "error", META_VERIFY_TOKEN ? "Configurado na Vercel" : "Ausente");
+  add("META_APP_ID", META_APP_ID ? "ok" : "warning", META_APP_ID ? "Configurado na Vercel" : "Ausente; sem ele não dá para depurar expiração/permissões do token");
+
+  if (!META_PAGE_ACCESS_TOKEN) return { checks, forms: [] };
+
+  if (META_APP_ID && META_APP_SECRET) {
+    try {
+      const debug = await metaGraphGet("debug_token", { input_token: META_PAGE_ACCESS_TOKEN }, `${META_APP_ID}|${META_APP_SECRET}`);
+      const data = debug.data || {};
+      const expiresAt = data.expires_at ? new Date(data.expires_at * 1000).toISOString() : "sem expiração informada";
+      add("Validade do token", data.is_valid ? "ok" : "error", `Tipo: ${data.type || "não informado"} · expira: ${expiresAt}`);
+      add("Permissões do token", "ok", (data.scopes || []).join(", ") || "Nenhuma permissão retornada");
+    } catch (error) {
+      add("Debug do token", "error", error.message);
+    }
+  }
+
+  let page = null;
+  try {
+    page = await metaGraphGet("me", { fields: "id,name" });
+    add("Página acessível", "ok", `${page.name || "Página"} · ${page.id || ""}`);
+  } catch (error) {
+    add("Página acessível", "error", error.message);
+  }
+
+  if (page?.id) {
+    try {
+      const subscribed = await metaGraphGet(`${page.id}/subscribed_apps`, { fields: "id,name,subscribed_fields" });
+      const app = (subscribed.data || []).find((item) => String(item.id || "") === META_APP_ID || String(item.subscribed_fields || "").includes("leadgen"));
+      add("Webhook leadgen assinado", app ? "ok" : "warning", app ? `${app.name || "App"} · ${(app.subscribed_fields || []).join(", ")}` : "Nenhum app com leadgen encontrado na Página");
+    } catch (error) {
+      add("Webhook leadgen assinado", "warning", error.message);
+    }
+  }
+
+  const forms = [];
+  for (const form of configuredMetaForms(db)) {
+    try {
+      const metaForm = await metaGraphGet(form.id, { fields: "id,name,status" });
+      forms.push({ id: form.id, name: form.name || metaForm.name || "", status: "ok", detail: metaForm.status || "Acessível" });
+    } catch (error) {
+      forms.push({ id: form.id, name: form.name || "", status: "error", detail: error.message });
+    }
+  }
+  return { checks, forms };
 }
 
 function configuredMetaForms(db) {
@@ -1201,6 +1275,7 @@ async function routeApi(req, res, db) {
     const comment = {
       id: `comment-${crypto.randomUUID()}`,
       text,
+      fromUser: Boolean(body.fromUser),
       createdAt: new Date().toISOString(),
       authorId: user.id,
       authorName: user.name
@@ -1211,6 +1286,34 @@ async function routeApi(req, res, db) {
     audit(db, user, "COMMENT_LEAD", { leadId: lead.id });
     await saveDb(db);
     return sendJson(res, 201, { lead: publicLead(lead, user), comment });
+  }
+
+  const commentDeleteMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments\/([^/]+)$/);
+  if (commentDeleteMatch && method === "DELETE") {
+    const lead = db.leads.find((item) => item.id === commentDeleteMatch[1]);
+    if (!lead) return notFound(res);
+    if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const comments = Array.isArray(lead.comments) ? lead.comments : [];
+    const index = comments.findIndex((comment) => comment.id === commentDeleteMatch[2]);
+    if (index === -1) return notFound(res);
+    const comment = comments[index];
+    if (user.role === "Admin TI") {
+      comments.splice(index, 1);
+      audit(db, user, "DELETE_COMMENT_PERMANENT", { leadId: lead.id, commentId: comment.id });
+    } else if (["Head Comercial", "Supervisor Comercial"].includes(user.role)) {
+      comment.deletedAt = new Date().toISOString();
+      comment.deletedBy = user.id;
+      comment.deletedByName = user.name;
+      comment.deletedText = comment.deletedText || comment.text;
+      comment.text = "";
+      audit(db, user, "DELETE_COMMENT_SOFT", { leadId: lead.id, commentId: comment.id });
+    } else {
+      return sendJson(res, 403, { error: "Sem permissão" });
+    }
+    lead.comments = comments;
+    lead.updatedAt = new Date().toISOString();
+    await saveDb(db);
+    return sendJson(res, 200, { lead: publicLead(lead, user) });
   }
 
   const rescueMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rescue$/);
@@ -1382,6 +1485,20 @@ async function routeApi(req, res, db) {
       return sendJson(res, 200, { ok: true, ...result });
     } catch (error) {
       integrationEvent(db, "META", "SYNC_MANUAL_ERROR", { error: error.message });
+      await saveDb(db);
+      return sendJson(res, 400, { error: error.message });
+    }
+  }
+
+  if (url.pathname === "/api/integrations/meta/diagnostics" && method === "POST") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    try {
+      const diagnostics = await diagnoseMeta(db);
+      audit(db, user, "DIAGNOSE_META", { forms: diagnostics.forms.length });
+      await saveDb(db);
+      return sendJson(res, 200, { ok: true, diagnostics });
+    } catch (error) {
+      integrationEvent(db, "META", "DIAGNOSTIC_ERROR", { error: error.message });
       await saveDb(db);
       return sendJson(res, 400, { error: error.message });
     }
