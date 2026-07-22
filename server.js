@@ -1222,6 +1222,7 @@ async function routeApi(req, res, db) {
     if (!lead) return notFound(res);
     if (user.role === "Corretor" && lead.assignedTo !== user.id) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
+    const previousStatus = lead.status;
     const detailFields = ["name", "phone", "email", "assistant", "desiredProject", "desiredUnit", "unitValue", "notes", "tags"];
     const allowed = canManageLeads(user) && lead.inPipeline
       ? ["status", "favorite", "assignedTo", "order", ...detailFields]
@@ -1247,6 +1248,9 @@ async function routeApi(req, res, db) {
       } else {
         lead[key] = body[key];
       }
+    }
+    if (body.status && body.status !== previousStatus && !Object.prototype.hasOwnProperty.call(body, "order")) {
+      lead.order = Date.now();
     }
     lead.updatedAt = new Date().toISOString();
     audit(db, user, "UPDATE_LEAD", { leadId: lead.id, changes: body });

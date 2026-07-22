@@ -26,6 +26,7 @@ const state = {
   lastAccessLogKey: "",
   creatingLead: false,
   baseSource: "TODOS",
+  baseSort: { key: "name", direction: "asc" },
   favoriteRequests: {},
   brokerMenuBound: false,
   inactivityTimer: null,
@@ -241,10 +242,50 @@ function baseSources() {
 function baseLeads() {
   const sources = baseSources();
   if (!sources.includes(state.baseSource)) state.baseSource = sources[0] || "TODOS";
-  return filteredLeads().filter((lead) => {
+  return sortBaseLeads(filteredLeads().filter((lead) => {
     if (state.baseSource === "META") return lead.source === "META";
     if (!isAvailableBaseLead(lead)) return false;
     return state.baseSource === "TODOS" || lead.source === state.baseSource;
+  }));
+}
+
+function baseSortStorageKey() {
+  return `pipeline-mauad-base-sort-${state.user?.id || "default"}`;
+}
+
+function loadBaseSortPreference() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(baseSortStorageKey()) || "null");
+    if (parsed?.key && parsed?.direction) state.baseSort = parsed;
+  } catch {}
+}
+
+function saveBaseSortPreference() {
+  try {
+    localStorage.setItem(baseSortStorageKey(), JSON.stringify(state.baseSort));
+  } catch {}
+}
+
+function baseSortValue(lead, key) {
+  const values = {
+    name: lead.name,
+    phone: lead.phone,
+    email: leadEmailForTable(lead),
+    status: leadBaseStatus(lead, { blankHistoricalBaseStatus: true }),
+    broker: lead.assignedName || userName(lead.assignedTo),
+    source: lead.source,
+    tags: leadTags(lead).join(", ")
+  };
+  return String(values[key] || "").trim().toLocaleLowerCase("pt-BR");
+}
+
+function sortBaseLeads(leads) {
+  const { key, direction } = state.baseSort;
+  const factor = direction === "desc" ? -1 : 1;
+  return [...leads].sort((a, b) => {
+    const comparison = baseSortValue(a, key).localeCompare(baseSortValue(b, key), "pt-BR", { numeric: true, sensitivity: "base" });
+    if (comparison !== 0) return comparison * factor;
+    return String(a.name || "").localeCompare(String(b.name || ""), "pt-BR", { sensitivity: "base" });
   });
 }
 
@@ -429,6 +470,7 @@ function renderPasswordSetup(message = "", error = "") {
 async function loadState() {
   const data = await api("/api/state");
   state.user = data.user;
+  loadBaseSortPreference();
   resetInactivityTimer();
   state.roles = data.roles;
   state.statuses = data.pipelineStatuses;
@@ -706,7 +748,11 @@ function renderKanban() {
     return acc;
   }, {});
   const columns = state.statuses.map((status, index) => {
-    const items = (byStatus[status] || []).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const items = (byStatus[status] || []).sort((a, b) => {
+      const orderDiff = (b.order ?? 0) - (a.order ?? 0);
+      if (orderDiff) return orderDiff;
+      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    });
     return `
       <section class="column" data-status="${escapeHtml(status)}" data-status-index="${index}">
         <div class="column-head" draggable="true" data-column-drag="${index}" title="Arraste para ordenar">
@@ -864,14 +910,32 @@ function bindDragDrop() {
   });
   document.querySelectorAll(".column").forEach((column) => {
     column.addEventListener("dragover", (event) => event.preventDefault());
-    column.addEventListener("drop", async () => {
+    column.addEventListener("drop", async (event) => {
       if (!draggedId) return;
+      event.preventDefault();
       const lead = state.leads.find((item) => item.id === draggedId);
       const status = column.dataset.status;
-      if (!lead || lead.status === status) return;
+      if (!lead) return;
+      const cards = [...column.querySelectorAll(".card")]
+        .filter((card) => card.dataset.lead !== draggedId);
+      const beforeCard = cards.find((card) => {
+        const rect = card.getBoundingClientRect();
+        return event.clientY < rect.top + rect.height / 2;
+      });
+      const insertIndex = beforeCard ? cards.indexOf(beforeCard) : cards.length;
+      const orderedIds = cards.map((card) => card.dataset.lead);
+      orderedIds.splice(insertIndex, 0, draggedId);
+      const aboveLead = insertIndex > 0 ? state.leads.find((item) => item.id === orderedIds[insertIndex - 1]) : null;
+      const belowLead = insertIndex < orderedIds.length - 1 ? state.leads.find((item) => item.id === orderedIds[insertIndex + 1]) : null;
+      const aboveOrder = Number(aboveLead?.order || 0);
+      const belowOrder = Number(belowLead?.order || 0);
+      let nextOrder = Date.now();
+      if (aboveLead && belowLead) nextOrder = (aboveOrder + belowOrder) / 2;
+      else if (aboveLead) nextOrder = aboveOrder - 1000;
+      else if (belowLead) nextOrder = Math.max(Date.now(), belowOrder + 1000);
       const result = await api(`/api/leads/${lead.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ status, order: Date.now() })
+        body: JSON.stringify({ status, order: nextOrder })
       });
       Object.assign(lead, result.lead);
       renderApp();
@@ -931,15 +995,21 @@ function leadRows(leads, options = {}) {
 }
 
 function renderLeadsTable(rows, options = {}) {
+  const sortableHeader = (key, label) => {
+    if (!options.sortable) return `<th>${label}</th>`;
+    const active = state.baseSort.key === key;
+    const arrow = active ? (state.baseSort.direction === "asc" ? " ↑" : " ↓") : "";
+    return `<th><button class="table-sort ${active ? "active" : ""}" data-base-sort="${key}">${label}${arrow}</button></th>`;
+  };
   const headers = [
     "<th>★</th>",
-    "<th>Nome</th>",
-    "<th>Celular</th>",
-    "<th>E-mail</th>",
-    "<th>Fase atual</th>",
-    "<th>Corretor</th>",
-    "<th>Origem</th>",
-    "<th>Etiquetas</th>",
+    sortableHeader("name", "Nome"),
+    sortableHeader("phone", "Celular"),
+    sortableHeader("email", "E-mail"),
+    sortableHeader("status", "Fase atual"),
+    sortableHeader("broker", "Corretor"),
+    sortableHeader("source", "Origem"),
+    sortableHeader("tags", "Etiquetas"),
     "<th>Ação</th>"
   ].join("");
   const columnCount = [
@@ -1010,9 +1080,20 @@ function renderLeadBases() {
       <div class="metric"><span>Resgatados</span><strong>${rescued}</strong></div>
       <div class="metric"><span>Origem</span><strong>${escapeHtml(state.baseSource)}</strong></div>
     </section>
-    ${renderLeadsTable(rows, { withRescue: true })}
+    ${renderLeadsTable(rows, { withRescue: true, sortable: true })}
   `);
   bindLeadActions();
+  document.querySelectorAll("[data-base-sort]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.baseSort;
+      state.baseSort = {
+        key,
+        direction: state.baseSort.key === key && state.baseSort.direction === "asc" ? "desc" : "asc"
+      };
+      saveBaseSortPreference();
+      renderLeadBases();
+    });
+  });
   document.querySelectorAll("[data-base-source]").forEach((button) => {
     button.addEventListener("click", () => {
       state.baseSource = button.dataset.baseSource;
@@ -1220,6 +1301,7 @@ function renderLeadDetail() {
           <form id="leadDetailForm" class="form-grid lead-data-form">
             <div class="field"><label>Origem</label><input value="${escapeHtml(lead.source || "")}" disabled></div>
             <div class="field"><label>ID importado</label><input value="${escapeHtml(lead.externalId || "")}" disabled></div>
+            <div class="field"><label>Criado em</label><input value="${escapeHtml(lead.createdAt ? new Date(lead.createdAt).toLocaleString("pt-BR") : "")}" disabled></div>
             <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(lead.name)}" required></div>
             <div class="field"><label>Telefone</label><input name="phone" value="${escapeHtml(lead.phone || "")}"></div>
             <div class="field"><label>E-mail</label><input name="email" type="email" value="${escapeHtml(lead.email || "")}"></div>
@@ -1232,8 +1314,8 @@ function renderLeadDetail() {
         ${renderLeadComments(comments, lead)}
       </div>
       <div class="lead-side-panels">
-        ${renderLeadInterest(project, lead)}
         ${renderMetaLeadInfo(lead)}
+        ${renderLeadInterest(project, lead)}
         ${renderCommentComposer()}
       </div>
     </section>

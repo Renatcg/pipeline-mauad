@@ -902,6 +902,23 @@ th {
   text-transform: uppercase;
 }
 
+.table-sort {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-transform: inherit;
+}
+
+.table-sort:hover,
+.table-sort.active {
+  background: transparent;
+  color: var(--brand);
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: 1.2fr 0.8fr;
