@@ -944,9 +944,19 @@ th {
   margin-top: 8px;
 }
 
+.lead-main-panels,
 .lead-side-panels {
   display: grid;
   gap: 14px;
+}
+
+.lead-data-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.interest-grid {
+  display: grid;
+  gap: 10px;
 }
 
 .meta-detail-panel {
@@ -1043,23 +1053,37 @@ th {
 .comment-form {
   display: grid;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 0;
+}
+
+.comment-composer-panel textarea {
+  min-height: 88px;
 }
 
 .comment-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: nowrap;
 }
 
 .checkline {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.checkline input {
+  width: 14px;
+  height: 14px;
+  min-height: 0;
+  margin: 0;
 }
 
 .field small {

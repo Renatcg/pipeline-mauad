@@ -1129,6 +1129,48 @@ function renderCommentBubble(comment) {
   `;
 }
 
+function renderLeadComments(comments) {
+  return `
+    <div class="panel">
+      <h2>Comentários</h2>
+      <div class="chat-timeline">
+        ${comments.map(renderCommentBubble).join("") || '<div class="empty">Nenhum comentário ainda</div>'}
+      </div>
+    </div>
+  `;
+}
+
+function renderCommentComposer() {
+  return `
+    <div class="panel comment-composer-panel">
+      <h2>Novo comentário</h2>
+      <form id="commentForm" class="comment-form">
+        <textarea name="text" placeholder="Adicionar comentário"></textarea>
+        <div class="comment-actions">
+          <button class="primary" type="submit">Comentar</button>
+          <label class="checkline"><input type="checkbox" name="fromUser"> Mensagem do usuário</label>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function renderLeadInterest(project, lead) {
+  return `
+    <div class="panel">
+      <h2>Interesse</h2>
+      <div class="interest-grid">
+        <div class="field"><label>Empreendimento desejado</label><select name="desiredProject" form="leadDetailForm">
+          <option value="">Selecione</option>
+          ${projectOptions(project)}
+        </select></div>
+        <div class="field"><label>Unidade</label><input name="desiredUnit" form="leadDetailForm" value="${escapeHtml(lead.desiredUnit || lead.unit || "")}"></div>
+        <div class="field"><label>Valor da unidade</label><input name="unitValue" form="leadDetailForm" value="${escapeHtml(lead.unitValue || lead.value || "")}"></div>
+      </div>
+    </div>
+  `;
+}
+
 function renderLeadDetail() {
   const lead = state.leads.find((item) => item.id === state.leadId);
   if (!lead) {
@@ -1168,44 +1210,30 @@ function renderLeadDetail() {
       </div>
     </div>
     <section class="lead-detail">
-      <div class="panel">
-        <div class="panel-head">
-          <h2>Dados do lead</h2>
-          ${renderLeadTags(lead, true)}
+      <div class="lead-main-panels">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Dados do lead</h2>
+            ${renderLeadTags(lead, true)}
+          </div>
+          <form id="leadDetailForm" class="form-grid lead-data-form">
+            <div class="field"><label>Origem</label><input value="${escapeHtml(lead.source || "")}" disabled></div>
+            <div class="field"><label>ID importado</label><input value="${escapeHtml(lead.externalId || "")}" disabled></div>
+            <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(lead.name)}" required></div>
+            <div class="field"><label>Telefone</label><input name="phone" value="${escapeHtml(lead.phone || "")}"></div>
+            <div class="field"><label>E-mail</label><input name="email" type="email" value="${escapeHtml(lead.email || "")}"></div>
+            <div class="field"><label>Status do pipeline</label>${statusField}</div>
+            <div class="field"><label>Corretor</label>${brokerField}</div>
+            <div class="field full"><label>Observações internas</label><textarea name="notes">${escapeHtml(lead.notes || "")}</textarea></div>
+            <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar detalhes</button></div></div>
+          </form>
         </div>
-        <form id="leadDetailForm" class="form-grid">
-          <div class="field"><label>Origem</label><input value="${escapeHtml(lead.source || "")}" disabled></div>
-          <div class="field"><label>ID importado</label><input value="${escapeHtml(lead.externalId || "")}" disabled></div>
-          <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(lead.name)}" required></div>
-          <div class="field"><label>Telefone</label><input name="phone" value="${escapeHtml(lead.phone || "")}"></div>
-          <div class="field"><label>E-mail</label><input name="email" type="email" value="${escapeHtml(lead.email || "")}"></div>
-          <div class="field"><label>Status do pipeline</label>${statusField}</div>
-          <div class="field"><label>Corretor</label>${brokerField}</div>
-          <div class="field"><label>Empreendimento desejado</label><select name="desiredProject">
-            <option value="">Selecione</option>
-            ${projectOptions(project)}
-          </select></div>
-          <div class="field"><label>Unidade</label><input name="desiredUnit" value="${escapeHtml(lead.desiredUnit || lead.unit || "")}"></div>
-          <div class="field"><label>Valor da unidade</label><input name="unitValue" value="${escapeHtml(lead.unitValue || lead.value || "")}"></div>
-          <div class="field full"><label>Observações internas</label><textarea name="notes">${escapeHtml(lead.notes || "")}</textarea></div>
-          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar detalhes</button></div></div>
-        </form>
+        ${renderLeadComments(comments)}
       </div>
       <div class="lead-side-panels">
+        ${renderLeadInterest(project, lead)}
         ${renderMetaLeadInfo(lead)}
-        <div class="panel">
-          <h2>Comentários</h2>
-          <form id="commentForm" class="comment-form">
-            <textarea name="text" placeholder="Adicionar comentário"></textarea>
-            <div class="comment-actions">
-              <button class="primary" type="submit">Comentar</button>
-              <label class="checkline"><input type="checkbox" name="fromUser"> Mensagem do usuário</label>
-            </div>
-          </form>
-          <div class="chat-timeline">
-            ${comments.map(renderCommentBubble).join("") || '<div class="empty">Nenhum comentário ainda</div>'}
-          </div>
-        </div>
+        ${renderCommentComposer()}
       </div>
     </section>
   `);
