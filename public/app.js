@@ -27,6 +27,7 @@ const state = {
   creatingLead: false,
   baseSource: "TODOS",
   baseSort: { key: "name", direction: "asc" },
+  sheetSort: { key: "name", direction: "asc" },
   favoriteRequests: {},
   brokerMenuBound: false,
   inactivityTimer: null,
@@ -249,29 +250,29 @@ function baseLeads() {
   }));
 }
 
-function baseSortStorageKey() {
-  return `pipeline-mauad-base-sort-${state.user?.id || "default"}`;
+function sortStorageKey(scope) {
+  return `pipeline-mauad-${scope}-sort-${state.user?.id || "default"}`;
 }
 
-function loadBaseSortPreference() {
+function loadTableSortPreference(scope) {
   try {
-    const parsed = JSON.parse(localStorage.getItem(baseSortStorageKey()) || "null");
-    if (parsed?.key && parsed?.direction) state.baseSort = parsed;
+    const parsed = JSON.parse(localStorage.getItem(sortStorageKey(scope)) || "null");
+    if (parsed?.key && parsed?.direction) state[`${scope}Sort`] = parsed;
   } catch {}
 }
 
-function saveBaseSortPreference() {
+function saveTableSortPreference(scope) {
   try {
-    localStorage.setItem(baseSortStorageKey(), JSON.stringify(state.baseSort));
+    localStorage.setItem(sortStorageKey(scope), JSON.stringify(state[`${scope}Sort`]));
   } catch {}
 }
 
-function baseSortValue(lead, key) {
+function tableSortValue(lead, key, options = {}) {
   const values = {
     name: lead.name,
     phone: lead.phone,
     email: leadEmailForTable(lead),
-    status: leadBaseStatus(lead, { blankHistoricalBaseStatus: true }),
+    status: leadBaseStatus(lead, options),
     broker: lead.assignedName || userName(lead.assignedTo),
     source: lead.source,
     tags: leadTags(lead).join(", ")
@@ -279,14 +280,18 @@ function baseSortValue(lead, key) {
   return String(values[key] || "").trim().toLocaleLowerCase("pt-BR");
 }
 
-function sortBaseLeads(leads) {
-  const { key, direction } = state.baseSort;
+function sortLeadsForTable(leads, sort, options = {}) {
+  const { key, direction } = sort || { key: "name", direction: "asc" };
   const factor = direction === "desc" ? -1 : 1;
   return [...leads].sort((a, b) => {
-    const comparison = baseSortValue(a, key).localeCompare(baseSortValue(b, key), "pt-BR", { numeric: true, sensitivity: "base" });
+    const comparison = tableSortValue(a, key, options).localeCompare(tableSortValue(b, key, options), "pt-BR", { numeric: true, sensitivity: "base" });
     if (comparison !== 0) return comparison * factor;
     return String(a.name || "").localeCompare(String(b.name || ""), "pt-BR", { sensitivity: "base" });
   });
+}
+
+function sortBaseLeads(leads) {
+  return sortLeadsForTable(leads, state.baseSort, { blankHistoricalBaseStatus: true });
 }
 
 function baseLeadCount() {
@@ -470,7 +475,8 @@ function renderPasswordSetup(message = "", error = "") {
 async function loadState() {
   const data = await api("/api/state");
   state.user = data.user;
-  loadBaseSortPreference();
+  loadTableSortPreference("base");
+  loadTableSortPreference("sheet");
   resetInactivityTimer();
   state.roles = data.roles;
   state.statuses = data.pipelineStatuses;
@@ -995,11 +1001,12 @@ function leadRows(leads, options = {}) {
 }
 
 function renderLeadsTable(rows, options = {}) {
+  const sortState = options.sortScope ? state[`${options.sortScope}Sort`] : state.baseSort;
   const sortableHeader = (key, label) => {
     if (!options.sortable) return `<th>${label}</th>`;
-    const active = state.baseSort.key === key;
-    const arrow = active ? (state.baseSort.direction === "asc" ? " ↑" : " ↓") : "";
-    return `<th><button class="table-sort ${active ? "active" : ""}" data-base-sort="${key}">${label}${arrow}</button></th>`;
+    const active = sortState.key === key;
+    const arrow = active ? (sortState.direction === "asc" ? " ↑" : " ↓") : "";
+    return `<th><button class="table-sort ${active ? "active" : ""}" data-table-sort="${key}" data-sort-scope="${escapeHtml(options.sortScope || "base")}">${label}${arrow}</button></th>`;
   };
   const headers = [
     "<th>★</th>",
@@ -1044,16 +1051,34 @@ function renderLeadsTable(rows, options = {}) {
   `;
 }
 
+function bindTableSortControls(renderFn) {
+  document.querySelectorAll("[data-table-sort]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const scope = button.dataset.sortScope || "base";
+      const key = button.dataset.tableSort;
+      const stateKey = `${scope}Sort`;
+      const current = state[stateKey] || { key: "name", direction: "asc" };
+      state[stateKey] = {
+        key,
+        direction: current.key === key && current.direction === "asc" ? "desc" : "asc"
+      };
+      saveTableSortPreference(scope);
+      renderFn();
+    });
+  });
+}
+
 function renderSheet() {
-  const leads = pipelineLeads();
+  const leads = sortLeadsForTable(pipelineLeads(), state.sheetSort);
   const tableOptions = { textStatus: true };
   const rows = leadRows(leads, tableOptions);
   renderShell(`
     ${renderViewHead("Planilha", "Leads vindos do Meta, importações de pipeline e resgates das bases", { filters: true, addLead: true })}
     ${renderMetrics(leads)}
-    ${renderLeadsTable(rows, tableOptions)}
+    ${renderLeadsTable(rows, { ...tableOptions, sortable: true, sortScope: "sheet" })}
   `);
   bindLeadActions();
+  bindTableSortControls(renderSheet);
 }
 
 function renderBaseSources(sources) {
@@ -1080,20 +1105,10 @@ function renderLeadBases() {
       <div class="metric"><span>Resgatados</span><strong>${rescued}</strong></div>
       <div class="metric"><span>Origem</span><strong>${escapeHtml(state.baseSource)}</strong></div>
     </section>
-    ${renderLeadsTable(rows, { withRescue: true, sortable: true })}
+    ${renderLeadsTable(rows, { withRescue: true, sortable: true, sortScope: "base" })}
   `);
   bindLeadActions();
-  document.querySelectorAll("[data-base-sort]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const key = button.dataset.baseSort;
-      state.baseSort = {
-        key,
-        direction: state.baseSort.key === key && state.baseSort.direction === "asc" ? "desc" : "asc"
-      };
-      saveBaseSortPreference();
-      renderLeadBases();
-    });
-  });
+  bindTableSortControls(renderLeadBases);
   document.querySelectorAll("[data-base-source]").forEach((button) => {
     button.addEventListener("click", () => {
       state.baseSource = button.dataset.baseSource;
