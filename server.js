@@ -25,6 +25,9 @@ const DATABASE_URL = process.env.POSTGRES_URL || process.env.DATABASE_URL || pro
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const EMAIL_FROM = process.env.EMAIL_FROM || "Pipeline Mauad <onboarding@resend.dev>";
+const EVO_API_URL = process.env.EVO_API_URL || "";
+const EVO_API_KEY = process.env.EVO_API_KEY || "";
+const EVO_INSTANCE = process.env.EVO_INSTANCE || "";
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || "";
 const META_APP_ID = process.env.META_APP_ID || "";
 const META_APP_SECRET = process.env.META_APP_SECRET || "";
@@ -270,6 +273,18 @@ function migrateDb(db) {
       changed = true;
     }
   }
+  for (const user of db.users || []) {
+    if (!user.notifications || typeof user.notifications !== "object" || Array.isArray(user.notifications)) {
+      user.notifications = { email: false, whatsapp: false, whatsappNumber: "" };
+      changed = true;
+    } else {
+      user.notifications = {
+        email: Boolean(user.notifications.email),
+        whatsapp: Boolean(user.notifications.whatsapp),
+        whatsappNumber: String(user.notifications.whatsappNumber || user.whatsapp || "").trim()
+      };
+    }
+  }
   if (db.integrations?.metaForms && !Array.isArray(db.integrations.metaForms.mappings)) {
     db.integrations.metaForms.mappings = [];
     changed = true;
@@ -319,6 +334,14 @@ function validatePasswordPolicy(password) {
   if (!/[0-9]/.test(value)) return "A senha precisa ter um número";
   if (!/[^A-Za-z0-9]/.test(value)) return "A senha precisa ter um caractere especial";
   return "";
+}
+
+function normalizeNotificationPreferences(value = {}) {
+  return {
+    email: Boolean(value.email),
+    whatsapp: Boolean(value.whatsapp),
+    whatsappNumber: String(value.whatsappNumber || "").trim()
+  };
 }
 
 function publicBaseUrl(req) {
@@ -374,6 +397,139 @@ async function sendPasswordSetupEmail(req, user, token) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return { sent: false, link, reason: data.message || "Falha no envio do Resend" };
   return { sent: true, id: data.id };
+}
+
+async function sendEmail(to, subject, html) {
+  if (!RESEND_API_KEY) return { sent: false, reason: "RESEND_API_KEY ausente" };
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ from: EMAIL_FROM, to, subject, html })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return { sent: false, reason: data.message || "Falha no envio do Resend" };
+  return { sent: true, id: data.id };
+}
+
+function leadUrl(lead) {
+  const configured = String(process.env.APP_URL || process.env.VERCEL_PROJECT_PRODUCTION_URL || "").trim();
+  if (!configured) return "";
+  const baseUrl = configured.startsWith("http") ? configured.replace(/\/$/, "") : `https://${configured.replace(/\/$/, "")}`;
+  return `${baseUrl}/lead/${encodeURIComponent(lead.id)}`;
+}
+
+function formatWhatsappNumber(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("55")) return digits;
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+  return digits;
+}
+
+function leadNotificationText(lead) {
+  const parts = [
+    "Novo lead no Pipeline Comercial | Construtora Mauad",
+    "",
+    `Nome: ${lead.name || "Sem nome"}`,
+    `Telefone: ${lead.phone || "Sem telefone"}`,
+    `E-mail: ${lead.email || "Sem e-mail"}`,
+    `Empreendimento: ${lead.desiredProject || "Não informado"}`,
+    `Origem: ${lead.source || "META"}`
+  ];
+  const url = leadUrl(lead);
+  if (url) parts.push("", `Abrir lead: ${url}`);
+  return parts.join("\n");
+}
+
+async function sendLeadNotificationEmail(user, lead) {
+  if (!user?.username || !user.notifications?.email) return { skipped: true };
+  const url = leadUrl(lead);
+  return sendEmail(
+    user.username,
+    `Novo lead Meta: ${lead.name || "Lead sem nome"}`,
+    `
+      <div style="font-family:Arial,sans-serif;max-width:580px;margin:auto;color:#17202a">
+        <h1 style="font-size:22px">Novo lead recebido</h1>
+        <p>Olá, ${escapeHtml(user.name)}.</p>
+        <p>Um novo lead entrou no Pipeline Comercial da Construtora Mauad.</p>
+        <div style="background:#f6f8fa;border:1px solid #d7dee8;border-radius:8px;padding:14px;margin:16px 0">
+          <p><strong>Nome:</strong> ${escapeHtml(lead.name || "Sem nome")}</p>
+          <p><strong>Telefone:</strong> ${escapeHtml(lead.phone || "Sem telefone")}</p>
+          <p><strong>E-mail:</strong> ${escapeHtml(lead.email || "Sem e-mail")}</p>
+          <p><strong>Empreendimento:</strong> ${escapeHtml(lead.desiredProject || "Não informado")}</p>
+          <p><strong>Origem:</strong> ${escapeHtml(lead.source || "META")}</p>
+        </div>
+        ${url ? `<p><a href="${url}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:12px 18px;border-radius:7px;font-weight:700">Abrir lead</a></p>` : ""}
+      </div>
+    `
+  );
+}
+
+async function sendLeadNotificationWhatsapp(user, lead) {
+  if (!user?.notifications?.whatsapp) return { skipped: true };
+  const number = formatWhatsappNumber(user.notifications.whatsappNumber);
+  if (!number) return { sent: false, reason: "Número de WhatsApp ausente" };
+  if (!EVO_API_URL || !EVO_API_KEY || !EVO_INSTANCE) return { sent: false, reason: "Evo API não configurada" };
+  const endpoint = `${EVO_API_URL.replace(/\/$/, "")}/message/sendText/${encodeURIComponent(EVO_INSTANCE)}`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      apikey: EVO_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      number,
+      text: leadNotificationText(lead)
+    })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return { sent: false, reason: data.message || data.error || "Falha no envio da Evo API" };
+  return { sent: true, id: data.key?.id || data.id || "" };
+}
+
+function leadNotificationRecipients(db, lead) {
+  const recipients = new Map();
+  const assigned = lead.assignedTo
+    ? db.users.find((user) => user.id === lead.assignedTo && user.active)
+    : null;
+  if (assigned) recipients.set(assigned.id, assigned);
+  for (const user of db.users || []) {
+    if (!user.active) continue;
+    if (!["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(user.role)) continue;
+    if (user.notifications?.email || user.notifications?.whatsapp) recipients.set(user.id, user);
+  }
+  return [...recipients.values()];
+}
+
+async function notifyNewMetaLead(db, lead) {
+  const recipients = leadNotificationRecipients(db, lead);
+  if (!recipients.length) {
+    integrationEvent(db, "NOTIFICATION", "NO_RECIPIENTS", { leadId: lead.id, source: lead.source });
+    return;
+  }
+  for (const recipient of recipients) {
+    if (recipient.notifications?.email) {
+      const result = await sendLeadNotificationEmail(recipient, lead);
+      integrationEvent(db, "NOTIFICATION", result.sent ? "EMAIL_SENT" : "EMAIL_FAILED", {
+        leadId: lead.id,
+        userId: recipient.id,
+        email: recipient.username,
+        reason: result.reason || ""
+      });
+    }
+    if (recipient.notifications?.whatsapp) {
+      const result = await sendLeadNotificationWhatsapp(recipient, lead);
+      integrationEvent(db, "NOTIFICATION", result.sent ? "WHATSAPP_SENT" : "WHATSAPP_FAILED", {
+        leadId: lead.id,
+        userId: recipient.id,
+        whatsapp: recipient.notifications.whatsappNumber || "",
+        reason: result.reason || ""
+      });
+    }
+  }
 }
 
 function parseCookies(req) {
@@ -884,6 +1040,7 @@ async function importMetaLeadById(db, actor, leadgenId, webhookValue = {}) {
         campaignName: created.lead.meta?.campaignName || ""
       });
     }
+    await notifyNewMetaLead(db, created.lead);
   }
   return created;
 }
@@ -1373,6 +1530,7 @@ async function routeApi(req, res, db) {
       username,
       role: body.role,
       active: Boolean(body.active),
+      notifications: normalizeNotificationPreferences(body.notifications),
       passwordHash: null,
       createdAt: now,
       updatedAt: now
@@ -1416,6 +1574,9 @@ async function routeApi(req, res, db) {
     }
     for (const key of ["name", "role", "active"]) {
       if (Object.prototype.hasOwnProperty.call(body, key)) target[key] = body[key];
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "notifications")) {
+      target.notifications = normalizeNotificationPreferences(body.notifications);
     }
     target.updatedAt = new Date().toISOString();
     audit(db, user, "UPDATE_USER", { userId: target.id, changes: body, reassignedLeads: assignedLeads.length });

@@ -21,6 +21,7 @@ const state = {
   settingsEditing: null,
   settingsNotice: "",
   settingsLogSearch: "",
+  settingsLogTab: "audit",
   metaFormsTab: "active",
   mobileNavOpen: false,
   lastAccessLogKey: "",
@@ -1730,7 +1731,12 @@ function renderUserSettings() {
     const payload = {
       name: form.get("name"),
       role: form.get("role"),
-      active: form.get("active") === "true"
+      active: form.get("active") === "true",
+      notifications: {
+        email: form.get("notifyEmail") === "on",
+        whatsapp: form.get("notifyWhatsapp") === "on",
+        whatsappNumber: form.get("whatsappNumber")
+      }
     };
     if (editUser?.role === "Corretor" && editUser.active && payload.active === false) {
       const reassignment = reassignPayloadForBrokerDeactivation(editUser);
@@ -1773,6 +1779,9 @@ function renderUserEditorModal(formUser, isEditing, roleOptions) {
           <div class="field"><label>E-mail de acesso</label><input name="username" type="email" value="${escapeHtml(formUser.username || "")}" ${isEditing ? "disabled" : "required"}></div>
           <div class="field"><label>Perfil</label><select name="role">${roleOptions.map((role) => `<option ${role === formUser.role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select></div>
           <div class="field"><label>Status</label><select name="active"><option value="true" ${formUser.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${formUser.active === false ? "selected" : ""}>Inativo</option></select></div>
+          <div class="field"><label>Notificar por e-mail</label><label class="checkline settings-check"><input type="checkbox" name="notifyEmail" ${formUser.notifications?.email ? "checked" : ""}> Receber novos leads</label></div>
+          <div class="field"><label>Notificar por WhatsApp</label><label class="checkline settings-check"><input type="checkbox" name="notifyWhatsapp" ${formUser.notifications?.whatsapp ? "checked" : ""}> Receber novos leads</label></div>
+          <div class="field full"><label>Número de WhatsApp</label><input name="whatsappNumber" value="${escapeHtml(formUser.notifications?.whatsappNumber || "")}" placeholder="Ex.: 5521999999999"><small>Use DDD. Se não informar o código do país, o sistema considera Brasil (+55).</small></div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       </section>
@@ -2118,22 +2127,23 @@ function renderLogSettings() {
         <h2>Logs</h2>
         <input id="settingsLogSearch" class="settings-search" placeholder="Pesquisar nos logs" value="${escapeHtml(state.settingsLogSearch)}">
       </div>
-      <div class="logs-grid">
-        <section>
-          <h2>Eventos de integração</h2>
-          <div class="table-wrap">
-            <table><thead><tr><th>Data</th><th>Origem</th><th>Evento</th><th>ID</th><th>Detalhe</th></tr></thead><tbody>${integrationRows || '<tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>
-          </div>
-        </section>
-        <section>
-          <h2>Auditoria</h2>
-          <div class="table-wrap">
-            <table><thead><tr><th>Data</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr></thead><tbody>${auditRows || '<tr><td colspan="4" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>
-          </div>
-        </section>
+      <div class="tabs compact-tabs log-tabs">
+        <button class="${state.settingsLogTab === "audit" ? "active" : ""}" data-log-tab="audit">Auditoria</button>
+        <button class="${state.settingsLogTab === "integration" ? "active" : ""}" data-log-tab="integration">Eventos de integração</button>
+      </div>
+      <div class="table-wrap log-table-wrap">
+        ${state.settingsLogTab === "integration"
+          ? `<table><thead><tr><th>Data</th><th>Origem</th><th>Evento</th><th>ID</th><th>Detalhe</th></tr></thead><tbody>${integrationRows || '<tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`
+          : `<table><thead><tr><th>Data</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr></thead><tbody>${auditRows || '<tr><td colspan="4" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`}
       </div>
     </section>
   `);
+  document.querySelectorAll("[data-log-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsLogTab = button.dataset.logTab;
+      renderLogSettings();
+    });
+  });
   document.querySelector("#settingsLogSearch")?.addEventListener("input", (event) => {
     state.settingsLogSearch = event.target.value;
     renderLogSettings();

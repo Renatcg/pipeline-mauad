@@ -312,18 +312,12 @@ textarea {
   color: #b42318;
 }
 
-.logs-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 14px;
+.log-tabs {
+  margin-bottom: 12px;
 }
 
-.logs-grid section {
-  min-width: 0;
-}
-
-.logs-grid h2 {
-  margin-bottom: 10px;
+.log-table-wrap table {
+  min-width: 980px;
 }
 
 .password-rules {
