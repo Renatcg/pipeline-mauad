@@ -418,7 +418,7 @@ function leadUrl(lead) {
   const configured = String(process.env.APP_URL || process.env.VERCEL_PROJECT_PRODUCTION_URL || "").trim();
   if (!configured) return "";
   const baseUrl = configured.startsWith("http") ? configured.replace(/\/$/, "") : `https://${configured.replace(/\/$/, "")}`;
-  return `${baseUrl}/lead/${encodeURIComponent(lead.id)}`;
+  return `${baseUrl}/leads/${encodeURIComponent(lead.id)}`;
 }
 
 function formatWhatsappNumber(value) {
@@ -440,7 +440,7 @@ function leadNotificationText(lead) {
     `Origem: ${lead.source || "META"}`
   ];
   const url = leadUrl(lead);
-  if (url) parts.push("", `Abrir lead: ${url}`);
+  if (url) parts.push("", `Acesse diretamente o detalhe deste lead: ${url}`);
   return parts.join("\n");
 }
 
@@ -462,7 +462,7 @@ async function sendLeadNotificationEmail(user, lead) {
           <p><strong>Empreendimento:</strong> ${escapeHtml(lead.desiredProject || "Não informado")}</p>
           <p><strong>Origem:</strong> ${escapeHtml(lead.source || "META")}</p>
         </div>
-        ${url ? `<p><a href="${url}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:12px 18px;border-radius:7px;font-weight:700">Abrir lead</a></p>` : ""}
+        ${url ? `<p>Acesse diretamente o detalhe deste lead:</p><p><a href="${url}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:12px 18px;border-radius:7px;font-weight:700">Abrir detalhe do lead</a></p><p style="font-size:12px;color:#657382">${escapeHtml(url)}</p>` : ""}
       </div>
     `
   );

@@ -180,6 +180,12 @@ function routeTo(view, leadId = null) {
   trackAccess();
 }
 
+function loginPathWithReturnTo() {
+  const current = `${window.location.pathname}${window.location.search || ""}`;
+  if (window.location.pathname === "/login" || window.location.pathname === "/definir-senha") return "/login";
+  return `/login?returnTo=${encodeURIComponent(current)}`;
+}
+
 function currentViewLabel() {
   const labels = {
     kanban: "Kanban",
@@ -343,7 +349,7 @@ function setButtonBusy(button, busy, label = "Aguarde...") {
 }
 
 function renderLogin(error = "", message = "") {
-  if (window.location.pathname !== "/login") history.replaceState({}, "", "/login");
+  if (window.location.pathname !== "/login") history.replaceState({}, "", loginPathWithReturnTo());
   app.innerHTML = `
     <section class="login-page">
       <div class="login-frame">
@@ -391,6 +397,11 @@ function renderLogin(error = "", message = "") {
       state.user = result.user;
       resetInactivityTimer();
       await loadState();
+      const returnTo = new URLSearchParams(window.location.search).get("returnTo");
+      if (returnTo?.startsWith("/")) {
+        history.replaceState({}, "", returnTo);
+        syncRouteFromLocation();
+      }
       if (state.view === "lead" && state.leadId) {
         routeTo("lead", state.leadId);
         return;
