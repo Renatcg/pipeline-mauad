@@ -12,6 +12,7 @@ const state = {
   integrations: null,
   auditLog: [],
   accessLog: [],
+  fupLeadLog: [],
   integrationLog: [],
   metaDiagnostics: null,
   view: "kanban",
@@ -205,7 +206,7 @@ function trackAccess() {
   state.lastAccessLogKey = key;
   api("/api/access-log", {
     method: "POST",
-    body: JSON.stringify({ path: window.location.pathname, view: currentViewLabel() })
+    body: JSON.stringify({ path: window.location.pathname, view: currentViewLabel(), leadId: state.view === "lead" ? state.leadId : "" })
   }).catch(() => {});
 }
 
@@ -500,6 +501,7 @@ async function loadState() {
   state.integrationLog = data.integrationLog || [];
   state.auditLog = data.auditLog;
   state.accessLog = data.accessLog || [];
+  state.fupLeadLog = data.fupLeadLog || [];
   if (state.view !== "lead" && !allowedViews().includes(state.view)) state.view = allowedViews()[0];
 }
 
@@ -1571,7 +1573,7 @@ function userPasswordChip(user) {
 function userNotificationIcons(user) {
   const notifications = user.notifications || {};
   const icons = [];
-  if (notifications.email) icons.push('<span class="notification-icon" title="Notificação por e-mail" aria-label="Notificação por e-mail">✉</span>');
+  if (notifications.email) icons.push('<span class="notification-icon email" title="Notificação por e-mail" aria-label="Notificação por e-mail">✉</span>');
   if (notifications.whatsapp) icons.push('<span class="notification-icon whatsapp" title="Notificação por WhatsApp" aria-label="Notificação por WhatsApp"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.04 2a9.86 9.86 0 0 0-8.44 14.94L2.35 22l5.17-1.2A9.9 9.9 0 1 0 12.04 2Zm0 1.74a8.16 8.16 0 1 1 0 16.32 8.08 8.08 0 0 1-4.16-1.14l-.34-.2-3.02.7.72-2.94-.22-.35a8.16 8.16 0 0 1 7.02-12.39Zm-3.3 4.37c-.18 0-.47.07-.72.34-.25.27-.95.93-.95 2.27s.98 2.64 1.12 2.82c.14.18 1.9 3.04 4.72 4.14 2.34.92 2.82.74 3.33.69.51-.05 1.65-.67 1.88-1.32.23-.65.23-1.21.16-1.33-.07-.12-.25-.19-.53-.33-.28-.14-1.65-.81-1.9-.9-.25-.09-.44-.14-.63.14-.18.28-.72.9-.88 1.08-.16.18-.33.21-.6.07-.28-.14-1.17-.43-2.23-1.37-.82-.73-1.38-1.64-1.54-1.92-.16-.28-.02-.43.12-.57.13-.13.28-.33.42-.49.14-.16.18-.28.28-.46.09-.18.05-.35-.02-.49-.07-.14-.63-1.52-.86-2.08-.23-.54-.46-.47-.63-.48h-.53Z"/></svg></span>');
   return icons.length ? `<div class="notification-icons">${icons.join("")}</div>` : '<span class="muted-cell">-</span>';
 }
@@ -2131,6 +2133,32 @@ function renderIntegrationSettings() {
   });
 }
 
+function fupActionLabel(action) {
+  const labels = {
+    VIEW_LEAD_DETAIL: "Entrou no detalhe",
+    COMMENT_LEAD: "Comentou",
+    ASSIGN_BROKER: "Atribuiu corretor",
+    UNASSIGN_BROKER: "Desatribuiu corretor",
+    CHANGE_STATUS: "Mudou status",
+    CHANGE_ORDER_MANUAL: "Mudou ordem",
+    DELETE_LEAD: "Excluiu lead",
+    RESCUE_BASE_LEAD: "Resgatou da base"
+  };
+  return labels[action] || action || "";
+}
+
+function fupDetailsLabel(item) {
+  const details = item.details || {};
+  if (item.action === "CHANGE_STATUS") return `${details.from || ""} -> ${details.to || ""}`;
+  if (item.action === "ASSIGN_BROKER") return `${details.from || "Sem corretor"} -> ${details.to || ""}`;
+  if (item.action === "UNASSIGN_BROKER") return `${details.from || ""} -> Sem corretor`;
+  if (item.action === "CHANGE_ORDER_MANUAL") return details.status ? `Status: ${details.status}` : "Ordem manual no Kanban";
+  if (item.action === "RESCUE_BASE_LEAD") return details.source ? `Origem: ${details.source}` : "";
+  if (item.action === "COMMENT_LEAD") return details.fromUser ? "Mensagem do usuário" : "Comentário interno";
+  if (item.action === "DELETE_LEAD") return details.source ? `Origem: ${details.source}` : "";
+  return JSON.stringify(details || {});
+}
+
 function renderLogSettings() {
   const term = state.settingsLogSearch.trim().toLowerCase();
   const matches = (value) => !term || String(value || "").toLowerCase().includes(term);
@@ -2161,6 +2189,20 @@ function renderLogSettings() {
         <td>${escapeHtml(JSON.stringify(item.details || {}))}</td>
       </tr>
     `).join("");
+  const fupRows = (state.fupLeadLog || [])
+    .filter((item) => {
+      const details = JSON.stringify(item.details || {});
+      return [item.actor, item.actorName, item.leadName, item.leadId, item.action, fupActionLabel(item.action), fupDetailsLabel(item), details].some(matches);
+    })
+    .map((item) => `
+      <tr>
+        <td>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))}</td>
+        <td>${escapeHtml(item.leadName || "")}</td>
+        <td>${escapeHtml(item.actorName || item.actor || "")}</td>
+        <td>${escapeHtml(fupActionLabel(item.action))}</td>
+        <td>${escapeHtml(fupDetailsLabel(item))}</td>
+      </tr>
+    `).join("");
   settingsLayout(`
     <section class="panel">
       <div class="panel-head">
@@ -2169,11 +2211,14 @@ function renderLogSettings() {
       </div>
       <div class="tabs compact-tabs log-tabs">
         <button class="${state.settingsLogTab === "audit" ? "active" : ""}" data-log-tab="audit">Auditoria</button>
+        <button class="${state.settingsLogTab === "fup" ? "active" : ""}" data-log-tab="fup">FUP Lead</button>
         <button class="${state.settingsLogTab === "integration" ? "active" : ""}" data-log-tab="integration">Eventos de integração</button>
       </div>
       <div class="table-wrap log-table-wrap">
         ${state.settingsLogTab === "integration"
           ? `<table><thead><tr><th>Data</th><th>Origem</th><th>Evento</th><th>ID</th><th>Detalhe</th></tr></thead><tbody>${integrationRows || '<tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`
+          : state.settingsLogTab === "fup"
+            ? `<table><thead><tr><th>Data</th><th>Lead</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr></thead><tbody>${fupRows || '<tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`
           : `<table><thead><tr><th>Data</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr></thead><tbody>${auditRows || '<tr><td colspan="4" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`}
       </div>
     </section>

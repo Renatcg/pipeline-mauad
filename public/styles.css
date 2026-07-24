@@ -757,6 +757,10 @@ tr[data-open-lead] {
   color: #128c7e;
 }
 
+.notification-icon.email {
+  font-size: 21px;
+}
+
 .notification-icon svg {
   width: 16px;
   height: 16px;

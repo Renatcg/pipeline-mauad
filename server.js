@@ -221,6 +221,10 @@ function migrateDb(db) {
     db.accessLog = [];
     changed = true;
   }
+  if (!Array.isArray(db.fupLeadLog)) {
+    db.fupLeadLog = [];
+    changed = true;
+  }
   if (!Array.isArray(db.integrationLog)) {
     db.integrationLog = [];
     changed = true;
@@ -738,6 +742,21 @@ function integrationEvent(db, provider, action, details = {}) {
     details
   });
   db.integrationLog = db.integrationLog.slice(0, 200);
+}
+
+function fupLeadEvent(db, actor, lead, action, details = {}) {
+  if (!lead) return;
+  db.fupLeadLog.unshift({
+    at: new Date().toISOString(),
+    actor: actor.username,
+    actorName: actor.name,
+    userId: actor.id,
+    leadId: lead.id,
+    leadName: lead.name || "",
+    action,
+    details
+  });
+  db.fupLeadLog = db.fupLeadLog.slice(0, 500);
 }
 
 function clientIp(req) {
@@ -1346,7 +1365,8 @@ async function routeApi(req, res, db) {
       integrations: canManageSettings(user) ? db.integrations : null,
       integrationLog: canManageSettings(user) ? db.integrationLog.slice(0, 50) : [],
       auditLog: canManageSettings(user) ? db.auditLog.slice(0, 25) : [],
-      accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : []
+      accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : [],
+      fupLeadLog: canManageSettings(user) ? (db.fupLeadLog || []).slice(0, 250) : []
     });
   }
 
@@ -1356,7 +1376,18 @@ async function routeApi(req, res, db) {
       path: String(body.path || "").slice(0, 160),
       view: String(body.view || "").slice(0, 80)
     }, req);
-    await saveAccessLog(db);
+    const pathValue = String(body.path || "");
+    const leadId = String(body.leadId || (pathValue.match(/^\/leads\/([^/?#]+)/)?.[1] ? decodeURIComponent(pathValue.match(/^\/leads\/([^/?#]+)/)[1]) : "")).trim();
+    let loggedLeadFup = false;
+    if (leadId) {
+      const lead = db.leads.find((item) => item.id === leadId);
+      if (lead) {
+        fupLeadEvent(db, user, lead, "VIEW_LEAD_DETAIL", { path: pathValue });
+        loggedLeadFup = true;
+      }
+    }
+    if (loggedLeadFup) await saveDb(db);
+    else await saveAccessLog(db);
     return sendJson(res, 200, { ok: true });
   }
 
@@ -1415,6 +1446,9 @@ async function routeApi(req, res, db) {
     if (user.role === "Corretor" && lead.assignedTo !== user.id) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
     const previousStatus = lead.status;
+    const previousAssignedTo = lead.assignedTo || null;
+    const previousAssignedName = lead.assignedName || "";
+    const previousOrder = Number(lead.order || 0);
     const detailFields = ["name", "phone", "email", "assistant", "desiredProject", "desiredUnit", "unitValue", "notes", "tags"];
     const allowed = canManageLeads(user) && lead.inPipeline
       ? ["status", "favorite", "assignedTo", "order", ...detailFields]
@@ -1446,6 +1480,18 @@ async function routeApi(req, res, db) {
     }
     lead.updatedAt = new Date().toISOString();
     audit(db, user, "UPDATE_LEAD", { leadId: lead.id, changes: body });
+    if (Object.prototype.hasOwnProperty.call(body, "assignedTo") && (lead.assignedTo || null) !== previousAssignedTo) {
+      fupLeadEvent(db, user, lead, lead.assignedTo ? "ASSIGN_BROKER" : "UNASSIGN_BROKER", {
+        from: previousAssignedName,
+        to: lead.assignedName || ""
+      });
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "status") && lead.status !== previousStatus) {
+      fupLeadEvent(db, user, lead, "CHANGE_STATUS", { from: previousStatus, to: lead.status });
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "order") && Number(lead.order || 0) !== previousOrder) {
+      fupLeadEvent(db, user, lead, "CHANGE_ORDER_MANUAL", { from: previousOrder, to: Number(lead.order || 0), status: lead.status });
+    }
     await saveDb(db);
     return sendJson(res, 200, { lead: publicLead(lead, user) });
   }
@@ -1456,6 +1502,7 @@ async function routeApi(req, res, db) {
     if (index < 0) return notFound(res);
     const [deleted] = db.leads.splice(index, 1);
     audit(db, user, "DELETE_LEAD", { leadId: deleted.id, source: deleted.source });
+    fupLeadEvent(db, user, deleted, "DELETE_LEAD", { source: deleted.source });
     await saveDb(db);
     return sendJson(res, 200, { ok: true });
   }
@@ -1480,6 +1527,7 @@ async function routeApi(req, res, db) {
     lead.comments.unshift(comment);
     lead.updatedAt = comment.createdAt;
     audit(db, user, "COMMENT_LEAD", { leadId: lead.id });
+    fupLeadEvent(db, user, lead, "COMMENT_LEAD", { commentId: comment.id, fromUser: comment.fromUser });
     await saveDb(db);
     return sendJson(res, 201, { lead: publicLead(lead, user), comment });
   }
@@ -1529,6 +1577,7 @@ async function routeApi(req, res, db) {
     lead.rescuedAt = new Date().toISOString();
     lead.updatedAt = lead.rescuedAt;
     audit(db, user, "RESCUE_BASE_LEAD", { leadId: lead.id, source: lead.source });
+    fupLeadEvent(db, user, lead, "RESCUE_BASE_LEAD", { source: lead.source, assignedTo: lead.assignedName || "" });
     await saveDb(db);
     return sendJson(res, 200, { lead: publicLead(lead, user) });
   }
