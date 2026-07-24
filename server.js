@@ -445,7 +445,14 @@ function leadNotificationText(lead) {
   ];
   const url = leadUrl(lead);
   if (url) parts.push("", `Acesse diretamente o detalhe deste lead: ${url}`);
+  const whatsappUrl = leadWhatsappUrl(lead);
+  if (whatsappUrl) parts.push("", `Fale com o lead pelo WhatsApp: ${whatsappUrl}`);
   return parts.join("\n");
+}
+
+function leadWhatsappUrl(lead) {
+  const number = formatWhatsappNumber(lead.phone);
+  return number ? `https://wa.me/${number}` : "";
 }
 
 async function sendLeadNotificationEmail(user, lead) {
