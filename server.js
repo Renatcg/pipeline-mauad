@@ -532,6 +532,41 @@ async function notifyNewMetaLead(db, lead) {
   }
 }
 
+async function sendLeadNotificationTest(db, actor, target) {
+  const lead = {
+    id: "teste-notificacao",
+    name: "Lead de Teste Meta",
+    phone: "+5521999999999",
+    email: "lead.teste@exemplo.com",
+    desiredProject: "Teste de notificação",
+    source: "META"
+  };
+  const results = [];
+  if (target.notifications?.email) {
+    const result = await sendLeadNotificationEmail(target, lead);
+    results.push({ channel: "email", ...result });
+    integrationEvent(db, "NOTIFICATION", result.sent ? "TEST_EMAIL_SENT" : "TEST_EMAIL_FAILED", {
+      userId: target.id,
+      email: target.username,
+      reason: result.reason || ""
+    });
+  }
+  if (target.notifications?.whatsapp) {
+    const result = await sendLeadNotificationWhatsapp(target, lead);
+    results.push({ channel: "whatsapp", ...result });
+    integrationEvent(db, "NOTIFICATION", result.sent ? "TEST_WHATSAPP_SENT" : "TEST_WHATSAPP_FAILED", {
+      userId: target.id,
+      whatsapp: target.notifications.whatsappNumber || "",
+      reason: result.reason || ""
+    });
+  }
+  if (!results.length) {
+    integrationEvent(db, "NOTIFICATION", "TEST_SKIPPED", { userId: target.id, reason: "Usuário sem canais ativos" });
+  }
+  audit(db, actor, "TEST_LEAD_NOTIFICATION", { userId: target.id, channels: results.map((item) => item.channel) });
+  return results;
+}
+
 function parseCookies(req) {
   return Object.fromEntries(
     (req.headers.cookie || "")
@@ -1598,6 +1633,18 @@ async function routeApi(req, res, db) {
     audit(db, user, "SEND_PASSWORD_INVITE", { userId: target.id, invitationSent: invitation.sent });
     await saveDb(db);
     return sendJson(res, 200, { user: publicUser(target), invitation });
+  }
+
+  const notificationTestMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/notification-test$/);
+  if (notificationTestMatch && method === "POST") {
+    if (!canManageUsers(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const target = db.users.find((item) => item.id === notificationTestMatch[1]);
+    if (!target) return notFound(res);
+    if (!manageableRoles(user).includes(target.role) && target.id !== user.id) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!target.active) return sendJson(res, 400, { error: "Ative o usuário antes de testar notificações" });
+    const results = await sendLeadNotificationTest(db, user, target);
+    await saveDb(db);
+    return sendJson(res, 200, { results });
   }
 
   if (userMatch && method === "DELETE") {

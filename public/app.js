@@ -1580,6 +1580,7 @@ function renderUserActionMenu(user) {
       `<button type="button" data-edit-user="${userId}">Editar</button>`,
       statusAction,
       `<button type="button" data-invite-user="${userId}">${user.passwordConfigured ? "Redefinir senha" : "Reenviar convite"}</button>`,
+      `<button type="button" data-test-notification-user="${userId}">Testar notificações</button>`,
       canManageSystemSettings() ? `<button type="button" data-view-user-log="${userId}">Ver log</button>` : "",
       canManageSystemSettings() ? `<button type="button" class="danger-menu-item" data-delete-user="${userId}">Excluir</button>` : ""
     ])}
@@ -1729,6 +1730,25 @@ function renderUserSettings() {
         if (!data.invitation?.sent && data.invitation?.link) {
           prompt("Resend ainda não está configurado. Use este link de convite para teste:", data.invitation.link);
         }
+      } catch (error) {
+        setButtonBusy(button, false);
+        alert(error.message);
+      }
+    });
+  });
+  document.querySelectorAll("[data-test-notification-user]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const target = state.users.find((user) => user.id === button.dataset.testNotificationUser);
+      try {
+        setButtonBusy(button, true, "Testando...");
+        const data = await api(`/api/users/${button.dataset.testNotificationUser}/notification-test`, { method: "POST" });
+        const sent = (data.results || []).filter((item) => item.sent).map((item) => item.channel);
+        const failed = (data.results || []).filter((item) => item.sent === false).map((item) => `${item.channel}: ${item.reason || "falhou"}`);
+        state.settingsNotice = sent.length
+          ? `Teste enviado para ${target?.name || "usuário"} por ${sent.join(" e ")}${failed.length ? `. Falha em ${failed.join("; ")}.` : "."}`
+          : `Nenhuma notificação enviada para ${target?.name || "usuário"}. ${failed.length ? failed.join("; ") : "Ative e-mail ou WhatsApp no perfil."}`;
+        await loadState();
+        renderSettings();
       } catch (error) {
         setButtonBusy(button, false);
         alert(error.message);
