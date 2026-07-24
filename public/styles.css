@@ -731,6 +731,42 @@ tr[data-open-lead] {
   color: var(--warn);
 }
 
+.notification-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.notification-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.notification-icon.whatsapp {
+  border-color: #bbf7d0;
+  background: #ecfdf3;
+  color: #128c7e;
+}
+
+.notification-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.muted-cell {
+  color: var(--muted);
+}
+
 .lead-tags {
   display: flex;
   align-items: center;

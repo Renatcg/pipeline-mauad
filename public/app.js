@@ -1568,6 +1568,14 @@ function userPasswordChip(user) {
   return '<span class="chip">Sem senha</span>';
 }
 
+function userNotificationIcons(user) {
+  const notifications = user.notifications || {};
+  const icons = [];
+  if (notifications.email) icons.push('<span class="notification-icon" title="Notificação por e-mail" aria-label="Notificação por e-mail">✉</span>');
+  if (notifications.whatsapp) icons.push('<span class="notification-icon whatsapp" title="Notificação por WhatsApp" aria-label="Notificação por WhatsApp"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.04 2a9.86 9.86 0 0 0-8.44 14.94L2.35 22l5.17-1.2A9.9 9.9 0 1 0 12.04 2Zm0 1.74a8.16 8.16 0 1 1 0 16.32 8.08 8.08 0 0 1-4.16-1.14l-.34-.2-3.02.7.72-2.94-.22-.35a8.16 8.16 0 0 1 7.02-12.39Zm-3.3 4.37c-.18 0-.47.07-.72.34-.25.27-.95.93-.95 2.27s.98 2.64 1.12 2.82c.14.18 1.9 3.04 4.72 4.14 2.34.92 2.82.74 3.33.69.51-.05 1.65-.67 1.88-1.32.23-.65.23-1.21.16-1.33-.07-.12-.25-.19-.53-.33-.28-.14-1.65-.81-1.9-.9-.25-.09-.44-.14-.63.14-.18.28-.72.9-.88 1.08-.16.18-.33.21-.6.07-.28-.14-1.17-.43-2.23-1.37-.82-.73-1.38-1.64-1.54-1.92-.16-.28-.02-.43.12-.57.13-.13.28-.33.42-.49.14-.16.18-.28.28-.46.09-.18.05-.35-.02-.49-.07-.14-.63-1.52-.86-2.08-.23-.54-.46-.47-.63-.48h-.53Z"/></svg></span>');
+  return icons.length ? `<div class="notification-icons">${icons.join("")}</div>` : '<span class="muted-cell">-</span>';
+}
+
 function renderUserActionMenu(user) {
   const userId = escapeHtml(user.id);
   const statusAction = user.id === state.user?.id
@@ -1646,6 +1654,7 @@ function renderUserSettings() {
       <td>${escapeHtml(user.role)}</td>
       <td class="${user.active ? "status-active" : "status-inactive"}">${user.active ? "Ativo" : "Inativo"}</td>
       <td>${userPasswordChip(user)}</td>
+      <td>${userNotificationIcons(user)}</td>
       <td>${renderUserActionMenu(user)}</td>
     </tr>
   `).join("");
@@ -1657,7 +1666,7 @@ function renderUserSettings() {
       </div>
       ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th>Senha</th><th>Ações</th></tr></thead><tbody>${users}</tbody></table>
+        <table><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th>Senha</th><th>Notificações</th><th>Ações</th></tr></thead><tbody>${users}</tbody></table>
       </div>
     </section>
     ${(isCreating || editUser) ? renderUserEditorModal(formUser, Boolean(editUser), roleOptions) : ""}
