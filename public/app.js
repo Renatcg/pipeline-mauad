@@ -2141,6 +2141,8 @@ function fupActionLabel(action) {
     UNASSIGN_BROKER: "Desatribuiu corretor",
     CHANGE_STATUS: "Mudou status",
     CHANGE_ORDER_MANUAL: "Mudou ordem",
+    FAVORITE_LEAD: "Favoritou",
+    UNFAVORITE_LEAD: "Desfavoritou",
     DELETE_LEAD: "Excluiu lead",
     RESCUE_BASE_LEAD: "Resgatou da base"
   };

@@ -1449,6 +1449,7 @@ async function routeApi(req, res, db) {
     const previousAssignedTo = lead.assignedTo || null;
     const previousAssignedName = lead.assignedName || "";
     const previousOrder = Number(lead.order || 0);
+    const previousFavorite = Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite);
     const detailFields = ["name", "phone", "email", "assistant", "desiredProject", "desiredUnit", "unitValue", "notes", "tags"];
     const allowed = canManageLeads(user) && lead.inPipeline
       ? ["status", "favorite", "assignedTo", "order", ...detailFields]
@@ -1491,6 +1492,12 @@ async function routeApi(req, res, db) {
     }
     if (Object.prototype.hasOwnProperty.call(body, "order") && Number(lead.order || 0) !== previousOrder) {
       fupLeadEvent(db, user, lead, "CHANGE_ORDER_MANUAL", { from: previousOrder, to: Number(lead.order || 0), status: lead.status });
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "favorite")) {
+      const nextFavorite = Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite);
+      if (nextFavorite !== previousFavorite) {
+        fupLeadEvent(db, user, lead, nextFavorite ? "FAVORITE_LEAD" : "UNFAVORITE_LEAD", {});
+      }
     }
     await saveDb(db);
     return sendJson(res, 200, { lead: publicLead(lead, user) });
