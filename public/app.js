@@ -1548,8 +1548,18 @@ function bindSettingsActionMenus() {
         if (item !== menu) item.classList.remove("open");
       });
       const rect = button.getBoundingClientRect();
-      menu?.style.setProperty("--menu-top", `${rect.bottom + 6}px`);
-      menu?.style.setProperty("--menu-right", `${Math.max(12, window.innerWidth - rect.right)}px`);
+      const list = menu?.querySelector(".action-menu-list");
+      if (menu && list) {
+        menu.classList.add("measuring");
+        const menuHeight = list.offsetHeight;
+        menu.classList.remove("measuring");
+        const bottomSpace = window.innerHeight - rect.bottom;
+        const openUp = bottomSpace < menuHeight + 16 && rect.top > menuHeight;
+        menu.classList.toggle("open-up", openUp);
+        menu.style.setProperty("--menu-top", openUp ? "auto" : `${rect.bottom + 6}px`);
+        menu.style.setProperty("--menu-bottom", openUp ? `${Math.max(12, window.innerHeight - rect.top + 6)}px` : "auto");
+        menu.style.setProperty("--menu-right", `${Math.max(12, window.innerWidth - rect.right)}px`);
+      }
       menu?.classList.toggle("open");
       if (menu?.classList.contains("open")) {
         setTimeout(() => document.addEventListener("click", closeUserActionMenus, { once: true }), 0);

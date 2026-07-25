@@ -1297,6 +1297,7 @@ th {
 .action-menu-list {
   position: fixed;
   top: var(--menu-top, 0);
+  bottom: var(--menu-bottom, auto);
   right: var(--menu-right, 12px);
   z-index: 30;
   width: 190px;
@@ -1306,6 +1307,13 @@ th {
   border-radius: 8px;
   background: white;
   box-shadow: var(--shadow);
+}
+
+.action-menu.measuring .action-menu-list {
+  display: grid;
+  gap: 3px;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .action-menu.open .action-menu-list {
