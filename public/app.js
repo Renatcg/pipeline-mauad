@@ -1009,7 +1009,13 @@ function leadRows(leads, options = {}) {
       <td>${escapeHtml(lead.assignedName || userName(lead.assignedTo))}</td>
       <td>${escapeHtml(lead.source)}</td>
       <td>${renderLeadTags(lead, !options.withRescue)}</td>
-      <td>${options.withRescue ? (lead.inPipeline ? (canRollbackLead(lead) ? `<button data-rollback="${escapeHtml(lead.id)}">Rollback</button>` : '<span class="chip">No pipeline</span>') : `<button class="primary" data-rescue="${escapeHtml(lead.id)}">Resgatar</button>`) : ""}</td>
+      <td>${
+        options.withRollback && lead.inPipeline && canRollbackLead(lead)
+          ? `<button data-rollback="${escapeHtml(lead.id)}">Rollback</button>`
+          : options.withRescue
+            ? (lead.inPipeline ? (canRollbackLead(lead) ? `<button data-rollback="${escapeHtml(lead.id)}">Rollback</button>` : '<span class="chip">No pipeline</span>') : `<button class="primary" data-rescue="${escapeHtml(lead.id)}">Resgatar</button>`)
+            : ""
+      }</td>
     </tr>
   `).join("");
 }
@@ -1082,9 +1088,27 @@ function bindTableSortControls(renderFn) {
   });
 }
 
+function bindRollbackControls(renderFn) {
+  document.querySelectorAll("[data-rollback]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Enviar este lead para a base Pipeline GDrive?")) return;
+      try {
+        setButtonBusy(button, true, "Voltando...");
+        const result = await api(`/api/leads/${button.dataset.rollback}/rollback`, { method: "POST" });
+        const lead = state.leads.find((item) => item.id === result.lead.id);
+        Object.assign(lead, result.lead);
+        renderFn();
+      } catch (error) {
+        setButtonBusy(button, false);
+        alert(error.message);
+      }
+    });
+  });
+}
+
 function renderSheet() {
   const leads = sortLeadsForTable(pipelineLeads(), state.sheetSort);
-  const tableOptions = { textStatus: true };
+  const tableOptions = { textStatus: true, withRollback: true };
   const rows = leadRows(leads, tableOptions);
   renderShell(`
     ${renderViewHead("Planilha", "Leads vindos do Meta, importações de pipeline e resgates das bases", { filters: true, addLead: true })}
@@ -1093,6 +1117,7 @@ function renderSheet() {
   `);
   bindLeadActions();
   bindTableSortControls(renderSheet);
+  bindRollbackControls(renderSheet);
 }
 
 function renderBaseSources(sources) {
@@ -1143,20 +1168,7 @@ function renderLeadBases() {
       }
     });
   });
-  document.querySelectorAll("[data-rollback]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      try {
-        setButtonBusy(button, true, "Voltando...");
-        const result = await api(`/api/leads/${button.dataset.rollback}/rollback`, { method: "POST" });
-        const lead = state.leads.find((item) => item.id === result.lead.id);
-        Object.assign(lead, result.lead);
-        renderLeadBases();
-      } catch (error) {
-        setButtonBusy(button, false);
-        alert(error.message);
-      }
-    });
-  });
+  bindRollbackControls(renderLeadBases);
 }
 
 function leadProjectValue(lead) {

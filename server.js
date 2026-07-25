@@ -1853,13 +1853,18 @@ async function routeApi(req, res, db) {
     if (!lead) return notFound(res);
     if (!canManageLeads(user) && !(user.role === "Corretor" && lead.assignedTo === user.id)) return sendJson(res, 403, { error: "Sem permissão" });
     if (!lead.inPipeline) return sendJson(res, 400, { error: "Este lead já está apenas na base" });
+    const previousSource = lead.source || "";
+    const previousStatus = lead.status || lead.sourceStatus || lead.odysseiaStatus || "Base";
     lead.inPipeline = false;
-    lead.status = lead.sourceStatus || lead.odysseiaStatus || "Base";
+    lead.source = "Pipeline GDrive";
+    lead.sourceStatus = previousStatus;
+    lead.previousPipelineSource = previousSource;
+    lead.status = previousStatus;
     lead.assignedTo = null;
     lead.assignedName = "";
     lead.rolledBackAt = new Date().toISOString();
     lead.updatedAt = lead.rolledBackAt;
-    audit(db, user, "ROLLBACK_BASE_LEAD", { leadId: lead.id, source: lead.source });
+    audit(db, user, "ROLLBACK_BASE_LEAD", { leadId: lead.id, source: lead.source, previousSource });
     await saveDb(db);
     return sendJson(res, 200, { lead: publicLead(lead, user) });
   }
