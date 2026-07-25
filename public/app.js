@@ -1585,12 +1585,18 @@ function renderUserActionMenu(user) {
     : user.active
       ? `<button type="button" data-deactivate-user="${userId}">Inativar</button>`
       : `<button type="button" data-activate-user="${userId}">Ativar</button>`;
+  const testActions = user.role === "Admin TI"
+    ? [
+      `<button type="button" data-test-notification-user="${userId}">Testar notificações</button>`,
+      `<button type="button" data-test-assignment-notification-user="${userId}">Testar atribuição</button>`
+    ]
+    : [];
   return `
     ${renderSettingsActionMenu(`user-${userId}`, [
       `<button type="button" data-edit-user="${userId}">Editar</button>`,
       statusAction,
       `<button type="button" data-invite-user="${userId}">${user.passwordConfigured ? "Redefinir senha" : "Reenviar convite"}</button>`,
-      `<button type="button" data-test-notification-user="${userId}">Testar notificações</button>`,
+      ...testActions,
       canManageSystemSettings() ? `<button type="button" data-view-user-log="${userId}">Ver log</button>` : "",
       canManageSystemSettings() ? `<button type="button" class="danger-menu-item" data-delete-user="${userId}">Excluir</button>` : ""
     ])}
@@ -1758,6 +1764,25 @@ function renderUserSettings() {
         state.settingsNotice = sent.length
           ? `Teste enviado para ${target?.name || "usuário"} por ${sent.join(" e ")}${failed.length ? `. Falha em ${failed.join("; ")}.` : "."}`
           : `Nenhuma notificação enviada para ${target?.name || "usuário"}. ${failed.length ? failed.join("; ") : "Ative e-mail ou WhatsApp no perfil."}`;
+        await loadState();
+        renderSettings();
+      } catch (error) {
+        setButtonBusy(button, false);
+        alert(error.message);
+      }
+    });
+  });
+  document.querySelectorAll("[data-test-assignment-notification-user]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const target = state.users.find((user) => user.id === button.dataset.testAssignmentNotificationUser);
+      try {
+        setButtonBusy(button, true, "Testando...");
+        const data = await api(`/api/users/${button.dataset.testAssignmentNotificationUser}/assignment-notification-test`, { method: "POST" });
+        const sent = (data.results || []).filter((item) => item.sent).map((item) => item.channel);
+        const failed = (data.results || []).filter((item) => item.sent === false).map((item) => `${item.channel}: ${item.reason || "falhou"}`);
+        state.settingsNotice = sent.length
+          ? `Teste de atribuição enviado para ${target?.name || "usuário"} por ${sent.join(" e ")}${failed.length ? `. Falha em ${failed.join("; ")}.` : "."}`
+          : `Nenhum teste de atribuição enviado para ${target?.name || "usuário"}. ${failed.length ? failed.join("; ") : "Ative e-mail ou WhatsApp no perfil."}`;
         await loadState();
         renderSettings();
       } catch (error) {

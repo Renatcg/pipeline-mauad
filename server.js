@@ -762,6 +762,69 @@ async function sendLeadNotificationTest(db, actor, target) {
   return results;
 }
 
+async function sendLeadAssignmentNotificationTest(db, actor, target) {
+  const now = new Date().toISOString();
+  const lead = {
+    id: "teste-atribuicao",
+    name: "Lead Teste Atribuição",
+    phone: "+5521967566636",
+    email: "lead.teste@exemplo.com",
+    desiredProject: "Golf Club Resort",
+    status: db.pipelineStatuses?.[0] || "Novo Lead",
+    source: "META",
+    notes: "Lead demonstrou interesse em receber atendimento ainda hoje. Priorizar contato por WhatsApp.",
+    comments: [
+      {
+        id: "comment-test-1",
+        text: "Cliente pediu retorno com informações sobre unidades disponíveis e fluxo de pagamento.",
+        fromUser: false,
+        createdAt: now,
+        authorName: "Administrador TI"
+      },
+      {
+        id: "comment-test-2",
+        text: "Prefere falar por WhatsApp no período da tarde.",
+        fromUser: true,
+        createdAt: now,
+        authorName: "Lead Teste"
+      }
+    ],
+    meta: {
+      formId: "",
+      rawFields: {
+        "onde_você_reside_atualmente?": "Rio de Janeiro",
+        "quanto_você_pretende_investir?": "até_r$_600_mil_",
+        "como_será_sua_experiência_com_o_lançamento?": "moradia_e_qualidade_de_vida"
+      }
+    }
+  };
+  const content = await leadAssignmentNotificationContent(db, lead, false);
+  const results = [];
+  if (target.notifications?.email) {
+    const result = await sendLeadAssignmentEmail(target, db, lead, false, content);
+    results.push({ channel: "email", ...result });
+    integrationEvent(db, "NOTIFICATION", result.sent ? "TEST_ASSIGNMENT_EMAIL_SENT" : "TEST_ASSIGNMENT_EMAIL_FAILED", {
+      userId: target.id,
+      email: target.username,
+      reason: result.reason || ""
+    });
+  }
+  if (target.notifications?.whatsapp) {
+    const result = await sendLeadAssignmentWhatsapp(target, db, lead, false, content);
+    results.push({ channel: "whatsapp", ...result });
+    integrationEvent(db, "NOTIFICATION", result.sent ? "TEST_ASSIGNMENT_WHATSAPP_SENT" : "TEST_ASSIGNMENT_WHATSAPP_FAILED", {
+      userId: target.id,
+      whatsapp: target.notifications.whatsappNumber || "",
+      reason: result.reason || ""
+    });
+  }
+  if (!results.length) {
+    integrationEvent(db, "NOTIFICATION", "TEST_ASSIGNMENT_SKIPPED", { userId: target.id, reason: "Usuário sem canais ativos" });
+  }
+  audit(db, actor, "TEST_LEAD_ASSIGNMENT_NOTIFICATION", { userId: target.id, channels: results.map((item) => item.channel) });
+  return results;
+}
+
 function parseCookies(req) {
   return Object.fromEntries(
     (req.headers.cookie || "")
@@ -1892,8 +1955,22 @@ async function routeApi(req, res, db) {
     const target = db.users.find((item) => item.id === notificationTestMatch[1]);
     if (!target) return notFound(res);
     if (!manageableRoles(user).includes(target.role) && target.id !== user.id) return sendJson(res, 403, { error: "Sem permissão" });
+    if (target.role !== "Admin TI") return sendJson(res, 403, { error: "Teste disponível apenas para usuários Admin TI" });
     if (!target.active) return sendJson(res, 400, { error: "Ative o usuário antes de testar notificações" });
     const results = await sendLeadNotificationTest(db, user, target);
+    await saveDb(db);
+    return sendJson(res, 200, { results });
+  }
+
+  const assignmentNotificationTestMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/assignment-notification-test$/);
+  if (assignmentNotificationTestMatch && method === "POST") {
+    if (!canManageUsers(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const target = db.users.find((item) => item.id === assignmentNotificationTestMatch[1]);
+    if (!target) return notFound(res);
+    if (!manageableRoles(user).includes(target.role) && target.id !== user.id) return sendJson(res, 403, { error: "Sem permissão" });
+    if (target.role !== "Admin TI") return sendJson(res, 403, { error: "Teste disponível apenas para usuários Admin TI" });
+    if (!target.active) return sendJson(res, 400, { error: "Ative o usuário antes de testar notificações" });
+    const results = await sendLeadAssignmentNotificationTest(db, user, target);
     await saveDb(db);
     return sendJson(res, 200, { results });
   }
