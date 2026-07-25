@@ -28,6 +28,8 @@ const EMAIL_FROM = process.env.EMAIL_FROM || "Pipeline Mauad <onboarding@resend.
 const EVO_API_URL = process.env.EVO_API_URL || "";
 const EVO_API_KEY = process.env.EVO_API_KEY || "";
 const EVO_INSTANCE = process.env.EVO_INSTANCE || "";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || "";
 const META_APP_ID = process.env.META_APP_ID || "";
 const META_APP_SECRET = process.env.META_APP_SECRET || "";
@@ -453,6 +455,188 @@ function leadNotificationText(lead) {
 function leadWhatsappUrl(lead) {
   const number = formatWhatsappNumber(lead.phone);
   return number ? `https://wa.me/${number}` : "";
+}
+
+function friendlyMetaValue(value, labels = {}) {
+  const text = String(value || "").trim();
+  return labels[text] || text;
+}
+
+function leadMetaFormConfig(db, lead) {
+  return metaFormForId(db, lead.meta?.formId) || {};
+}
+
+function leadFormAnswersSummary(db, lead) {
+  const rawFields = lead.meta?.rawFields || {};
+  const entries = Object.entries(rawFields)
+    .filter(([key]) => !["full_name", "name", "first_name", "email", "phone_number", "phone", "telefone", "celular"].includes(String(key).toLowerCase()))
+    .slice(0, 8);
+  if (!entries.length) return "Sem respostas de formulário registradas.";
+  const formConfig = leadMetaFormConfig(db, lead);
+  return entries
+    .map(([question, answer]) => {
+      const label = friendlyMetaValue(question, formConfig.questionLabels);
+      const value = friendlyMetaValue(answer, formConfig.answerLabels);
+      return `- ${label}: ${value || "Sem resposta"}`;
+    })
+    .join("\n");
+}
+
+function visibleLeadComments(lead) {
+  return (Array.isArray(lead.comments) ? lead.comments : [])
+    .filter((comment) => !comment.deletedAt && String(comment.text || "").trim())
+    .slice(0, 12);
+}
+
+function fallbackCommentsSummary(lead) {
+  const comments = visibleLeadComments(lead);
+  if (!comments.length) return "Sem comentários registrados.";
+  return comments
+    .slice(0, 4)
+    .map((comment) => `${comment.fromUser ? "Lead" : comment.authorName || "Equipe"}: ${String(comment.text || "").trim()}`)
+    .join(" | ");
+}
+
+async function aiCommentsSummary(lead) {
+  const comments = visibleLeadComments(lead);
+  if (!comments.length) return "Sem comentários registrados.";
+  const fallback = fallbackCommentsSummary(lead);
+  if (!OPENAI_API_KEY) return fallback;
+  const transcript = comments
+    .map((comment) => `${comment.fromUser ? "Lead" : comment.authorName || "Equipe"}: ${String(comment.text || "").trim()}`)
+    .join("\n");
+  try {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        instructions: "Resuma comentarios comerciais de um lead imobiliario em portugues do Brasil, em ate 2 frases objetivas. Nao invente dados.",
+        input: transcript,
+        max_output_tokens: 120
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return fallback;
+    const text = data.output_text || data.output?.flatMap((item) => item.content || []).map((content) => content.text || "").join(" ").trim();
+    return text || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function leadAssignmentNotificationContent(db, lead, reassigned = false) {
+  const detailUrl = leadUrl(lead);
+  const whatsappUrl = leadWhatsappUrl(lead);
+  const commentSummary = await aiCommentsSummary(lead);
+  const title = reassigned
+    ? `Lead ${lead.name || "sem nome"} reatribuído`
+    : `Novo lead ${lead.name || "sem nome"} atribuído`;
+  const lines = [
+    title,
+    "",
+    `Nome: ${lead.name || "Sem nome"}`,
+    `Telefone: ${lead.phone || "Sem telefone"}`,
+    `E-mail: ${lead.email || "Sem e-mail"}`,
+    `Empreendimento: ${lead.desiredProject || "Não informado"}`,
+    `Status: ${lead.status || "Não informado"}`,
+    "",
+    "Respostas do formulário:",
+    leadFormAnswersSummary(db, lead),
+    "",
+    "Observações do detalhe do lead:",
+    lead.notes ? String(lead.notes).trim() : "Sem observações registradas.",
+    "",
+    "Resumo dos comentários:",
+    commentSummary
+  ];
+  if (detailUrl) lines.push("", `Detalhe do lead no Pipeline: ${detailUrl}`);
+  if (whatsappUrl) lines.push("", `Falar com o lead no WhatsApp: ${whatsappUrl}`);
+  return { title, text: lines.join("\n"), detailUrl, whatsappUrl, commentSummary };
+}
+
+async function sendLeadAssignmentEmail(user, db, lead, reassigned = false, preparedContent = null) {
+  if (!user?.username || !user.notifications?.email) return { skipped: true };
+  const content = preparedContent || await leadAssignmentNotificationContent(db, lead, reassigned);
+  return sendEmail(
+    user.username,
+    content.title,
+    `
+      <div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;color:#17202a">
+        <h1 style="font-size:22px">${escapeHtml(content.title)}</h1>
+        <div style="background:#f6f8fa;border:1px solid #d7dee8;border-radius:8px;padding:14px;margin:16px 0">
+          <p><strong>Nome:</strong> ${escapeHtml(lead.name || "Sem nome")}</p>
+          <p><strong>Telefone:</strong> ${escapeHtml(lead.phone || "Sem telefone")}</p>
+          <p><strong>E-mail:</strong> ${escapeHtml(lead.email || "Sem e-mail")}</p>
+          <p><strong>Empreendimento:</strong> ${escapeHtml(lead.desiredProject || "Não informado")}</p>
+          <p><strong>Status:</strong> ${escapeHtml(lead.status || "Não informado")}</p>
+        </div>
+        <h2 style="font-size:16px">Respostas do formulário</h2>
+        <pre style="white-space:pre-wrap;font-family:Arial,sans-serif;background:#fff;border:1px solid #d7dee8;border-radius:8px;padding:12px">${escapeHtml(leadFormAnswersSummary(db, lead))}</pre>
+        <h2 style="font-size:16px">Observações</h2>
+        <p>${escapeHtml(lead.notes || "Sem observações registradas.")}</p>
+        <h2 style="font-size:16px">Resumo dos comentários</h2>
+        <p>${escapeHtml(content.commentSummary)}</p>
+        ${content.detailUrl ? `<p><a href="${content.detailUrl}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:12px 18px;border-radius:7px;font-weight:700">Abrir detalhe do lead</a></p><p style="font-size:12px;color:#657382">${escapeHtml(content.detailUrl)}</p>` : ""}
+        ${content.whatsappUrl ? `<p><a href="${content.whatsappUrl}" style="display:inline-block;background:#128c7e;color:#fff;text-decoration:none;padding:12px 18px;border-radius:7px;font-weight:700">Falar com o lead no WhatsApp</a></p><p style="font-size:12px;color:#657382">${escapeHtml(content.whatsappUrl)}</p>` : ""}
+      </div>
+    `
+  );
+}
+
+async function sendLeadAssignmentWhatsapp(user, db, lead, reassigned = false, preparedContent = null) {
+  if (!user?.notifications?.whatsapp) return { skipped: true };
+  const number = formatWhatsappNumber(user.notifications.whatsappNumber);
+  if (!number) return { sent: false, reason: "Número de WhatsApp ausente" };
+  if (!EVO_API_URL || !EVO_API_KEY || !EVO_INSTANCE) return { sent: false, reason: "Evo API não configurada" };
+  const content = preparedContent || await leadAssignmentNotificationContent(db, lead, reassigned);
+  const endpoint = `${EVO_API_URL.replace(/\/$/, "")}/message/sendText/${encodeURIComponent(EVO_INSTANCE)}`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      apikey: EVO_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ number, text: content.text })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return { sent: false, reason: data.message || data.error || "Falha no envio da Evo API" };
+  return { sent: true, id: data.key?.id || data.id || "" };
+}
+
+async function notifyLeadAssignment(db, lead, assignedUser, reassigned = false) {
+  if (!assignedUser?.active) return;
+  const results = [];
+  const shouldNotify = Boolean(assignedUser.notifications?.email || assignedUser.notifications?.whatsapp);
+  const content = shouldNotify ? await leadAssignmentNotificationContent(db, lead, reassigned) : null;
+  if (assignedUser.notifications?.email) {
+    const result = await sendLeadAssignmentEmail(assignedUser, db, lead, reassigned, content);
+    results.push(["email", result]);
+    integrationEvent(db, "NOTIFICATION", result.sent ? "ASSIGNMENT_EMAIL_SENT" : "ASSIGNMENT_EMAIL_FAILED", {
+      leadId: lead.id,
+      userId: assignedUser.id,
+      email: assignedUser.username,
+      reassigned,
+      reason: result.reason || ""
+    });
+  }
+  if (assignedUser.notifications?.whatsapp) {
+    const result = await sendLeadAssignmentWhatsapp(assignedUser, db, lead, reassigned, content);
+    results.push(["whatsapp", result]);
+    integrationEvent(db, "NOTIFICATION", result.sent ? "ASSIGNMENT_WHATSAPP_SENT" : "ASSIGNMENT_WHATSAPP_FAILED", {
+      leadId: lead.id,
+      userId: assignedUser.id,
+      whatsapp: assignedUser.notifications.whatsappNumber || "",
+      reassigned,
+      reason: result.reason || ""
+    });
+  }
+  if (!results.length) {
+    integrationEvent(db, "NOTIFICATION", "ASSIGNMENT_NO_CHANNELS", { leadId: lead.id, userId: assignedUser.id, reassigned });
+  }
 }
 
 async function sendLeadNotificationEmail(user, lead) {
@@ -1493,6 +1677,10 @@ async function routeApi(req, res, db) {
         from: previousAssignedName,
         to: lead.assignedName || ""
       });
+      if (lead.assignedTo) {
+        const assignedUser = db.users.find((item) => item.id === lead.assignedTo && item.role === "Corretor" && item.active);
+        if (assignedUser) await notifyLeadAssignment(db, lead, assignedUser, Boolean(previousAssignedTo));
+      }
     }
     if (Object.prototype.hasOwnProperty.call(body, "status") && lead.status !== previousStatus) {
       fupLeadEvent(db, user, lead, "CHANGE_STATUS", { from: previousStatus, to: lead.status });
