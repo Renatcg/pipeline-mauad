@@ -375,6 +375,12 @@ function findUserByPasswordSetupToken(db, token) {
   return db.users.find((item) => item.passwordSetup?.tokenHash === tokenHash && new Date(item.passwordSetup.expiresAt).getTime() > now);
 }
 
+function externalFetchFailureReason(provider, error) {
+  const cause = error?.cause || {};
+  const details = [error?.message, cause.code, cause.hostname].filter(Boolean).join(" · ");
+  return `Falha de conexão com ${provider}: ${details || "erro de rede"}`;
+}
+
 async function sendPasswordSetupEmail(req, user, token) {
   const link = `${publicBaseUrl(req)}/definir-senha?token=${encodeURIComponent(token)}`;
   if (!RESEND_API_KEY) return { sent: false, link, reason: "RESEND_API_KEY ausente" };
@@ -407,14 +413,19 @@ async function sendPasswordSetupEmail(req, user, token) {
 
 async function sendEmail(to, subject, html) {
   if (!RESEND_API_KEY) return { sent: false, reason: "RESEND_API_KEY ausente" };
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${RESEND_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ from: EMAIL_FROM, to, subject, html })
-  });
+  let response;
+  try {
+    response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ from: EMAIL_FROM, to, subject, html })
+    });
+  } catch (error) {
+    return { sent: false, reason: externalFetchFailureReason("Resend", error) };
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return { sent: false, reason: data.message || "Falha no envio do Resend" };
   return { sent: true, id: data.id };
@@ -594,14 +605,19 @@ async function sendLeadAssignmentWhatsapp(user, db, lead, reassigned = false, pr
   if (!EVO_API_URL || !EVO_API_KEY || !EVO_INSTANCE) return { sent: false, reason: "Evo API não configurada" };
   const content = preparedContent || await leadAssignmentNotificationContent(db, lead, reassigned);
   const endpoint = `${EVO_API_URL.replace(/\/$/, "")}/message/sendText/${encodeURIComponent(EVO_INSTANCE)}`;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      apikey: EVO_API_KEY,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ number, text: content.text })
-  });
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        apikey: EVO_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ number, text: content.text })
+    });
+  } catch (error) {
+    return { sent: false, reason: externalFetchFailureReason("Evo API", error) };
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return { sent: false, reason: data.message || data.error || "Falha no envio da Evo API" };
   return { sent: true, id: data.key?.id || data.id || "" };
@@ -669,17 +685,22 @@ async function sendLeadNotificationWhatsapp(user, lead) {
   if (!number) return { sent: false, reason: "Número de WhatsApp ausente" };
   if (!EVO_API_URL || !EVO_API_KEY || !EVO_INSTANCE) return { sent: false, reason: "Evo API não configurada" };
   const endpoint = `${EVO_API_URL.replace(/\/$/, "")}/message/sendText/${encodeURIComponent(EVO_INSTANCE)}`;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      apikey: EVO_API_KEY,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      number,
-      text: leadNotificationText(lead)
-    })
-  });
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        apikey: EVO_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        number,
+        text: leadNotificationText(lead)
+      })
+    });
+  } catch (error) {
+    return { sent: false, reason: externalFetchFailureReason("Evo API", error) };
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return { sent: false, reason: data.message || data.error || "Falha no envio da Evo API" };
   return { sent: true, id: data.key?.id || data.id || "" };
@@ -1348,7 +1369,15 @@ async function importMetaLeadById(db, actor, leadgenId, webhookValue = {}) {
         campaignName: created.lead.meta?.campaignName || ""
       });
     }
-    await notifyNewMetaLead(db, created.lead);
+    try {
+      await notifyNewMetaLead(db, created.lead);
+    } catch (error) {
+      integrationEvent(db, "NOTIFICATION", "NEW_LEAD_NOTIFICATION_ERROR", {
+        leadId: created.lead.id,
+        leadgenId: id,
+        reason: error.message || "Erro inesperado ao notificar novo lead"
+      });
+    }
   }
   return created;
 }
