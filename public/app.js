@@ -1108,7 +1108,7 @@ function bindRollbackControls(renderFn) {
 
 function renderSheet() {
   const leads = sortLeadsForTable(pipelineLeads(), state.sheetSort);
-  const tableOptions = { textStatus: true, withRollback: true };
+  const tableOptions = { textStatus: true };
   const rows = leadRows(leads, tableOptions);
   renderShell(`
     ${renderViewHead("Planilha", "Leads vindos do Meta, importações de pipeline e resgates das bases", { filters: true, addLead: true })}
@@ -2256,7 +2256,10 @@ function renderLogSettings() {
     <section class="panel">
       <div class="panel-head">
         <h2>Logs</h2>
-        <input id="settingsLogSearch" class="settings-search" placeholder="Pesquisar nos logs" value="${escapeHtml(state.settingsLogSearch)}">
+        <div class="row-actions">
+          ${state.settingsLogTab === "fup" ? '<button class="danger-button" type="button" data-clear-fup-log>Limpar FUP Lead</button>' : ""}
+          <input id="settingsLogSearch" class="settings-search" placeholder="Pesquisar nos logs" value="${escapeHtml(state.settingsLogSearch)}">
+        </div>
       </div>
       <div class="tabs compact-tabs log-tabs">
         <button class="${state.settingsLogTab === "audit" ? "active" : ""}" data-log-tab="audit">Auditoria</button>
@@ -2286,6 +2289,19 @@ function renderLogSettings() {
       input?.focus();
       input?.setSelectionRange(state.settingsLogSearch.length, state.settingsLogSearch.length);
     });
+  });
+  document.querySelector("[data-clear-fup-log]")?.addEventListener("click", async (event) => {
+    if (!confirm("Limpar todos os eventos de FUP Lead?")) return;
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Limpando...");
+      await api("/api/logs/fup-lead", { method: "DELETE" });
+      state.fupLeadLog = [];
+      renderLogSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
   });
 }
 

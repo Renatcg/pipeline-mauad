@@ -1645,6 +1645,15 @@ async function routeApi(req, res, db) {
     return sendJson(res, 200, { ok: true });
   }
 
+  if (method === "DELETE" && url.pathname === "/api/logs/fup-lead") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const cleared = Array.isArray(db.fupLeadLog) ? db.fupLeadLog.length : 0;
+    db.fupLeadLog = [];
+    audit(db, user, "CLEAR_FUP_LEAD_LOG", { cleared });
+    await saveDb(db);
+    return sendJson(res, 200, { ok: true, cleared });
+  }
+
   if (method === "POST" && url.pathname === "/api/leads") {
     if (!canManageLeads(user) && user.role !== "Corretor") return sendJson(res, 403, { error: "Sem permissão" });
     if (!db.pipelineStatuses.length) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de adicionar leads" });
