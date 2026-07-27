@@ -1121,12 +1121,19 @@ function renderSheet() {
 }
 
 function renderBaseSources(sources) {
-  const sourceLabel = (source) => ({ TODOS: "Todos", META: "META" }[source] || source);
   return `
     <div class="tabs base-tabs">
-      ${sources.map((source) => `<button class="${state.baseSource === source ? "active" : ""}" data-base-source="${escapeHtml(source)}">${escapeHtml(sourceLabel(source))}</button>`).join("")}
+      ${sources.map((source) => `<button class="${state.baseSource === source ? "active" : ""}" data-base-source="${escapeHtml(source)}">${escapeHtml(baseSourceLabel(source))}</button>`).join("")}
     </div>
   `;
+}
+
+function baseSourceLabel(source) {
+  return {
+    TODOS: "Todos",
+    META: "META",
+    "Pipeline GDrive": "PIPELINE GDRIVE"
+  }[source] || source;
 }
 
 function renderLeadBases() {
@@ -1142,7 +1149,7 @@ function renderLeadBases() {
       <div class="metric"><span>Total da base</span><strong>${leads.length}</strong></div>
       <div class="metric"><span>A resgatar</span><strong>${pending}</strong></div>
       <div class="metric"><span>Resgatados</span><strong>${rescued}</strong></div>
-      <div class="metric"><span>Origem</span><strong>${escapeHtml(state.baseSource)}</strong></div>
+      <div class="metric"><span>Origem</span><strong>${escapeHtml(baseSourceLabel(state.baseSource))}</strong></div>
     </section>
     ${renderLeadsTable(rows, { withRescue: true, sortable: true, sortScope: "base" })}
   `);
