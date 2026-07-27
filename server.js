@@ -21,6 +21,69 @@ const DEFAULT_TAG_DEFINITIONS = [
   { id: "tag-visita", name: "Visita", color: "#039855" },
   { id: "tag-documentacao", name: "Documentação", color: "#475467" }
 ];
+const KNOWLEDGE_CATEGORIES = ["Primeiros passos", "Leads e Pipeline", "Bases", "Meta Leads", "Configurações", "Notificações", "Logs e Auditoria"];
+const DEFAULT_KNOWLEDGE_ARTICLES = [
+  {
+    id: "kb-primeiros-passos",
+    title: "Primeiros passos no Pipeline Comercial",
+    category: "Primeiros passos",
+    summary: "Entenda o menu principal, as telas do sistema e o fluxo básico de trabalho.",
+    content: "1. Acesse o sistema com seu e-mail e senha.\n2. Use o menu lateral para navegar entre Kanban, Planilha, Bases e Ajuda.\n3. Corretores visualizam os leads atribuídos a eles no Kanban e na Planilha.\n4. Head, Supervisor e Admin TI acompanham o pipeline comercial de forma ampla, conforme suas permissões.\n5. Ao terminar, use Sair para encerrar a sessão.",
+    keywords: ["login", "menu", "primeiro acesso", "navegação"],
+    audienceRoles: ROLES,
+    published: true
+  },
+  {
+    id: "kb-resgatar-lead-base",
+    title: "Como resgatar um lead da base",
+    category: "Bases",
+    summary: "Veja como trazer um lead histórico para o pipeline ativo.",
+    content: "1. Abra a tela Bases.\n2. Escolha a origem desejada, como ODYSSEIA, RD Station ou PIPELINE GDRIVE.\n3. Use a busca ou ordene as colunas para encontrar o lead.\n4. Clique em Resgatar.\n5. O lead entra no pipeline no primeiro status cadastrado.\n6. Se você for corretor, o lead resgatado fica atribuído a você.",
+    keywords: ["base", "resgatar", "pipeline gdrive", "odysseia", "rd station"],
+    audienceRoles: ROLES,
+    published: true
+  },
+  {
+    id: "kb-atribuir-corretor",
+    title: "Como atribuir um lead a um corretor",
+    category: "Leads e Pipeline",
+    summary: "Direcione leads para corretores ativos pelo card do Kanban ou pelo detalhe do lead.",
+    content: "1. No Kanban, localize o card do lead.\n2. Clique no menu de três pontos do card.\n3. Escolha um corretor ativo na lista.\n4. O sistema registra a atribuição no FUP Lead.\n5. Se o corretor tiver notificações ativas, ele recebe o aviso de novo lead atribuído.",
+    keywords: ["corretor", "atribuir", "direcionar", "kanban", "fup"],
+    audienceRoles: ["Admin TI", "Head Comercial", "Supervisor Comercial"],
+    published: true
+  },
+  {
+    id: "kb-meta-leads",
+    title: "Como acompanhar leads vindos do Meta",
+    category: "Meta Leads",
+    summary: "Entenda onde ver leads Meta e como sincronizar manualmente quando necessário.",
+    content: "1. Leads recebidos do Meta entram no pipeline como origem META.\n2. Na tela Bases, use a origem META para filtrar esses registros.\n3. Em Configurações, Admin TI pode cadastrar formulários monitorados.\n4. Se o webhook falhar, Admin TI pode importar por Lead ID ou acionar Sincronizar Meta.\n5. As respostas do formulário aparecem no detalhe do lead.",
+    keywords: ["meta", "facebook", "formulário", "leadgen", "sincronizar"],
+    audienceRoles: ["Admin TI", "Head Comercial", "Supervisor Comercial"],
+    published: true
+  },
+  {
+    id: "kb-notificacoes",
+    title: "Como funcionam as notificações",
+    category: "Notificações",
+    summary: "Saiba quando o sistema envia e-mail ou WhatsApp para usuários.",
+    content: "1. Cada usuário pode ter notificações por e-mail e/ou WhatsApp configuradas no cadastro.\n2. Quando um lead Meta chega, gestores configurados podem ser avisados.\n3. Quando um lead é atribuído a um corretor, o corretor pode receber uma mensagem com resumo e links úteis.\n4. Admin TI pode testar notificações em usuários Admin TI.\n5. Falhas de envio aparecem nos eventos de integração.",
+    keywords: ["email", "whatsapp", "resend", "evo", "notificação"],
+    audienceRoles: ["Admin TI", "Head Comercial", "Supervisor Comercial"],
+    published: true
+  },
+  {
+    id: "kb-fup-lead",
+    title: "O que é FUP Lead",
+    category: "Logs e Auditoria",
+    summary: "Conheça o log que registra interações importantes nos leads.",
+    content: "O FUP Lead registra ações comerciais relevantes, como abertura do detalhe, comentário, favoritagem, atribuição de corretor, mudança de status, mudança manual de ordem, exclusão e resgate da base.\n\nUse esse log para entender quem fez cada ação, em qual lead e quando aconteceu.",
+    keywords: ["fup", "log", "auditoria", "histórico", "lead"],
+    audienceRoles: ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria"],
+    published: true
+  }
+];
 const DATABASE_URL = process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
@@ -128,9 +191,10 @@ function buildDefaultDb() {
       inPipeline: false
     })),
     integrations: seed.integrations,
-    integrationLog: [],
-    accessLog: [],
-    auditLog: [
+        integrationLog: [],
+        accessLog: [],
+        knowledgeArticles: DEFAULT_KNOWLEDGE_ARTICLES,
+        auditLog: [
       {
         at: now,
         actor: "system",
@@ -231,6 +295,31 @@ function migrateDb(db) {
     db.integrationLog = [];
     changed = true;
   }
+  if (!Array.isArray(db.knowledgeArticles)) {
+    db.knowledgeArticles = DEFAULT_KNOWLEDGE_ARTICLES.map((article) => ({ ...article }));
+    changed = true;
+  }
+  for (const defaultArticle of DEFAULT_KNOWLEDGE_ARTICLES) {
+    if (!db.knowledgeArticles.some((article) => article.id === defaultArticle.id)) {
+      db.knowledgeArticles.push({ ...defaultArticle });
+      changed = true;
+    }
+  }
+  db.knowledgeArticles = db.knowledgeArticles.map((article) => ({
+    id: String(article.id || `kb-${crypto.randomUUID()}`).trim(),
+    title: String(article.title || "").trim(),
+    category: KNOWLEDGE_CATEGORIES.includes(article.category) ? article.category : "Primeiros passos",
+    summary: String(article.summary || "").trim(),
+    content: String(article.content || "").trim(),
+    keywords: Array.isArray(article.keywords) ? article.keywords.map((keyword) => String(keyword).trim()).filter(Boolean).slice(0, 24) : [],
+    audienceRoles: Array.isArray(article.audienceRoles)
+      ? article.audienceRoles.filter((role) => ROLES.includes(role))
+      : [...ROLES],
+    published: article.published !== false,
+    createdAt: article.createdAt || new Date().toISOString(),
+    updatedAt: article.updatedAt || article.createdAt || new Date().toISOString(),
+    updatedBy: String(article.updatedBy || "").trim()
+  })).filter((article, index, articles) => article.id && article.title && articles.findIndex((item) => item.id === article.id) === index);
   if (!Array.isArray(db.pipelineStatuses)) {
     db.pipelineStatuses = [];
     changed = true;
@@ -934,6 +1023,10 @@ function canManagePipelineSettings(user) {
   return ["Admin TI", "Head Comercial"].includes(user.role);
 }
 
+function canManageKnowledge(user) {
+  return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(user.role);
+}
+
 function canManageUsers(user) {
   return ["Admin TI", "Head Comercial"].includes(user.role);
 }
@@ -969,6 +1062,53 @@ function visibleLeads(db, user) {
 
 function canEditLead(user, lead) {
   return canManageLeads(user) || (user.role === "Corretor" && lead.assignedTo === user.id);
+}
+
+function normalizeKnowledgePayload(body, current = {}) {
+  const audienceRoles = Array.isArray(body.audienceRoles)
+    ? body.audienceRoles.filter((role) => ROLES.includes(role))
+    : current.audienceRoles || [...ROLES];
+  const keywords = String(Array.isArray(body.keywords) ? body.keywords.join(",") : body.keywords || "")
+    .split(",")
+    .map((keyword) => keyword.trim())
+    .filter(Boolean)
+    .slice(0, 24);
+  return {
+    title: String(body.title || current.title || "").trim(),
+    category: KNOWLEDGE_CATEGORIES.includes(body.category) ? body.category : current.category || "Primeiros passos",
+    summary: String(body.summary || current.summary || "").trim(),
+    content: String(body.content || current.content || "").trim(),
+    keywords,
+    audienceRoles: audienceRoles.length ? audienceRoles : [...ROLES],
+    published: Object.prototype.hasOwnProperty.call(body, "published") ? Boolean(body.published) : current.published !== false
+  };
+}
+
+function publicKnowledgeArticle(article) {
+  return {
+    id: article.id,
+    title: article.title,
+    category: article.category,
+    summary: article.summary,
+    content: article.content,
+    keywords: article.keywords || [],
+    audienceRoles: article.audienceRoles || [],
+    published: article.published !== false,
+    updatedAt: article.updatedAt || "",
+    updatedBy: article.updatedBy || ""
+  };
+}
+
+function visibleKnowledgeArticles(db, user) {
+  const articles = db.knowledgeArticles || [];
+  return articles
+    .filter((article) => {
+      if (canManageKnowledge(user)) return true;
+      if (article.published === false) return false;
+      const roles = Array.isArray(article.audienceRoles) && article.audienceRoles.length ? article.audienceRoles : ROLES;
+      return roles.includes(user.role);
+    })
+    .map(publicKnowledgeArticle);
 }
 
 function publicLead(lead, user) {
@@ -1646,6 +1786,9 @@ async function routeApi(req, res, db) {
       users: db.users.map(publicUser),
       leads: visibleLeads(db, user).map((lead) => publicLead(lead, user)),
       integrations: canManageSettings(user) ? db.integrations : null,
+      knowledgeCategories: KNOWLEDGE_CATEGORIES,
+      knowledgeArticles: visibleKnowledgeArticles(db, user),
+      canManageKnowledge: canManageKnowledge(user),
       integrationLog: canManageSettings(user) ? db.integrationLog.slice(0, 50) : [],
       auditLog: canManageSettings(user) ? db.auditLog.slice(0, 25) : [],
       accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : [],
@@ -2085,6 +2228,54 @@ async function routeApi(req, res, db) {
       await saveDb(db);
       return sendJson(res, 400, { error: error.message });
     }
+  }
+
+  if (url.pathname === "/api/knowledge" && method === "POST") {
+    if (!canManageKnowledge(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const articleData = normalizeKnowledgePayload(body);
+    if (!articleData.title) return sendJson(res, 400, { error: "Título obrigatório" });
+    if (!articleData.content) return sendJson(res, 400, { error: "Conteúdo obrigatório" });
+    const now = new Date().toISOString();
+    const article = {
+      id: `kb-${crypto.randomUUID()}`,
+      ...articleData,
+      createdAt: now,
+      updatedAt: now,
+      updatedBy: user.name || user.username
+    };
+    db.knowledgeArticles.unshift(article);
+    audit(db, user, "CREATE_KNOWLEDGE_ARTICLE", { articleId: article.id, title: article.title });
+    await saveDb(db);
+    return sendJson(res, 201, { knowledgeArticles: visibleKnowledgeArticles(db, user) });
+  }
+
+  const knowledgeMatch = url.pathname.match(/^\/api\/knowledge\/([^/]+)$/);
+  if (knowledgeMatch && method === "PATCH") {
+    if (!canManageKnowledge(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const article = db.knowledgeArticles.find((item) => item.id === knowledgeMatch[1]);
+    if (!article) return notFound(res);
+    const body = await readBody(req);
+    const articleData = normalizeKnowledgePayload(body, article);
+    if (!articleData.title) return sendJson(res, 400, { error: "Título obrigatório" });
+    if (!articleData.content) return sendJson(res, 400, { error: "Conteúdo obrigatório" });
+    Object.assign(article, articleData, {
+      updatedAt: new Date().toISOString(),
+      updatedBy: user.name || user.username
+    });
+    audit(db, user, "UPDATE_KNOWLEDGE_ARTICLE", { articleId: article.id, title: article.title });
+    await saveDb(db);
+    return sendJson(res, 200, { knowledgeArticles: visibleKnowledgeArticles(db, user) });
+  }
+
+  if (knowledgeMatch && method === "DELETE") {
+    if (!canManageKnowledge(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const index = db.knowledgeArticles.findIndex((item) => item.id === knowledgeMatch[1]);
+    if (index < 0) return notFound(res);
+    const [article] = db.knowledgeArticles.splice(index, 1);
+    audit(db, user, "DELETE_KNOWLEDGE_ARTICLE", { articleId: article.id, title: article.title });
+    await saveDb(db);
+    return sendJson(res, 200, { knowledgeArticles: visibleKnowledgeArticles(db, user) });
   }
 
   if (url.pathname === "/api/projects" && method === "POST") {

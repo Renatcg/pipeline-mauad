@@ -1445,6 +1445,136 @@ th {
   gap: 10px;
 }
 
+.muted-text {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.knowledge-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.knowledge-tools {
+  max-width: 620px;
+}
+
+.knowledge-categories {
+  margin-bottom: 0;
+}
+
+.knowledge-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.knowledge-card {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+}
+
+.knowledge-card.is-draft {
+  background: #fffaf0;
+}
+
+.knowledge-card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+
+.knowledge-card-head span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.knowledge-card h3 {
+  margin: 3px 0 0;
+  font-size: 17px;
+  line-height: 1.25;
+}
+
+.knowledge-card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.knowledge-card details {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.knowledge-card summary {
+  color: var(--brand);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.knowledge-article-body {
+  margin-top: 10px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.knowledge-keywords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.knowledge-keywords span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.knowledge-card small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.knowledge-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.knowledge-role-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.inline-check {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.inline-check input {
+  width: auto;
+  min-height: auto;
+}
+
+.compact-help {
+  margin-top: 0;
+}
+
 .full {
   grid-column: 1 / -1;
 }

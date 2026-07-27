@@ -14,6 +14,9 @@ const state = {
   accessLog: [],
   fupLeadLog: [],
   integrationLog: [],
+  knowledgeCategories: [],
+  knowledgeArticles: [],
+  canManageKnowledge: false,
   metaDiagnostics: null,
   view: "kanban",
   leadId: null,
@@ -23,6 +26,9 @@ const state = {
   settingsNotice: "",
   settingsLogSearch: "",
   settingsLogTab: "audit",
+  knowledgeSearch: "",
+  knowledgeCategory: "TODOS",
+  knowledgeEditing: null,
   metaFormsTab: "active",
   mobileNavOpen: false,
   lastAccessLogKey: "",
@@ -38,11 +44,11 @@ const state = {
 };
 
 const profileAccess = {
-  "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "settings"],
-  "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "settings"],
-  "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard"],
-  Diretoria: ["dashboard", "sheet", "odysseia", "kanban"],
-  Corretor: ["kanban", "sheet", "odysseia"]
+  "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "settings", "knowledge"],
+  "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "settings", "knowledge"],
+  "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"],
+  Diretoria: ["dashboard", "sheet", "odysseia", "kanban", "knowledge"],
+  Corretor: ["kanban", "sheet", "odysseia", "knowledge"]
 };
 
 const routeByView = {
@@ -50,7 +56,8 @@ const routeByView = {
   sheet: "/planilha",
   odysseia: "/bases",
   dashboard: "/dashboard",
-  settings: "/configuracoes"
+  settings: "/configuracoes",
+  knowledge: "/ajuda"
 };
 
 const viewByRoute = {
@@ -59,7 +66,8 @@ const viewByRoute = {
   "/planilha": "sheet",
   "/bases": "odysseia",
   "/dashboard": "dashboard",
-  "/configuracoes": "settings"
+  "/configuracoes": "settings",
+  "/ajuda": "knowledge"
 };
 
 function escapeHtml(value) {
@@ -194,6 +202,7 @@ function currentViewLabel() {
     odysseia: "Bases",
     dashboard: "Dashboard",
     settings: "Configurações",
+    knowledge: "Ajuda",
     lead: "Detalhe do lead"
   };
   return labels[state.view] || state.view;
@@ -502,6 +511,9 @@ async function loadState() {
   state.auditLog = data.auditLog;
   state.accessLog = data.accessLog || [];
   state.fupLeadLog = data.fupLeadLog || [];
+  state.knowledgeCategories = data.knowledgeCategories || [];
+  state.knowledgeArticles = data.knowledgeArticles || [];
+  state.canManageKnowledge = Boolean(data.canManageKnowledge);
   if (state.view !== "lead" && !allowedViews().includes(state.view)) state.view = allowedViews()[0];
 }
 
@@ -527,6 +539,7 @@ function renderShell(content) {
           ${navButton("odysseia", "◎", "Bases")}
           ${navButton("dashboard", "◫", "Dashboard")}
           ${navButton("settings", "⚙", "Configurações")}
+          ${navButton("knowledge", "?", "Ajuda")}
         </nav>
       </aside>
       <section class="main">
@@ -2312,12 +2325,211 @@ function renderLogSettings() {
   });
 }
 
+function canEditKnowledge() {
+  return Boolean(state.canManageKnowledge);
+}
+
+function knowledgeCategories() {
+  const categories = new Set([...(state.knowledgeCategories || []), ...state.knowledgeArticles.map((article) => article.category).filter(Boolean)]);
+  return ["TODOS", ...[...categories].sort((a, b) => a.localeCompare(b, "pt-BR"))];
+}
+
+function filteredKnowledgeArticles() {
+  const term = state.knowledgeSearch.trim().toLowerCase();
+  return state.knowledgeArticles
+    .filter((article) => state.knowledgeCategory === "TODOS" || article.category === state.knowledgeCategory)
+    .filter((article) => {
+      if (!term) return true;
+      return [article.title, article.summary, article.content, article.category, ...(article.keywords || [])]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(term));
+    })
+    .sort((a, b) => a.title.localeCompare(b.title, "pt-BR"));
+}
+
+function knowledgeArticleForm(article = null) {
+  const isNew = !article;
+  const formArticle = article || {
+    title: "",
+    category: state.knowledgeCategories[0] || "Primeiros passos",
+    summary: "",
+    content: "",
+    keywords: [],
+    audienceRoles: state.roles,
+    published: true
+  };
+  const categoryOptions = (state.knowledgeCategories || []).map((category) => `
+    <option value="${escapeHtml(category)}" ${formArticle.category === category ? "selected" : ""}>${escapeHtml(category)}</option>
+  `).join("");
+  const roleOptions = state.roles.map((role) => `
+    <label class="inline-check">
+      <input type="checkbox" name="audienceRoles" value="${escapeHtml(role)}" ${(formArticle.audienceRoles || []).includes(role) ? "checked" : ""}>
+      <span>${escapeHtml(role)}</span>
+    </label>
+  `).join("");
+  return `
+    <form id="knowledgeForm" class="editor knowledge-editor">
+      <div class="form-grid">
+        <div class="field"><label>Título</label><input name="title" value="${escapeHtml(formArticle.title)}" required></div>
+        <div class="field"><label>Categoria</label><select name="category">${categoryOptions}</select></div>
+        <div class="field full"><label>Resumo curto</label><input name="summary" value="${escapeHtml(formArticle.summary)}" placeholder="Uma frase para orientar o usuário"></div>
+        <div class="field full"><label>Conteúdo do tutorial</label><textarea name="content" rows="8" required>${escapeHtml(formArticle.content)}</textarea></div>
+        <div class="field full"><label>Palavras-chave</label><input name="keywords" value="${escapeHtml((formArticle.keywords || []).join(", "))}" placeholder="Ex.: meta, webhook, formulário"></div>
+        <div class="field full"><label>Perfis que podem ver</label><div class="knowledge-role-grid">${roleOptions}</div></div>
+        <div class="field full"><label class="inline-check"><input type="checkbox" name="published" ${formArticle.published !== false ? "checked" : ""}><span>Publicado</span></label></div>
+      </div>
+      <div class="row-actions">
+        <button class="primary" type="submit">${isNew ? "Cadastrar tutorial" : "Salvar tutorial"}</button>
+        <button type="button" data-cancel-knowledge>Cancelar</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderKnowledgeContent() {
+  const categories = knowledgeCategories();
+  if (!categories.includes(state.knowledgeCategory)) state.knowledgeCategory = "TODOS";
+  const articles = filteredKnowledgeArticles();
+  const editArticle = state.knowledgeEditing && state.knowledgeEditing !== "new"
+    ? state.knowledgeArticles.find((article) => article.id === state.knowledgeEditing)
+    : null;
+  const categoryButtons = categories.map((category) => `
+    <button class="${state.knowledgeCategory === category ? "active" : ""}" data-knowledge-category="${escapeHtml(category)}">
+      ${escapeHtml(category === "TODOS" ? "Todos" : category)}
+    </button>
+  `).join("");
+  const cards = articles.map((article) => `
+    <article class="knowledge-card ${article.published === false ? "is-draft" : ""}">
+      <div class="knowledge-card-head">
+        <div>
+          <span>${escapeHtml(article.category)}</span>
+          <h3>${escapeHtml(article.title)}</h3>
+        </div>
+        ${canEditKnowledge() ? renderSettingsActionMenu(`knowledge-${article.id}`, [
+          `<button type="button" data-edit-knowledge="${escapeHtml(article.id)}">Editar</button>`,
+          `<button type="button" data-toggle-knowledge="${escapeHtml(article.id)}">${article.published === false ? "Publicar" : "Despublicar"}</button>`,
+          `<button type="button" class="danger-menu-item" data-delete-knowledge="${escapeHtml(article.id)}">Excluir</button>`
+        ]) : ""}
+      </div>
+      ${article.published === false ? '<span class="chip chip-warning">Rascunho</span>' : ""}
+      <p>${escapeHtml(article.summary || "Tutorial sem resumo.")}</p>
+      <details>
+        <summary>Abrir tutorial</summary>
+        <div class="knowledge-article-body">${escapeHtml(article.content).replaceAll("\n", "<br>")}</div>
+      </details>
+      ${(article.keywords || []).length ? `<div class="knowledge-keywords">${article.keywords.map((keyword) => `<span>${escapeHtml(keyword)}</span>`).join("")}</div>` : ""}
+      <small>Atualizado em ${escapeHtml(article.updatedAt ? new Date(article.updatedAt).toLocaleString("pt-BR") : "-")}${article.updatedBy ? ` por ${escapeHtml(article.updatedBy)}` : ""}</small>
+    </article>
+  `).join("");
+  return `
+    <section class="panel knowledge-panel">
+      <div class="panel-head">
+        <div>
+          <h2>Central de ajuda</h2>
+          <p class="muted-text">Tutoriais rápidos para usar o Pipeline Comercial no dia a dia.</p>
+        </div>
+        ${canEditKnowledge() ? '<button class="primary" data-new-knowledge>Novo tutorial</button>' : ""}
+      </div>
+      <div class="knowledge-tools">
+        <input id="knowledgeSearch" placeholder="Pesquisar tutorial, tema ou palavra-chave" value="${escapeHtml(state.knowledgeSearch)}">
+      </div>
+      <div class="tabs compact-tabs knowledge-categories">${categoryButtons}</div>
+      ${state.knowledgeEditing === "new" ? knowledgeArticleForm() : ""}
+      ${editArticle ? knowledgeArticleForm(editArticle) : ""}
+      <div class="knowledge-grid">${cards || '<div class="empty">Nenhum tutorial encontrado.</div>'}</div>
+    </section>
+  `;
+}
+
+function bindKnowledgeControls(renderFn) {
+  const rerender = renderFn || renderKnowledgeView;
+  const search = document.querySelector("#knowledgeSearch");
+  search?.addEventListener("input", (event) => {
+    const cursorStart = event.target.selectionStart;
+    const cursorEnd = event.target.selectionEnd;
+    state.knowledgeSearch = event.target.value;
+    rerender();
+    requestAnimationFrame(() => {
+      const nextSearch = document.querySelector("#knowledgeSearch");
+      if (!nextSearch) return;
+      nextSearch.focus();
+      nextSearch.setSelectionRange(cursorStart, cursorEnd);
+    });
+  });
+  document.querySelectorAll("[data-knowledge-category]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.knowledgeCategory = button.dataset.knowledgeCategory;
+      rerender();
+    });
+  });
+  document.querySelector("[data-new-knowledge]")?.addEventListener("click", () => {
+    state.knowledgeEditing = "new";
+    rerender();
+  });
+  document.querySelectorAll("[data-edit-knowledge]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.knowledgeEditing = button.dataset.editKnowledge;
+      rerender();
+    });
+  });
+  document.querySelector("[data-cancel-knowledge]")?.addEventListener("click", () => {
+    state.knowledgeEditing = null;
+    rerender();
+  });
+  document.querySelectorAll("[data-toggle-knowledge]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const article = state.knowledgeArticles.find((item) => item.id === button.dataset.toggleKnowledge);
+      if (!article) return;
+      const data = await api(`/api/knowledge/${article.id}`, { method: "PATCH", body: JSON.stringify({ published: article.published === false }) });
+      state.knowledgeArticles = data.knowledgeArticles;
+      rerender();
+    });
+  });
+  document.querySelectorAll("[data-delete-knowledge]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Excluir este tutorial?")) return;
+      const data = await api(`/api/knowledge/${button.dataset.deleteKnowledge}`, { method: "DELETE" });
+      state.knowledgeArticles = data.knowledgeArticles;
+      rerender();
+    });
+  });
+  document.querySelector("#knowledgeForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const payload = {
+      title: form.get("title"),
+      category: form.get("category"),
+      summary: form.get("summary"),
+      content: form.get("content"),
+      keywords: form.get("keywords"),
+      audienceRoles: form.getAll("audienceRoles"),
+      published: Boolean(form.get("published"))
+    };
+    const editingId = state.knowledgeEditing && state.knowledgeEditing !== "new" ? state.knowledgeEditing : "";
+    const data = editingId
+      ? await api(`/api/knowledge/${editingId}`, { method: "PATCH", body: JSON.stringify(payload) })
+      : await api("/api/knowledge", { method: "POST", body: JSON.stringify(payload) });
+    state.knowledgeArticles = data.knowledgeArticles;
+    state.knowledgeEditing = null;
+    rerender();
+  });
+  bindSettingsActionMenus();
+}
+
+function renderKnowledgeView() {
+  renderShell(`
+    ${renderViewHead("Ajuda", "Tutoriais e respostas rápidas sobre o uso do sistema")}
+    ${renderKnowledgeContent()}
+  `);
+  bindKnowledgeControls(renderKnowledgeView);
+}
+
 function renderKnowledgeSettings() {
   const webhookUrl = `${window.location.origin}/api/webhooks/meta`;
   settingsLayout(`
+    ${renderKnowledgeContent()}
     <section class="panel">
-      <h2>Base de conhecimento</h2>
-      <section class="integration-help">
+      <section class="integration-help compact-help">
         <h2>Webhook Meta</h2>
         <div class="meta">
           <span>URL de callback: <strong>${escapeHtml(webhookUrl)}</strong></span>
@@ -2327,6 +2539,7 @@ function renderKnowledgeSettings() {
       </section>
     </section>
   `);
+  bindKnowledgeControls(renderSettings);
 }
 
 function renderAccessSettings() {
@@ -2593,6 +2806,7 @@ function renderApp() {
   if (state.view === "odysseia") return renderLeadBases();
   if (state.view === "dashboard") return renderDashboard();
   if (state.view === "settings") return renderSettings();
+  if (state.view === "knowledge") return renderKnowledgeView();
 }
 
 (async function boot() {
