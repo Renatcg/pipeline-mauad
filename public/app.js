@@ -2,6 +2,7 @@ const app = document.querySelector("#app");
 const INACTIVITY_LIMIT_MS = 1000 * 60 * 5;
 let knowledgeTypingTimer = null;
 let pageSearchRenderTimer = null;
+const MANUAL_BASE_SOURCES = ["Stand", "Lista RMeirelles"];
 
 const state = {
   user: null,
@@ -268,9 +269,12 @@ function isAvailableBaseLead(lead) {
 
 function baseSources() {
   let sources = [...new Set(state.leads
-    .filter((lead) => isAvailableBaseLead(lead) || lead.source === "META")
+    .filter((lead) => isAvailableBaseLead(lead) || lead.source === "META" || MANUAL_BASE_SOURCES.includes(lead.source))
     .map((lead) => lead.source)
     .filter(Boolean))].sort();
+  for (const source of MANUAL_BASE_SOURCES) {
+    if (!sources.includes(source)) sources.push(source);
+  }
   if (sources.includes("ODYSSEIA")) sources.unshift(...sources.splice(sources.indexOf("ODYSSEIA"), 1));
   if (sources.includes("META")) sources.push(...sources.splice(sources.indexOf("META"), 1));
   return sources.length ? ["TODOS", ...sources.filter((source) => source !== "TODOS")] : [];
@@ -281,6 +285,7 @@ function baseLeads() {
   if (!sources.includes(state.baseSource)) state.baseSource = sources[0] || "TODOS";
   return sortBaseLeads(filteredLeads().filter((lead) => {
     if (state.baseSource === "META") return lead.source === "META";
+    if (MANUAL_BASE_SOURCES.includes(state.baseSource)) return lead.source === state.baseSource;
     if (!isAvailableBaseLead(lead)) return false;
     return state.baseSource === "TODOS" || lead.source === state.baseSource;
   }));
@@ -1347,6 +1352,8 @@ function baseSourceLabel(source) {
   return {
     TODOS: "Todos",
     META: "META",
+    Stand: "STAND",
+    "Lista RMeirelles": "LISTA RMEIRELLES",
     "Pipeline GDrive": "PIPELINE GDRIVE"
   }[source] || source;
 }
