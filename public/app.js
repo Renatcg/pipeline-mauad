@@ -1,5 +1,6 @@
 const app = document.querySelector("#app");
 const INACTIVITY_LIMIT_MS = 1000 * 60 * 5;
+let knowledgeTypingTimer = null;
 
 const state = {
   user: null,
@@ -2437,14 +2438,14 @@ function renderKnowledgeContent() {
     </article>
   `).join("");
   const messages = (state.knowledgeAiMessages || []).map((message) => {
-    const sources = (message.sources || []).map((source) => `
+    const sources = (!message.typing ? (message.sources || []) : []).map((source) => `
       <button type="button" data-open-knowledge-article="${escapeHtml(source.id)}">
         ${escapeHtml(source.title)}
       </button>
     `).join("");
     return `
       <div class="knowledge-chat-message ${message.role === "user" ? "is-user" : "is-assistant"}">
-        <div class="knowledge-chat-bubble">${escapeHtml(message.text).replaceAll("\n", "<br>")}</div>
+        <div class="knowledge-chat-bubble">${escapeHtml(message.text).replaceAll("\n", "<br>")}${message.typing ? '<span class="knowledge-typing-cursor"></span>' : ""}</div>
         ${sources ? `<div class="knowledge-chat-sources"><span>Tutoriais relacionados</span>${sources}</div>` : ""}
       </div>
     `;
@@ -2505,6 +2506,37 @@ function renderKnowledgeContent() {
   `;
 }
 
+function scrollKnowledgeChatToBottom() {
+  requestAnimationFrame(() => {
+    const scroll = document.querySelector("#knowledgeChatScroll");
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+  });
+}
+
+function startKnowledgeTyping(messageId, fullText, sources, rerender) {
+  if (knowledgeTypingTimer) clearTimeout(knowledgeTypingTimer);
+  const text = String(fullText || "");
+  const step = () => {
+    const message = (state.knowledgeAiMessages || []).find((item) => item.id === messageId);
+    if (!message) return;
+    message.fullText = text;
+    message.pendingSources = sources || [];
+    const currentLength = String(message.text || "").length;
+    const nextLength = Math.min(text.length, currentLength + 4);
+    message.text = text.slice(0, nextLength);
+    message.typing = nextLength < text.length;
+    if (!message.typing) message.sources = sources || [];
+    rerender();
+    scrollKnowledgeChatToBottom();
+    if (message.typing) {
+      knowledgeTypingTimer = setTimeout(step, 18);
+    } else {
+      knowledgeTypingTimer = null;
+    }
+  };
+  step();
+}
+
 function bindKnowledgeControls(renderFn) {
   const rerender = renderFn || renderKnowledgeView;
   const aiQuestion = document.querySelector("#knowledgeAiQuestion");
@@ -2522,40 +2554,50 @@ function bindKnowledgeControls(renderFn) {
   });
   document.querySelector("#knowledgeAiForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (knowledgeTypingTimer) {
+      clearTimeout(knowledgeTypingTimer);
+      knowledgeTypingTimer = null;
+      (state.knowledgeAiMessages || []).forEach((message) => {
+        if (!message.typing) return;
+        message.text = message.fullText || message.text;
+        message.sources = message.pendingSources || message.sources || [];
+        message.typing = false;
+      });
+    }
     const question = state.knowledgeAiQuestion.trim();
     if (!question) {
       state.knowledgeAiMessages = [
         ...(state.knowledgeAiMessages || []),
-        { role: "assistant", text: "Digite uma pergunta sobre o uso do sistema.", sources: [] }
+        { id: `msg-${Date.now()}`, role: "assistant", text: "Digite uma pergunta sobre o uso do sistema.", sources: [] }
       ];
       rerender();
       return;
     }
     state.knowledgeAiMessages = [
       ...(state.knowledgeAiMessages || []),
-      { role: "user", text: question, sources: [] }
+      { id: `msg-${Date.now()}-user`, role: "user", text: question, sources: [] }
     ];
     state.knowledgeAiQuestion = "";
     state.knowledgeAiLoading = true;
     rerender();
     try {
       const data = await api("/api/knowledge/ask", { method: "POST", body: JSON.stringify({ question }) });
+      const messageId = `msg-${Date.now()}-assistant`;
       state.knowledgeAiMessages = [
         ...(state.knowledgeAiMessages || []),
-        { role: "assistant", text: data.answer || "Não consegui montar uma resposta agora.", sources: data.sources || [] }
+        { id: messageId, role: "assistant", text: "", sources: [], typing: true }
       ];
+      state.knowledgeAiLoading = false;
+      rerender();
+      startKnowledgeTyping(messageId, data.answer || "Não consegui montar uma resposta agora.", data.sources || [], rerender);
     } catch (error) {
       state.knowledgeAiMessages = [
         ...(state.knowledgeAiMessages || []),
-        { role: "assistant", text: error.message, sources: [] }
+        { id: `msg-${Date.now()}-error`, role: "assistant", text: error.message, sources: [] }
       ];
-    } finally {
       state.knowledgeAiLoading = false;
       rerender();
-      requestAnimationFrame(() => {
-        const scroll = document.querySelector("#knowledgeChatScroll");
-        if (scroll) scroll.scrollTop = scroll.scrollHeight;
-      });
+      scrollKnowledgeChatToBottom();
     }
   });
   const search = document.querySelector("#knowledgeSearch");

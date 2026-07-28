@@ -1569,6 +1569,29 @@ th {
   background: #effcf8;
 }
 
+.knowledge-typing-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 1em;
+  margin-left: 2px;
+  border-radius: 999px;
+  background: var(--brand);
+  vertical-align: -2px;
+  animation: knowledgeCursorBlink 0.85s infinite;
+}
+
+@keyframes knowledgeCursorBlink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+
+  46%,
+  100% {
+    opacity: 0;
+  }
+}
+
 .knowledge-chat-sources {
   max-width: 92%;
   display: flex;
