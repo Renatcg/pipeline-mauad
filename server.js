@@ -299,6 +299,10 @@ function migrateDb(db) {
     db.knowledgeArticles = DEFAULT_KNOWLEDGE_ARTICLES.map((article) => ({ ...article }));
     changed = true;
   }
+  if (!Array.isArray(db.knowledgeChatSessions)) {
+    db.knowledgeChatSessions = [];
+    changed = true;
+  }
   for (const defaultArticle of DEFAULT_KNOWLEDGE_ARTICLES) {
     if (!db.knowledgeArticles.some((article) => article.id === defaultArticle.id)) {
       db.knowledgeArticles.push({ ...defaultArticle });
@@ -320,6 +324,24 @@ function migrateDb(db) {
     updatedAt: article.updatedAt || article.createdAt || new Date().toISOString(),
     updatedBy: String(article.updatedBy || "").trim()
   })).filter((article, index, articles) => article.id && article.title && articles.findIndex((item) => item.id === article.id) === index);
+  db.knowledgeChatSessions = db.knowledgeChatSessions
+    .map((session) => ({
+      id: String(session.id || `kc-${crypto.randomUUID()}`).trim(),
+      userId: String(session.userId || "").trim(),
+      title: String(session.title || "Nova conversa").trim().slice(0, 90),
+      messages: Array.isArray(session.messages) ? session.messages.slice(-30).map((message) => ({
+        role: ["user", "assistant"].includes(message.role) ? message.role : "assistant",
+        text: String(message.text || "").trim().slice(0, 4000),
+        sources: Array.isArray(message.sources) ? message.sources.slice(0, 4) : [],
+        at: message.at || new Date().toISOString()
+      })).filter((message) => message.text) : [],
+      generatedTutorialId: String(session.generatedTutorialId || "").trim(),
+      createdAt: session.createdAt || new Date().toISOString(),
+      updatedAt: session.updatedAt || session.createdAt || new Date().toISOString()
+    }))
+    .filter((session) => session.id && session.userId)
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+    .slice(0, 300);
   if (!Array.isArray(db.pipelineStatuses)) {
     db.pipelineStatuses = [];
     changed = true;
@@ -694,12 +716,12 @@ async function answerKnowledgeQuestion(db, user, question) {
     body: JSON.stringify({
       model: OPENAI_MODEL,
       instructions: [
-        "Voce e o assistente interno do Pipeline Comercial | Construtora Mauad.",
-        "Responda exclusivamente sobre como usar este sistema de pipeline, leads, bases, configuracoes, Meta, notificacoes, logs e ajuda.",
-        "Use apenas o contexto de tutoriais fornecido e o perfil do usuario. Nao invente funcionalidades, dados, credenciais, regras juridicas, medicas, financeiras ou assuntos fora do sistema.",
+        "Você é o assistente interno do Pipeline Comercial | Construtora Mauad.",
+        "Responda exclusivamente sobre como usar este sistema de pipeline, leads, bases, configurações, Meta, notificações, logs e ajuda.",
+        "Use apenas o contexto de tutoriais fornecido e o perfil do usuário. Não invente funcionalidades, dados, credenciais, regras jurídicas, médicas, financeiras ou assuntos fora do sistema.",
         "Se a pergunta estiver fora do uso do sistema, recuse brevemente e diga que pode ajudar apenas com o Pipeline Comercial.",
-        "Se o contexto nao tiver informacao suficiente, diga isso claramente e sugira procurar o Admin TI ou cadastrar um tutorial.",
-        "Responda em portugues do Brasil, de forma objetiva, em passos curtos quando fizer sentido."
+        "Se o contexto não tiver informação suficiente, diga isso claramente e sugira procurar o Admin TI ou cadastrar um tutorial.",
+        "Responda em português do Brasil, com acentuação correta, de forma objetiva, usando negrito em pontos importantes quando fizer sentido."
       ].join(" "),
       input: [
         `Perfil do usuario: ${user.role}`,
@@ -720,6 +742,66 @@ async function answerKnowledgeQuestion(db, user, question) {
     answer: String(text || "").trim() || "Não consegui montar uma resposta com os tutoriais disponíveis.",
     sources
   };
+}
+
+async function generateTutorialDraftFromSession(db, user, session) {
+  if (!OPENAI_API_KEY || session.generatedTutorialId) return null;
+  const userQuestions = (session.messages || []).filter((message) => message.role === "user");
+  if (userQuestions.length < 3) return null;
+  const transcript = (session.messages || [])
+    .map((message) => `${message.role === "user" ? "Usuário" : "Assistente"}: ${message.text}`)
+    .join("\n\n")
+    .slice(-10000);
+  try {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        instructions: [
+          "Crie um tutorial interno para a Central de Ajuda do Pipeline Comercial | Construtora Mauad.",
+          "Use apenas a conversa fornecida. Não invente funcionalidades.",
+          "Responda em JSON válido com: title, category, summary, content, keywords.",
+          `category deve ser uma destas: ${KNOWLEDGE_CATEGORIES.join(", ")}.`,
+          "content deve ser prático, em passos curtos, português do Brasil com acentuação correta."
+        ].join(" "),
+        input: transcript,
+        text: { format: { type: "json_object" } },
+        max_output_tokens: 650
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return null;
+    const raw = data.output_text || data.output?.flatMap((item) => item.content || []).map((content) => content.text || "").join(" ").trim();
+    const parsed = JSON.parse(raw || "{}");
+    const articleData = normalizeKnowledgePayload({
+      title: parsed.title || session.title || "Tutorial sugerido pela IA",
+      category: parsed.category || "Primeiros passos",
+      summary: parsed.summary || "Tutorial sugerido automaticamente a partir de uma conversa com a IA.",
+      content: parsed.content || "",
+      keywords: Array.isArray(parsed.keywords) ? parsed.keywords : [],
+      audienceRoles: ["Admin TI", "Head Comercial", "Supervisor Comercial"],
+      published: false
+    });
+    if (!articleData.title || !articleData.content) return null;
+    const now = new Date().toISOString();
+    const article = {
+      id: `kb-${crypto.randomUUID()}`,
+      ...articleData,
+      createdAt: now,
+      updatedAt: now,
+      updatedBy: "Assistente IA"
+    };
+    db.knowledgeArticles.unshift(article);
+    session.generatedTutorialId = article.id;
+    audit(db, user, "AI_GENERATE_KNOWLEDGE_DRAFT", { articleId: article.id, sessionId: session.id, title: article.title });
+    return article;
+  } catch {
+    return null;
+  }
 }
 
 async function leadAssignmentNotificationContent(db, lead, reassigned = false) {
@@ -1207,6 +1289,25 @@ function visibleKnowledgeArticles(db, user) {
       return roles.includes(user.role);
     })
     .map(publicKnowledgeArticle);
+}
+
+function publicKnowledgeChatSession(session) {
+  return {
+    id: session.id,
+    title: session.title,
+    messages: (session.messages || []).slice(-30),
+    generatedTutorialId: session.generatedTutorialId || "",
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt
+  };
+}
+
+function userKnowledgeChatSessions(db, user) {
+  return (db.knowledgeChatSessions || [])
+    .filter((session) => session.userId === user.id)
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+    .slice(0, 20)
+    .map(publicKnowledgeChatSession);
 }
 
 function publicLead(lead, user) {
@@ -1886,6 +1987,7 @@ async function routeApi(req, res, db) {
       integrations: canManageSettings(user) ? db.integrations : null,
       knowledgeCategories: KNOWLEDGE_CATEGORIES,
       knowledgeArticles: visibleKnowledgeArticles(db, user),
+      knowledgeChatSessions: userKnowledgeChatSessions(db, user),
       canManageKnowledge: canManageKnowledge(user),
       canCreateKnowledge: canCreateKnowledge(user),
       integrationLog: canManageSettings(user) ? db.integrationLog.slice(0, 50) : [],
@@ -2352,11 +2454,38 @@ async function routeApi(req, res, db) {
   if (url.pathname === "/api/knowledge/ask" && method === "POST") {
     const body = await readBody(req);
     const question = String(body.question || "").trim();
+    if (!question) return sendJson(res, 400, { error: "Digite uma pergunta." });
+    const now = new Date().toISOString();
+    let session = (db.knowledgeChatSessions || []).find((item) => item.id === String(body.sessionId || "") && item.userId === user.id);
+    if (!session) {
+      session = {
+        id: `kc-${crypto.randomUUID()}`,
+        userId: user.id,
+        title: question ? question.slice(0, 64) : "Nova conversa",
+        messages: [],
+        generatedTutorialId: "",
+        createdAt: now,
+        updatedAt: now
+      };
+      db.knowledgeChatSessions.unshift(session);
+    }
     try {
       const result = await answerKnowledgeQuestion(db, user, question);
+      session.messages.push({ role: "user", text: question, sources: [], at: now });
+      session.messages.push({ role: "assistant", text: result.answer, sources: result.sources || [], at: new Date().toISOString() });
+      session.messages = session.messages.slice(-30);
+      session.updatedAt = new Date().toISOString();
+      if (!session.title || session.title === "Nova conversa") session.title = question.slice(0, 64) || "Nova conversa";
+      const tutorialDraft = await generateTutorialDraftFromSession(db, user, session);
       audit(db, user, "ASK_KNOWLEDGE_AI", { question: question.slice(0, 180) });
       await saveDb(db);
-      return sendJson(res, 200, result);
+      return sendJson(res, 200, {
+        ...result,
+        session: publicKnowledgeChatSession(session),
+        knowledgeChatSessions: userKnowledgeChatSessions(db, user),
+        tutorialDraft: tutorialDraft ? publicKnowledgeArticle(tutorialDraft) : null,
+        knowledgeArticles: tutorialDraft ? visibleKnowledgeArticles(db, user) : undefined
+      });
     } catch (error) {
       audit(db, user, "ASK_KNOWLEDGE_AI_ERROR", { error: error.message, question: question.slice(0, 180) });
       await saveDb(db);

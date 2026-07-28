@@ -1512,8 +1512,45 @@ th {
 }
 
 .knowledge-chat-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--line);
+}
+
+.knowledge-chat-menu {
+  position: relative;
+}
+
+.knowledge-chat-menu .settings-action-menu {
+  right: 0;
+  left: auto;
+  width: 260px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.knowledge-chat-history {
+  display: grid;
+  gap: 2px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.knowledge-chat-history button {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  min-height: auto;
+  padding: 8px;
+  text-align: left;
+}
+
+.knowledge-chat-history button span {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .knowledge-chat h3 {
@@ -1625,6 +1662,7 @@ th {
 }
 
 .knowledge-chat-form textarea {
+  font-family: inherit;
   resize: vertical;
 }
 
