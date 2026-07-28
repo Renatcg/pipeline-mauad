@@ -592,8 +592,9 @@ function renderViewHead(title, subtitle = "", options = {}) {
     </div>
   ` : "";
   const actions = options.actions ? `<div class="view-head-actions">${options.actions}</div>` : "";
+  const className = options.className ? ` ${escapeHtml(options.className)}` : "";
   return `
-    <div class="view-head">
+    <div class="view-head${className}">
       <div class="view-title">
         <h1>${escapeHtml(title)}</h1>
         ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}
@@ -2648,7 +2649,8 @@ function bindKnowledgeControls(renderFn) {
 function renderKnowledgeView() {
   renderShell(`
     ${renderViewHead("Ajuda", "Tutoriais, busca e assistente de IA para usar o sistema", {
-      actions: canCreateKnowledge() ? '<button class="primary" data-new-knowledge>Novo tutorial</button>' : ""
+      actions: canCreateKnowledge() ? '<button class="primary" data-new-knowledge>Novo tutorial</button>' : "",
+      className: "knowledge-view-head"
     })}
     ${renderKnowledgeContent()}
   `);

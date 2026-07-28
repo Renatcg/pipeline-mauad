@@ -443,6 +443,10 @@ textarea {
   gap: 8px;
 }
 
+.knowledge-view-head {
+  margin-right: 374px;
+}
+
 .page-filters {
   width: auto;
   display: grid;
@@ -1461,6 +1465,7 @@ th {
 .knowledge-panel {
   display: grid;
   gap: 12px;
+  margin-right: 374px;
   padding: 14px;
 }
 
@@ -1474,16 +1479,12 @@ th {
 
 .knowledge-layout {
   display: grid;
-  grid-template-columns: minmax(0, calc(100vw - 250px - 22px - 22px - 378px - 14px)) 360px;
-  gap: 14px;
+  grid-template-columns: 1fr;
   align-items: start;
 }
 
 .knowledge-layout::after {
-  content: "";
-  grid-column: 2;
-  grid-row: 1;
-  width: 360px;
+  display: none;
 }
 
 .knowledge-main {
@@ -1936,6 +1937,11 @@ th {
 }
 
 @media (max-width: 760px) {
+  .knowledge-view-head,
+  .knowledge-panel {
+    margin-right: 0;
+  }
+
   .knowledge-layout {
     grid-template-columns: 1fr;
   }
