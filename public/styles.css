@@ -1464,6 +1464,44 @@ th {
   margin-bottom: 0;
 }
 
+.knowledge-ai {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.knowledge-ai h3 {
+  margin: 0 0 3px;
+  font-size: 18px;
+}
+
+.knowledge-ai p {
+  margin: 0;
+}
+
+.knowledge-ai-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.knowledge-ai-input textarea {
+  resize: vertical;
+}
+
+.knowledge-ai-answer {
+  padding: 12px;
+  border: 1px solid #b7e4d8;
+  border-radius: 8px;
+  background: #effcf8;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
 .knowledge-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -1702,6 +1740,7 @@ th {
   .meta-grid,
   .settings-grid,
   .logs-grid,
+  .knowledge-ai-input,
   .form-grid {
     grid-template-columns: 1fr;
   }

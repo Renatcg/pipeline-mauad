@@ -29,6 +29,9 @@ const state = {
   knowledgeSearch: "",
   knowledgeCategory: "TODOS",
   knowledgeEditing: null,
+  knowledgeAiQuestion: "",
+  knowledgeAiAnswer: "",
+  knowledgeAiLoading: false,
   metaFormsTab: "active",
   mobileNavOpen: false,
   lastAccessLogKey: "",
@@ -2421,6 +2424,9 @@ function renderKnowledgeContent() {
       <small>Atualizado em ${escapeHtml(article.updatedAt ? new Date(article.updatedAt).toLocaleString("pt-BR") : "-")}${article.updatedBy ? ` por ${escapeHtml(article.updatedBy)}` : ""}</small>
     </article>
   `).join("");
+  const aiAnswer = state.knowledgeAiAnswer
+    ? `<div class="knowledge-ai-answer">${escapeHtml(state.knowledgeAiAnswer).replaceAll("\n", "<br>")}</div>`
+    : "";
   return `
     <section class="panel knowledge-panel">
       <div class="panel-head">
@@ -2430,6 +2436,17 @@ function renderKnowledgeContent() {
         </div>
         ${canEditKnowledge() ? '<button class="primary" data-new-knowledge>Novo tutorial</button>' : ""}
       </div>
+      <form id="knowledgeAiForm" class="knowledge-ai">
+        <div>
+          <h3>Perguntar à IA</h3>
+          <p class="muted-text">Responde apenas dúvidas sobre o uso do Pipeline Comercial, com base nos tutoriais disponíveis.</p>
+        </div>
+        <div class="knowledge-ai-input">
+          <textarea id="knowledgeAiQuestion" rows="3" maxlength="900" placeholder="Ex.: Como resgatar um lead da base e atribuir a um corretor?">${escapeHtml(state.knowledgeAiQuestion)}</textarea>
+          <button class="primary" type="submit" ${state.knowledgeAiLoading ? "disabled" : ""}>${state.knowledgeAiLoading ? "Respondendo..." : "Perguntar"}</button>
+        </div>
+        ${aiAnswer}
+      </form>
       <div class="knowledge-tools">
         <input id="knowledgeSearch" placeholder="Pesquisar tutorial, tema ou palavra-chave" value="${escapeHtml(state.knowledgeSearch)}">
       </div>
@@ -2443,6 +2460,40 @@ function renderKnowledgeContent() {
 
 function bindKnowledgeControls(renderFn) {
   const rerender = renderFn || renderKnowledgeView;
+  const aiQuestion = document.querySelector("#knowledgeAiQuestion");
+  aiQuestion?.addEventListener("input", (event) => {
+    const cursorStart = event.target.selectionStart;
+    const cursorEnd = event.target.selectionEnd;
+    state.knowledgeAiQuestion = event.target.value;
+    rerender();
+    requestAnimationFrame(() => {
+      const nextQuestion = document.querySelector("#knowledgeAiQuestion");
+      if (!nextQuestion) return;
+      nextQuestion.focus();
+      nextQuestion.setSelectionRange(cursorStart, cursorEnd);
+    });
+  });
+  document.querySelector("#knowledgeAiForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const question = state.knowledgeAiQuestion.trim();
+    if (!question) {
+      state.knowledgeAiAnswer = "Digite uma pergunta sobre o uso do sistema.";
+      rerender();
+      return;
+    }
+    state.knowledgeAiLoading = true;
+    state.knowledgeAiAnswer = "";
+    rerender();
+    try {
+      const data = await api("/api/knowledge/ask", { method: "POST", body: JSON.stringify({ question }) });
+      state.knowledgeAiAnswer = data.answer || "Não consegui montar uma resposta agora.";
+    } catch (error) {
+      state.knowledgeAiAnswer = error.message;
+    } finally {
+      state.knowledgeAiLoading = false;
+      rerender();
+    }
+  });
   const search = document.querySelector("#knowledgeSearch");
   search?.addEventListener("input", (event) => {
     const cursorStart = event.target.selectionStart;

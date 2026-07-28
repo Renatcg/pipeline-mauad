@@ -628,6 +628,86 @@ async function aiCommentsSummary(lead) {
   }
 }
 
+function relevantKnowledgeContext(db, user, question) {
+  const terms = String(question || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .split(/[^a-z0-9]+/)
+    .filter((term) => term.length >= 3);
+  const scoreArticle = (article) => {
+    const haystack = [
+      article.title,
+      article.category,
+      article.summary,
+      article.content,
+      ...(article.keywords || [])
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
+    return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
+  };
+  const visible = visibleKnowledgeArticles(db, user)
+    .filter((article) => article.published !== false)
+    .map((article) => ({ ...article, score: scoreArticle(article) }))
+    .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title, "pt-BR"));
+  const selected = visible.filter((article) => article.score > 0).slice(0, 8);
+  return (selected.length ? selected : visible.slice(0, 8))
+    .map((article, index) => [
+      `Tutorial ${index + 1}: ${article.title}`,
+      `Categoria: ${article.category}`,
+      `Resumo: ${article.summary || ""}`,
+      `Conteudo: ${article.content || ""}`
+    ].join("\n"))
+    .join("\n\n---\n\n");
+}
+
+async function answerKnowledgeQuestion(db, user, question) {
+  const cleanQuestion = String(question || "").trim();
+  if (!cleanQuestion) throw new Error("Digite uma pergunta.");
+  if (cleanQuestion.length > 900) throw new Error("Pergunta muito longa. Tente resumir em poucas linhas.");
+  if (!OPENAI_API_KEY) throw new Error("Assistente de IA ainda não configurado.");
+  const context = relevantKnowledgeContext(db, user, cleanQuestion);
+  if (!context) {
+    return "Ainda não existem tutoriais publicados para usar como base. Peça a um administrador para cadastrar conteúdo na Central de ajuda.";
+  }
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      instructions: [
+        "Voce e o assistente interno do Pipeline Comercial | Construtora Mauad.",
+        "Responda exclusivamente sobre como usar este sistema de pipeline, leads, bases, configuracoes, Meta, notificacoes, logs e ajuda.",
+        "Use apenas o contexto de tutoriais fornecido e o perfil do usuario. Nao invente funcionalidades, dados, credenciais, regras juridicas, medicas, financeiras ou assuntos fora do sistema.",
+        "Se a pergunta estiver fora do uso do sistema, recuse brevemente e diga que pode ajudar apenas com o Pipeline Comercial.",
+        "Se o contexto nao tiver informacao suficiente, diga isso claramente e sugira procurar o Admin TI ou cadastrar um tutorial.",
+        "Responda em portugues do Brasil, de forma objetiva, em passos curtos quando fizer sentido."
+      ].join(" "),
+      input: [
+        `Perfil do usuario: ${user.role}`,
+        "Contexto autorizado:",
+        context,
+        "Pergunta do usuario:",
+        cleanQuestion
+      ].join("\n\n"),
+      max_output_tokens: 420
+    })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error?.message || "Não foi possível acionar a IA agora.");
+  }
+  const text = data.output_text || data.output?.flatMap((item) => item.content || []).map((content) => content.text || "").join(" ").trim();
+  return String(text || "").trim() || "Não consegui montar uma resposta com os tutoriais disponíveis.";
+}
+
 async function leadAssignmentNotificationContent(db, lead, reassigned = false) {
   const detailUrl = leadUrl(lead);
   const whatsappUrl = leadWhatsappUrl(lead);
@@ -2248,6 +2328,21 @@ async function routeApi(req, res, db) {
     audit(db, user, "CREATE_KNOWLEDGE_ARTICLE", { articleId: article.id, title: article.title });
     await saveDb(db);
     return sendJson(res, 201, { knowledgeArticles: visibleKnowledgeArticles(db, user) });
+  }
+
+  if (url.pathname === "/api/knowledge/ask" && method === "POST") {
+    const body = await readBody(req);
+    const question = String(body.question || "").trim();
+    try {
+      const answer = await answerKnowledgeQuestion(db, user, question);
+      audit(db, user, "ASK_KNOWLEDGE_AI", { question: question.slice(0, 180) });
+      await saveDb(db);
+      return sendJson(res, 200, { answer });
+    } catch (error) {
+      audit(db, user, "ASK_KNOWLEDGE_AI_ERROR", { error: error.message, question: question.slice(0, 180) });
+      await saveDb(db);
+      return sendJson(res, 400, { error: error.message });
+    }
   }
 
   const knowledgeMatch = url.pathname.match(/^\/api\/knowledge\/([^/]+)$/);
