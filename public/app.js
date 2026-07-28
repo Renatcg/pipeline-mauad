@@ -17,6 +17,7 @@ const state = {
   knowledgeCategories: [],
   knowledgeArticles: [],
   canManageKnowledge: false,
+  canCreateKnowledge: false,
   metaDiagnostics: null,
   view: "kanban",
   leadId: null,
@@ -30,8 +31,9 @@ const state = {
   knowledgeCategory: "TODOS",
   knowledgeEditing: null,
   knowledgeAiQuestion: "",
-  knowledgeAiAnswer: "",
+  knowledgeAiMessages: [],
   knowledgeAiLoading: false,
+  knowledgeOpenArticle: null,
   metaFormsTab: "active",
   mobileNavOpen: false,
   lastAccessLogKey: "",
@@ -517,6 +519,7 @@ async function loadState() {
   state.knowledgeCategories = data.knowledgeCategories || [];
   state.knowledgeArticles = data.knowledgeArticles || [];
   state.canManageKnowledge = Boolean(data.canManageKnowledge);
+  state.canCreateKnowledge = Boolean(data.canCreateKnowledge);
   if (state.view !== "lead" && !allowedViews().includes(state.view)) state.view = allowedViews()[0];
 }
 
@@ -2332,6 +2335,10 @@ function canEditKnowledge() {
   return Boolean(state.canManageKnowledge);
 }
 
+function canCreateKnowledge() {
+  return Boolean(state.canCreateKnowledge);
+}
+
 function knowledgeCategories() {
   const categories = new Set([...(state.knowledgeCategories || []), ...state.knowledgeArticles.map((article) => article.category).filter(Boolean)]);
   return ["TODOS", ...[...categories].sort((a, b) => a.localeCompare(b, "pt-BR"))];
@@ -2396,6 +2403,9 @@ function renderKnowledgeContent() {
   const editArticle = state.knowledgeEditing && state.knowledgeEditing !== "new"
     ? state.knowledgeArticles.find((article) => article.id === state.knowledgeEditing)
     : null;
+  const openArticle = state.knowledgeOpenArticle
+    ? state.knowledgeArticles.find((article) => article.id === state.knowledgeOpenArticle)
+    : null;
   const categoryButtons = categories.map((category) => `
     <button class="${state.knowledgeCategory === category ? "active" : ""}" data-knowledge-category="${escapeHtml(category)}">
       ${escapeHtml(category === "TODOS" ? "Todos" : category)}
@@ -2424,9 +2434,40 @@ function renderKnowledgeContent() {
       <small>Atualizado em ${escapeHtml(article.updatedAt ? new Date(article.updatedAt).toLocaleString("pt-BR") : "-")}${article.updatedBy ? ` por ${escapeHtml(article.updatedBy)}` : ""}</small>
     </article>
   `).join("");
-  const aiAnswer = state.knowledgeAiAnswer
-    ? `<div class="knowledge-ai-answer">${escapeHtml(state.knowledgeAiAnswer).replaceAll("\n", "<br>")}</div>`
+  const messages = (state.knowledgeAiMessages || []).map((message) => {
+    const sources = (message.sources || []).map((source) => `
+      <button type="button" data-open-knowledge-article="${escapeHtml(source.id)}">
+        ${escapeHtml(source.title)}
+      </button>
+    `).join("");
+    return `
+      <div class="knowledge-chat-message ${message.role === "user" ? "is-user" : "is-assistant"}">
+        <div class="knowledge-chat-bubble">${escapeHtml(message.text).replaceAll("\n", "<br>")}</div>
+        ${sources ? `<div class="knowledge-chat-sources"><span>Tutoriais relacionados</span>${sources}</div>` : ""}
+      </div>
+    `;
+  }).join("");
+  const emptyChat = !messages && !state.knowledgeAiLoading
+    ? '<div class="knowledge-chat-empty">Pergunte algo sobre Kanban, Planilha, Bases, Meta, notificações, logs ou configurações.</div>'
     : "";
+  const thinkingMessage = state.knowledgeAiLoading
+    ? '<div class="knowledge-chat-message is-assistant"><div class="knowledge-chat-bubble">Pensando na resposta...</div></div>'
+    : "";
+  const articleModal = openArticle ? `
+    <div class="modal-backdrop" data-knowledge-article-backdrop>
+      <section class="modal-card knowledge-article-modal" role="dialog" aria-modal="true" aria-labelledby="knowledgeArticleTitle">
+        <div class="panel-head">
+          <div>
+            <span class="muted-text">${escapeHtml(openArticle.category)}</span>
+            <h2 id="knowledgeArticleTitle">${escapeHtml(openArticle.title)}</h2>
+          </div>
+          <button type="button" data-close-knowledge-article>Fechar</button>
+        </div>
+        <p class="muted-text">${escapeHtml(openArticle.summary || "")}</p>
+        <div class="knowledge-article-body">${escapeHtml(openArticle.content || "").replaceAll("\n", "<br>")}</div>
+      </section>
+    </div>
+  ` : "";
   return `
     <section class="panel knowledge-panel">
       <div class="panel-head">
@@ -2434,26 +2475,37 @@ function renderKnowledgeContent() {
           <h2>Central de ajuda</h2>
           <p class="muted-text">Tutoriais rápidos para usar o Pipeline Comercial no dia a dia.</p>
         </div>
-        ${canEditKnowledge() ? '<button class="primary" data-new-knowledge>Novo tutorial</button>' : ""}
+        ${canCreateKnowledge() ? '<button class="primary" data-new-knowledge>Novo tutorial</button>' : ""}
       </div>
-      <form id="knowledgeAiForm" class="knowledge-ai">
-        <div>
-          <h3>Perguntar à IA</h3>
-          <p class="muted-text">Responde apenas dúvidas sobre o uso do Pipeline Comercial, com base nos tutoriais disponíveis.</p>
+      <div class="knowledge-layout">
+        <div class="knowledge-main">
+          <div class="knowledge-tools">
+            <input id="knowledgeSearch" placeholder="Pesquisar tutorial, tema ou palavra-chave" value="${escapeHtml(state.knowledgeSearch)}">
+          </div>
+          <div class="tabs compact-tabs knowledge-categories">${categoryButtons}</div>
+          ${state.knowledgeEditing === "new" ? knowledgeArticleForm() : ""}
+          ${editArticle ? knowledgeArticleForm(editArticle) : ""}
+          <div class="knowledge-grid">${cards || '<div class="empty">Nenhum tutorial encontrado.</div>'}</div>
         </div>
-        <div class="knowledge-ai-input">
-          <textarea id="knowledgeAiQuestion" rows="3" maxlength="900" placeholder="Ex.: Como resgatar um lead da base e atribuir a um corretor?">${escapeHtml(state.knowledgeAiQuestion)}</textarea>
-          <button class="primary" type="submit" ${state.knowledgeAiLoading ? "disabled" : ""}>${state.knowledgeAiLoading ? "Respondendo..." : "Perguntar"}</button>
-        </div>
-        ${aiAnswer}
-      </form>
-      <div class="knowledge-tools">
-        <input id="knowledgeSearch" placeholder="Pesquisar tutorial, tema ou palavra-chave" value="${escapeHtml(state.knowledgeSearch)}">
+        <aside class="knowledge-chat" aria-label="Assistente de IA">
+          <div class="knowledge-chat-head">
+            <div>
+              <h3>Assistente IA</h3>
+              <p class="muted-text">Exclusivo para dúvidas sobre uso do sistema.</p>
+            </div>
+          </div>
+          <div class="knowledge-chat-scroll" id="knowledgeChatScroll">
+            ${emptyChat}
+            ${messages}
+            ${thinkingMessage}
+          </div>
+          <form id="knowledgeAiForm" class="knowledge-chat-form">
+            <textarea id="knowledgeAiQuestion" rows="3" maxlength="900" placeholder="Pergunte sobre o Pipeline">${escapeHtml(state.knowledgeAiQuestion)}</textarea>
+            <button class="primary" type="submit" ${state.knowledgeAiLoading ? "disabled" : ""}>Enviar</button>
+          </form>
+        </aside>
       </div>
-      <div class="tabs compact-tabs knowledge-categories">${categoryButtons}</div>
-      ${state.knowledgeEditing === "new" ? knowledgeArticleForm() : ""}
-      ${editArticle ? knowledgeArticleForm(editArticle) : ""}
-      <div class="knowledge-grid">${cards || '<div class="empty">Nenhum tutorial encontrado.</div>'}</div>
+      ${articleModal}
     </section>
   `;
 }
@@ -2477,21 +2529,38 @@ function bindKnowledgeControls(renderFn) {
     event.preventDefault();
     const question = state.knowledgeAiQuestion.trim();
     if (!question) {
-      state.knowledgeAiAnswer = "Digite uma pergunta sobre o uso do sistema.";
+      state.knowledgeAiMessages = [
+        ...(state.knowledgeAiMessages || []),
+        { role: "assistant", text: "Digite uma pergunta sobre o uso do sistema.", sources: [] }
+      ];
       rerender();
       return;
     }
+    state.knowledgeAiMessages = [
+      ...(state.knowledgeAiMessages || []),
+      { role: "user", text: question, sources: [] }
+    ];
+    state.knowledgeAiQuestion = "";
     state.knowledgeAiLoading = true;
-    state.knowledgeAiAnswer = "";
     rerender();
     try {
       const data = await api("/api/knowledge/ask", { method: "POST", body: JSON.stringify({ question }) });
-      state.knowledgeAiAnswer = data.answer || "Não consegui montar uma resposta agora.";
+      state.knowledgeAiMessages = [
+        ...(state.knowledgeAiMessages || []),
+        { role: "assistant", text: data.answer || "Não consegui montar uma resposta agora.", sources: data.sources || [] }
+      ];
     } catch (error) {
-      state.knowledgeAiAnswer = error.message;
+      state.knowledgeAiMessages = [
+        ...(state.knowledgeAiMessages || []),
+        { role: "assistant", text: error.message, sources: [] }
+      ];
     } finally {
       state.knowledgeAiLoading = false;
       rerender();
+      requestAnimationFrame(() => {
+        const scroll = document.querySelector("#knowledgeChatScroll");
+        if (scroll) scroll.scrollTop = scroll.scrollHeight;
+      });
     }
   });
   const search = document.querySelector("#knowledgeSearch");
@@ -2525,6 +2594,21 @@ function bindKnowledgeControls(renderFn) {
   });
   document.querySelector("[data-cancel-knowledge]")?.addEventListener("click", () => {
     state.knowledgeEditing = null;
+    rerender();
+  });
+  document.querySelectorAll("[data-open-knowledge-article]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.knowledgeOpenArticle = button.dataset.openKnowledgeArticle;
+      rerender();
+    });
+  });
+  document.querySelector("[data-close-knowledge-article]")?.addEventListener("click", () => {
+    state.knowledgeOpenArticle = null;
+    rerender();
+  });
+  document.querySelector("[data-knowledge-article-backdrop]")?.addEventListener("click", (event) => {
+    if (!event.target.classList.contains("modal-backdrop")) return;
+    state.knowledgeOpenArticle = null;
     rerender();
   });
   document.querySelectorAll("[data-toggle-knowledge]").forEach((button) => {

@@ -655,14 +655,22 @@ function relevantKnowledgeContext(db, user, question) {
     .map((article) => ({ ...article, score: scoreArticle(article) }))
     .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title, "pt-BR"));
   const selected = visible.filter((article) => article.score > 0).slice(0, 8);
-  return (selected.length ? selected : visible.slice(0, 8))
-    .map((article, index) => [
+  const sources = (selected.length ? selected : visible.slice(0, 8));
+  return {
+    context: sources
+      .map((article, index) => [
       `Tutorial ${index + 1}: ${article.title}`,
       `Categoria: ${article.category}`,
       `Resumo: ${article.summary || ""}`,
       `Conteudo: ${article.content || ""}`
     ].join("\n"))
-    .join("\n\n---\n\n");
+      .join("\n\n---\n\n"),
+    sources: sources.slice(0, 4).map((article) => ({
+      id: article.id,
+      title: article.title,
+      category: article.category
+    }))
+  };
 }
 
 async function answerKnowledgeQuestion(db, user, question) {
@@ -670,9 +678,12 @@ async function answerKnowledgeQuestion(db, user, question) {
   if (!cleanQuestion) throw new Error("Digite uma pergunta.");
   if (cleanQuestion.length > 900) throw new Error("Pergunta muito longa. Tente resumir em poucas linhas.");
   if (!OPENAI_API_KEY) throw new Error("Assistente de IA ainda não configurado.");
-  const context = relevantKnowledgeContext(db, user, cleanQuestion);
+  const { context, sources } = relevantKnowledgeContext(db, user, cleanQuestion);
   if (!context) {
-    return "Ainda não existem tutoriais publicados para usar como base. Peça a um administrador para cadastrar conteúdo na Central de ajuda.";
+    return {
+      answer: "Ainda não existem tutoriais publicados para usar como base. Peça a um administrador para cadastrar conteúdo na Central de ajuda.",
+      sources: []
+    };
   }
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -705,7 +716,10 @@ async function answerKnowledgeQuestion(db, user, question) {
     throw new Error(data.error?.message || "Não foi possível acionar a IA agora.");
   }
   const text = data.output_text || data.output?.flatMap((item) => item.content || []).map((content) => content.text || "").join(" ").trim();
-  return String(text || "").trim() || "Não consegui montar uma resposta com os tutoriais disponíveis.";
+  return {
+    answer: String(text || "").trim() || "Não consegui montar uma resposta com os tutoriais disponíveis.",
+    sources
+  };
 }
 
 async function leadAssignmentNotificationContent(db, lead, reassigned = false) {
@@ -1105,6 +1119,10 @@ function canManagePipelineSettings(user) {
 
 function canManageKnowledge(user) {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(user.role);
+}
+
+function canCreateKnowledge(user) {
+  return user.role === "Admin TI";
 }
 
 function canManageUsers(user) {
@@ -1869,6 +1887,7 @@ async function routeApi(req, res, db) {
       knowledgeCategories: KNOWLEDGE_CATEGORIES,
       knowledgeArticles: visibleKnowledgeArticles(db, user),
       canManageKnowledge: canManageKnowledge(user),
+      canCreateKnowledge: canCreateKnowledge(user),
       integrationLog: canManageSettings(user) ? db.integrationLog.slice(0, 50) : [],
       auditLog: canManageSettings(user) ? db.auditLog.slice(0, 25) : [],
       accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : [],
@@ -2311,7 +2330,7 @@ async function routeApi(req, res, db) {
   }
 
   if (url.pathname === "/api/knowledge" && method === "POST") {
-    if (!canManageKnowledge(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (!canCreateKnowledge(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
     const articleData = normalizeKnowledgePayload(body);
     if (!articleData.title) return sendJson(res, 400, { error: "Título obrigatório" });
@@ -2334,10 +2353,10 @@ async function routeApi(req, res, db) {
     const body = await readBody(req);
     const question = String(body.question || "").trim();
     try {
-      const answer = await answerKnowledgeQuestion(db, user, question);
+      const result = await answerKnowledgeQuestion(db, user, question);
       audit(db, user, "ASK_KNOWLEDGE_AI", { question: question.slice(0, 180) });
       await saveDb(db);
-      return sendJson(res, 200, { answer });
+      return sendJson(res, 200, result);
     } catch (error) {
       audit(db, user, "ASK_KNOWLEDGE_AI_ERROR", { error: error.message, question: question.slice(0, 180) });
       await saveDb(db);
