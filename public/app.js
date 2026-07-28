@@ -1,6 +1,7 @@
 const app = document.querySelector("#app");
 const INACTIVITY_LIMIT_MS = 1000 * 60 * 5;
 let knowledgeTypingTimer = null;
+let pageSearchRenderTimer = null;
 
 const state = {
   user: null,
@@ -619,17 +620,38 @@ function bindPageFilters() {
   const search = document.querySelector("#pageSearch");
   const favoriteToggle = document.querySelector("#pageFavoriteToggle");
   const addLeadButton = document.querySelector("#addLeadButton");
-  search?.addEventListener("input", (event) => {
-    const cursorStart = event.target.selectionStart;
-    const cursorEnd = event.target.selectionEnd;
+  let composingSearch = false;
+  const scheduleSearchRender = () => {
+    if (pageSearchRenderTimer) clearTimeout(pageSearchRenderTimer);
+    pageSearchRenderTimer = setTimeout(() => {
+      pageSearchRenderTimer = null;
+      renderApp();
+      requestAnimationFrame(() => {
+        const nextSearch = document.querySelector("#pageSearch");
+        if (!nextSearch) return;
+        nextSearch.focus({ preventScroll: true });
+        const position = nextSearch.value.length;
+        nextSearch.setSelectionRange(position, position);
+      });
+    }, 320);
+  };
+  search?.addEventListener("compositionstart", () => {
+    composingSearch = true;
+  });
+  search?.addEventListener("compositionend", (event) => {
+    composingSearch = false;
     state.search = event.target.value;
+    scheduleSearchRender();
+  });
+  search?.addEventListener("input", (event) => {
+    state.search = event.target.value;
+    if (!composingSearch) scheduleSearchRender();
+  });
+  search?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    if (pageSearchRenderTimer) clearTimeout(pageSearchRenderTimer);
+    pageSearchRenderTimer = null;
     renderApp();
-    requestAnimationFrame(() => {
-      const nextSearch = document.querySelector("#pageSearch");
-      if (!nextSearch) return;
-      nextSearch.focus();
-      nextSearch.setSelectionRange(cursorStart, cursorEnd);
-    });
   });
   favoriteToggle?.addEventListener("click", () => {
     state.favoritesOnly = !state.favoritesOnly;
