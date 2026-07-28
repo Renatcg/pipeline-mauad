@@ -43,6 +43,9 @@ const state = {
   mobileNavOpen: false,
   lastAccessLogKey: "",
   creatingLead: false,
+  createLeadDraft: null,
+  createLeadDuplicate: null,
+  createLeadImpactPrompt: false,
   baseSource: "TODOS",
   baseSort: { key: "name", direction: "asc" },
   sheetSort: { key: "name", direction: "asc" },
@@ -659,15 +662,22 @@ function bindPageFilters() {
   });
   addLeadButton?.addEventListener("click", () => {
     state.creatingLead = true;
+    state.createLeadDraft = null;
+    state.createLeadDuplicate = null;
+    state.createLeadImpactPrompt = false;
     renderApp();
   });
 }
 
 function renderCreateLeadModal() {
-  const statusOptions = state.statuses.map((status, index) => `<option value="${escapeHtml(status)}" ${index === 0 ? "selected" : ""}>${escapeHtml(status)}</option>`).join("");
+  if (state.createLeadDuplicate) return renderDuplicateLeadModal();
+  if (state.createLeadImpactPrompt) return renderLeadImpactModal();
+  const draft = state.createLeadDraft || {};
+  const value = (key) => escapeHtml(draft[key] || "");
+  const statusOptions = state.statuses.map((status, index) => `<option value="${escapeHtml(status)}" ${(draft.status ? draft.status === status : index === 0) ? "selected" : ""}>${escapeHtml(status)}</option>`).join("");
   const brokerOptions = state.user?.role === "Corretor"
     ? `<option value="${escapeHtml(state.user.id)}" selected>${escapeHtml(state.user.name)}</option>`
-    : `<option value="">Sem corretor</option>${activeBrokers().map((broker) => `<option value="${escapeHtml(broker.id)}">${escapeHtml(broker.name)}</option>`).join("")}`;
+    : `<option value="">Sem corretor</option>${activeBrokers().map((broker) => `<option value="${escapeHtml(broker.id)}" ${draft.assignedTo === broker.id ? "selected" : ""}>${escapeHtml(broker.name)}</option>`).join("")}`;
   return `
     <div class="modal-backdrop" data-close-create-lead>
       <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="createLeadTitle">
@@ -676,17 +686,24 @@ function renderCreateLeadModal() {
           <button type="button" class="icon" data-close-create-lead title="Fechar">×</button>
         </div>
         <form id="createLeadForm" class="form-grid">
-          <div class="field"><label>Nome</label><input name="name" required autofocus></div>
-          <div class="field"><label>Telefone</label><input name="phone"></div>
+          <div class="field"><label>Nome <span class="required-mark">*</span></label><input name="name" value="${value("name")}" required autofocus></div>
+          <div class="field"><label>Telefone <span class="required-mark">*</span></label><input name="phone" value="${value("phone")}" required></div>
+          <div class="field"><label>E-mail <span class="required-mark">*</span></label><input name="email" type="email" value="${value("email")}" required></div>
+          <div class="field"><label>Origem do novo lead <span class="required-mark">*</span></label><select name="source" required>
+            <option value="">Selecione</option>
+            <option value="Stand" ${draft.source === "Stand" ? "selected" : ""}>Stand</option>
+            <option value="Lista RMeirelles" ${draft.source === "Lista RMeirelles" ? "selected" : ""}>Lista RMeirelles</option>
+          </select></div>
           <div class="field"><label>Status do pipeline</label><select name="status" ${state.statuses.length ? "" : "disabled"}>${statusOptions || '<option value="">Cadastre um status</option>'}</select></div>
           <div class="field"><label>Corretor</label><select name="assignedTo">${brokerOptions}</select></div>
-          <div class="field"><label>Empreendimento desejado</label><select name="desiredProject">
+          <div class="field"><label>Empreendimento desejado <span class="required-mark">*</span></label><select name="desiredProject" required>
             <option value="">Selecione</option>
-            ${projectOptions()}
+            <option value="Não informado" ${draft.desiredProject === "Não informado" ? "selected" : ""}>Não informado</option>
+            ${projectOptions(draft.desiredProject || "")}
           </select></div>
-          <div class="field"><label>Unidade</label><input name="desiredUnit"></div>
-          <div class="field"><label>Valor da unidade</label><input name="unitValue"></div>
-          <div class="field full"><label>Observações internas</label><textarea name="notes"></textarea></div>
+          <div class="field"><label>Unidade</label><input name="desiredUnit" value="${value("desiredUnit")}"></div>
+          <div class="field"><label>Valor da unidade</label><input name="unitValue" value="${value("unitValue")}"></div>
+          <div class="field full"><label>Observações internas</label><textarea name="notes">${value("notes")}</textarea></div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar lead</button><button type="button" data-close-create-lead>Cancelar</button></div></div>
         </form>
       </section>
@@ -694,28 +711,172 @@ function renderCreateLeadModal() {
   `;
 }
 
+function duplicateLeadRows(lead = {}) {
+  return [
+    ["Nome", lead.name],
+    ["Telefone", lead.phone],
+    ["E-mail", lead.email || leadEmailForTable(lead)],
+    ["Empreendimento", lead.desiredProject],
+    ["Origem", lead.source],
+    ["Fase atual", leadBaseStatus(lead, { blankHistoricalBaseStatus: true })]
+  ].map(([label, value]) => `
+    <div class="compare-row">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value || "Não informado")}</strong>
+    </div>
+  `).join("");
+}
+
+function renderDuplicateLeadModal() {
+  const duplicate = state.createLeadDuplicate?.duplicate || {};
+  const baseName = state.createLeadDuplicate?.baseName || duplicate.source || "base";
+  return `
+    <div class="modal-backdrop" data-close-create-lead>
+      <section class="modal-card wide-modal" role="dialog" aria-modal="true" aria-labelledby="duplicateLeadTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="duplicateLeadTitle">Lead já existente na base ${escapeHtml(baseName)}</h2>
+            <p class="modal-subtitle">Compare as informações antes de trazer este lead para o pipeline.</p>
+          </div>
+          <button type="button" class="icon" data-close-create-lead title="Fechar">×</button>
+        </div>
+        <div class="duplicate-compare">
+          <section class="compare-card">
+            <h3>Dados inseridos agora</h3>
+            ${duplicateLeadRows(state.createLeadDraft || {})}
+          </section>
+          <section class="compare-card">
+            <h3>Dados encontrados na base</h3>
+            ${duplicateLeadRows(duplicate)}
+          </section>
+        </div>
+        <div class="row-actions modal-actions">
+          <button type="button" class="primary" data-resolve-duplicate="overwrite">Sobrescrever com novas infos</button>
+          <button type="button" data-resolve-duplicate="rescue">Resgatar com infos da base</button>
+          <button type="button" data-edit-manual-lead>Voltar e editar</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderLeadImpactModal() {
+  return `
+    <div class="modal-backdrop" data-close-create-lead>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="impactLeadTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="impactLeadTitle">Impacto nas redes sociais</h2>
+            <p class="modal-subtitle">Antes de concluir, informe se este lead foi impactado pela empresa ou por algum empreendimento nas redes sociais.</p>
+          </div>
+          <button type="button" class="icon" data-close-create-lead title="Fechar">×</button>
+        </div>
+        <form id="leadImpactForm" class="form-grid">
+          <div class="field full"><label>Foi impactado nas redes sociais?</label><select name="impactedBySocial" required autofocus>
+            <option value="">Selecione</option>
+            <option value="Sim">Sim</option>
+            <option value="Não">Não</option>
+            <option value="Não sei informar">Não sei informar</option>
+          </select></div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Concluir cadastro</button><button type="button" data-edit-manual-lead>Voltar</button></div></div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function resetCreateLeadFlow() {
+  state.creatingLead = false;
+  state.createLeadDraft = null;
+  state.createLeadDuplicate = null;
+  state.createLeadImpactPrompt = false;
+}
+
+function upsertLeadInState(lead) {
+  const index = state.leads.findIndex((item) => item.id === lead.id);
+  if (index >= 0) state.leads[index] = lead;
+  else state.leads.push(lead);
+}
+
+function openCreatedLead(lead) {
+  resetCreateLeadFlow();
+  state.previousView = state.view;
+  routeTo("lead", lead.id);
+}
+
 function bindCreateLeadModal() {
   document.querySelectorAll("[data-close-create-lead]").forEach((element) => {
     element.addEventListener("click", (event) => {
       if (event.target !== element && element.classList.contains("modal-backdrop")) return;
-      state.creatingLead = false;
+      resetCreateLeadFlow();
       renderApp();
     });
+  });
+  document.querySelector("[data-edit-manual-lead]")?.addEventListener("click", () => {
+    state.createLeadDuplicate = null;
+    state.createLeadImpactPrompt = false;
+    renderApp();
+  });
+  document.querySelectorAll("[data-resolve-duplicate]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        setButtonBusy(button, true, "Salvando...");
+        const result = await api("/api/leads/resolve-manual-duplicate", {
+          method: "POST",
+          body: JSON.stringify({
+            duplicateId: state.createLeadDuplicate?.duplicate?.id,
+            mode: button.dataset.resolveDuplicate,
+            lead: state.createLeadDraft || {}
+          })
+        });
+        upsertLeadInState(result.lead);
+        openCreatedLead(result.lead);
+      } catch (error) {
+        alert(error.message);
+        setButtonBusy(button, false);
+      }
+    });
+  });
+  document.querySelector("#leadImpactForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const payload = { ...(state.createLeadDraft || {}), ...Object.fromEntries(form.entries()) };
+    const button = event.currentTarget.querySelector("button[type='submit']");
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const result = await api("/api/leads", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      upsertLeadInState(result.lead);
+      openCreatedLead(result.lead);
+    } catch (error) {
+      alert(error.message);
+      setButtonBusy(button, false);
+    }
   });
   document.querySelector("#createLeadForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const payload = Object.fromEntries(form.entries());
+    const button = event.currentTarget.querySelector("button[type='submit']");
     try {
-      const result = await api("/api/leads", {
+      setButtonBusy(button, true, "Verificando...");
+      const duplicateResult = await api("/api/leads/check-duplicate", {
         method: "POST",
-        body: JSON.stringify(Object.fromEntries(form.entries()))
+        body: JSON.stringify(payload)
       });
-      state.leads.push(result.lead);
-      state.creatingLead = false;
-      state.previousView = state.view;
-      routeTo("lead", result.lead.id);
+      state.createLeadDraft = payload;
+      if (duplicateResult.duplicate) {
+        state.createLeadDuplicate = duplicateResult;
+        renderApp();
+      } else {
+        state.createLeadImpactPrompt = true;
+        renderApp();
+      }
     } catch (error) {
       alert(error.message);
+      setButtonBusy(button, false);
     }
   });
 }

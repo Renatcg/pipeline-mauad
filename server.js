@@ -1244,6 +1244,78 @@ function canEditLead(user, lead) {
   return canManageLeads(user) || (user.role === "Corretor" && lead.assignedTo === user.id);
 }
 
+const MANUAL_LEAD_SOURCES = ["Stand", "Lista RMeirelles"];
+const UNKNOWN_PROJECT = "Não informado";
+
+function validProjectNames(db) {
+  return new Set([...(db.projects || DEFAULT_PROJECTS), UNKNOWN_PROJECT]);
+}
+
+function normalizePhoneDigits(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function leadEmailsForMatch(lead) {
+  return [lead.email, String(lead.assistant || "").includes("@") ? lead.assistant : ""]
+    .map(normalizeEmail)
+    .filter(Boolean);
+}
+
+function leadPhonesForMatch(lead) {
+  return [lead.phone]
+    .map(normalizePhoneDigits)
+    .filter((phone) => phone.length >= 8);
+}
+
+function baseNameForLead(lead) {
+  return lead.source || "Base";
+}
+
+function findManualLeadDuplicate(db, body) {
+  const email = normalizeEmail(body.email);
+  const phone = normalizePhoneDigits(body.phone);
+  return db.leads.find((lead) => {
+    if (lead.inPipeline) return false;
+    if (email && leadEmailsForMatch(lead).includes(email)) return true;
+    if (phone.length >= 8) {
+      return leadPhonesForMatch(lead).some((leadPhone) => leadPhone === phone || leadPhone.endsWith(phone) || phone.endsWith(leadPhone));
+    }
+    return false;
+  }) || null;
+}
+
+function normalizeManualLeadPayload(db, body) {
+  const name = String(body.name || "").trim();
+  const phone = String(body.phone || "").trim();
+  const email = String(body.email || "").trim();
+  const desiredProject = String(body.desiredProject || "").trim();
+  const source = String(body.source || "").trim();
+  if (!name) return { error: "Nome obrigatório" };
+  if (!phone) return { error: "Telefone obrigatório" };
+  if (!email) return { error: "E-mail obrigatório" };
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: "E-mail inválido" };
+  if (!desiredProject) return { error: "Empreendimento desejado obrigatório" };
+  if (!validProjectNames(db).has(desiredProject)) return { error: "Empreendimento desejado inválido" };
+  if (!MANUAL_LEAD_SOURCES.includes(source)) return { error: "Origem do novo lead inválida" };
+  return {
+    lead: {
+      name,
+      phone,
+      email,
+      source,
+      desiredProject,
+      desiredUnit: String(body.desiredUnit || "").trim(),
+      unitValue: String(body.unitValue || "").trim(),
+      notes: String(body.notes || "").trim(),
+      impactedBySocial: String(body.impactedBySocial || "").trim()
+    }
+  };
+}
+
 function normalizeKnowledgePayload(body, current = {}) {
   const audienceRoles = Array.isArray(body.audienceRoles)
     ? body.audienceRoles.filter((role) => ROLES.includes(role))
@@ -2027,12 +2099,78 @@ async function routeApi(req, res, db) {
     return sendJson(res, 200, { ok: true, cleared });
   }
 
+  if (method === "POST" && url.pathname === "/api/leads/check-duplicate") {
+    if (!canManageLeads(user) && user.role !== "Corretor") return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const normalized = normalizeManualLeadPayload(db, body);
+    if (normalized.error) return sendJson(res, 400, { error: normalized.error });
+    const duplicate = findManualLeadDuplicate(db, normalized.lead);
+    return sendJson(res, 200, {
+      duplicate: duplicate ? publicLead(duplicate, user) : null,
+      baseName: duplicate ? baseNameForLead(duplicate) : ""
+    });
+  }
+
+  if (method === "POST" && url.pathname === "/api/leads/resolve-manual-duplicate") {
+    if (!canManageLeads(user) && user.role !== "Corretor") return sendJson(res, 403, { error: "Sem permissão" });
+    if (!db.pipelineStatuses.length) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de adicionar leads" });
+    const body = await readBody(req);
+    const duplicate = db.leads.find((item) => item.id === String(body.duplicateId || ""));
+    if (!duplicate) return notFound(res);
+    if (duplicate.inPipeline) return sendJson(res, 400, { error: "Este lead já está no pipeline" });
+    const mode = String(body.mode || "");
+    if (!["overwrite", "rescue"].includes(mode)) return sendJson(res, 400, { error: "Escolha inválida" });
+    const normalized = normalizeManualLeadPayload(db, body.lead || {});
+    if (normalized.error) return sendJson(res, 400, { error: normalized.error });
+    const payload = normalized.lead;
+    const requestedStatus = String(body.lead?.status || "").trim();
+    const status = db.pipelineStatuses.includes(requestedStatus) ? requestedStatus : db.pipelineStatuses[0];
+    const assignedUser = user.role === "Corretor"
+      ? user
+      : body.lead?.assignedTo
+        ? db.users.find((item) => item.id === body.lead.assignedTo && item.role === "Corretor" && item.active)
+        : null;
+    if (body.lead?.assignedTo && user.role !== "Corretor" && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
+    if (mode === "overwrite") {
+      duplicate.name = payload.name;
+      duplicate.phone = payload.phone;
+      duplicate.email = payload.email;
+      duplicate.source = payload.source;
+      duplicate.desiredProject = payload.desiredProject;
+      duplicate.desiredUnit = payload.desiredUnit;
+      duplicate.unitValue = payload.unitValue;
+      duplicate.notes = payload.notes;
+      duplicate.impactedBySocial = payload.impactedBySocial;
+    }
+    duplicate.inPipeline = true;
+    duplicate.status = status;
+    duplicate.assignedTo = assignedUser?.id || null;
+    duplicate.assignedName = assignedUser?.name || "";
+    duplicate.order = Date.now();
+    duplicate.rescuedAt = new Date().toISOString();
+    duplicate.updatedAt = duplicate.rescuedAt;
+    duplicate.manualDuplicateResolution = mode;
+    audit(db, user, "RESOLVE_MANUAL_DUPLICATE_LEAD", { leadId: duplicate.id, mode, source: duplicate.source });
+    fupLeadEvent(db, user, duplicate, "RESCUE_BASE_LEAD", { source: duplicate.source, mode, assignedTo: duplicate.assignedName || "" });
+    await saveDb(db);
+    return sendJson(res, 200, { lead: publicLead(duplicate, user) });
+  }
+
   if (method === "POST" && url.pathname === "/api/leads") {
     if (!canManageLeads(user) && user.role !== "Corretor") return sendJson(res, 403, { error: "Sem permissão" });
     if (!db.pipelineStatuses.length) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de adicionar leads" });
     const body = await readBody(req);
-    const name = String(body.name || "").trim();
-    if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+    const normalized = normalizeManualLeadPayload(db, body);
+    if (normalized.error) return sendJson(res, 400, { error: normalized.error });
+    const payload = normalized.lead;
+    const duplicate = findManualLeadDuplicate(db, payload);
+    if (duplicate) {
+      return sendJson(res, 409, {
+        error: `Lead já existente na base ${baseNameForLead(duplicate)}`,
+        duplicate: publicLead(duplicate, user),
+        baseName: baseNameForLead(duplicate)
+      });
+    }
     const requestedStatus = String(body.status || "").trim();
     const status = db.pipelineStatuses.includes(requestedStatus) ? requestedStatus : db.pipelineStatuses[0];
     const assignedUser = user.role === "Corretor"
@@ -2049,20 +2187,22 @@ async function routeApi(req, res, db) {
     const lead = {
       id: `lead-${crypto.randomUUID()}`,
       externalId: `MANUAL-${Date.now()}`,
-      name,
-      phone: String(body.phone || "").trim(),
+      name: payload.name,
+      phone: payload.phone,
+      email: payload.email,
       assistant: "",
-      source: "MANUAL",
+      source: payload.source,
       status,
       inPipeline: true,
       favorite: false,
       favoritesByUser: {},
       assignedTo: assignedUser?.id || null,
       assignedName: assignedUser?.name || "",
-      desiredProject: String(body.desiredProject || "").trim(),
-      desiredUnit: String(body.desiredUnit || "").trim(),
-      unitValue: String(body.unitValue || "").trim(),
-      notes: String(body.notes || "").trim(),
+      desiredProject: payload.desiredProject,
+      desiredUnit: payload.desiredUnit,
+      unitValue: payload.unitValue,
+      notes: payload.notes,
+      impactedBySocial: payload.impactedBySocial,
       tags,
       comments: [],
       order: Date.now(),
@@ -2071,6 +2211,7 @@ async function routeApi(req, res, db) {
     };
     db.leads.push(lead);
     audit(db, user, "CREATE_LEAD", { leadId: lead.id, source: lead.source });
+    fupLeadEvent(db, user, lead, "CREATE_LEAD", { source: lead.source, assignedTo: lead.assignedName || "" });
     await saveDb(db);
     return sendJson(res, 201, { lead: publicLead(lead, user) });
   }

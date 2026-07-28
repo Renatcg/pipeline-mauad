@@ -236,6 +236,10 @@ textarea {
   text-transform: uppercase;
 }
 
+.required-mark {
+  color: var(--danger);
+}
+
 .error {
   color: var(--danger);
   margin-top: 12px;
@@ -857,6 +861,59 @@ tr[data-open-lead] {
   border-radius: 8px;
   background: white;
   box-shadow: 0 28px 80px rgba(15, 23, 42, 0.24);
+}
+
+.wide-modal {
+  width: min(1040px, 100%);
+}
+
+.modal-subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.duplicate-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.compare-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.compare-card h3 {
+  margin-bottom: 10px;
+  font-size: 16px;
+}
+
+.compare-row {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 8px;
+  padding: 7px 0;
+  border-top: 1px solid var(--line);
+}
+
+.compare-row span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.compare-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.modal-actions {
+  margin-top: 14px;
 }
 
 .color-swatch {
@@ -1911,6 +1968,7 @@ th {
   .metrics,
   .dashboard-grid,
   .lead-detail,
+  .duplicate-compare,
   .meta-grid,
   .settings-grid,
   .logs-grid,
