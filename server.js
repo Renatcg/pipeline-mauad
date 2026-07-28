@@ -385,6 +385,10 @@ function migrateDb(db) {
       lead.sourceStatus = lead.status;
       changed = true;
     }
+    if (!lead.inPipeline && lead.source === "Pipeline GDrive" && lead.rolledBackAt && lead.previousPipelineSource && lead.previousPipelineSource !== "Pipeline GDrive") {
+      lead.source = lead.previousPipelineSource;
+      changed = true;
+    }
     if (lead.inPipeline == null) {
       lead.inPipeline = lead.source !== "ODYSSEIA";
       changed = true;
@@ -1275,6 +1279,14 @@ function baseNameForLead(lead) {
   return lead.source || "Base";
 }
 
+function rememberLeadBaseOrigin(lead) {
+  const source = lead.source === "Pipeline GDrive" && lead.previousPipelineSource
+    ? lead.previousPipelineSource
+    : lead.source || "";
+  if (!lead.baseSourceBeforePipeline) lead.baseSourceBeforePipeline = source;
+  if (!lead.baseStatusBeforePipeline) lead.baseStatusBeforePipeline = lead.sourceStatus || lead.odysseiaStatus || lead.status || "";
+}
+
 function findManualLeadDuplicate(db, body) {
   const email = normalizeEmail(body.email);
   const phone = normalizePhoneDigits(body.phone);
@@ -2135,13 +2147,14 @@ async function routeApi(req, res, db) {
       duplicate.name = payload.name;
       duplicate.phone = payload.phone;
       duplicate.email = payload.email;
-      duplicate.source = payload.source;
       duplicate.desiredProject = payload.desiredProject;
       duplicate.desiredUnit = payload.desiredUnit;
       duplicate.unitValue = payload.unitValue;
       duplicate.notes = payload.notes;
       duplicate.impactedBySocial = payload.impactedBySocial;
     }
+    rememberLeadBaseOrigin(duplicate);
+    duplicate.manualLeadSource = payload.source;
     duplicate.inPipeline = true;
     duplicate.status = status;
     duplicate.assignedTo = assignedUser?.id || null;
@@ -2355,6 +2368,7 @@ async function routeApi(req, res, db) {
     if (!lead) return notFound(res);
     if (lead.inPipeline) return sendJson(res, 400, { error: "Este lead já está no pipeline" });
     if (!db.pipelineStatuses.length) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de resgatar leads" });
+    rememberLeadBaseOrigin(lead);
     lead.inPipeline = true;
     lead.status = db.pipelineStatuses[0];
     if (user.role === "Corretor") {
@@ -2376,12 +2390,13 @@ async function routeApi(req, res, db) {
     if (!lead) return notFound(res);
     if (!canManageLeads(user) && !(user.role === "Corretor" && lead.assignedTo === user.id)) return sendJson(res, 403, { error: "Sem permissão" });
     if (!lead.inPipeline) return sendJson(res, 400, { error: "Este lead já está apenas na base" });
-    const previousSource = lead.source || "";
-    const previousStatus = lead.status || lead.sourceStatus || lead.odysseiaStatus || "Base";
+    const pipelineSource = lead.source || "";
+    const previousSource = lead.baseSourceBeforePipeline || lead.previousPipelineSource || lead.source || "Pipeline GDrive";
+    const previousStatus = lead.baseStatusBeforePipeline || lead.sourceStatus || lead.odysseiaStatus || lead.status || "Base";
     lead.inPipeline = false;
-    lead.source = "Pipeline GDrive";
+    lead.source = previousSource;
     lead.sourceStatus = previousStatus;
-    lead.previousPipelineSource = previousSource;
+    lead.previousPipelineSource = pipelineSource;
     lead.status = previousStatus;
     lead.assignedTo = null;
     lead.assignedName = "";

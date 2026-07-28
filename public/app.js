@@ -2649,23 +2649,6 @@ function renderKnowledgeContent() {
   const thinkingMessage = state.knowledgeAiLoading
     ? '<div class="knowledge-chat-message is-assistant"><div class="knowledge-chat-bubble">Pensando na resposta...</div></div>'
     : "";
-  const chatHistory = (state.knowledgeChatSessions || []).map((session) => `
-    <button type="button" data-load-knowledge-chat="${escapeHtml(session.id)}">
-      <strong>${escapeHtml(session.title || "Conversa sem título")}</strong>
-      <span>${escapeHtml(session.updatedAt ? new Date(session.updatedAt).toLocaleString("pt-BR") : "")}</span>
-    </button>
-  `).join("");
-  const chatMenu = `
-    <div class="knowledge-chat-menu">
-      <button type="button" class="action-menu-button" data-knowledge-chat-menu title="Conversas" aria-label="Conversas">⋮</button>
-      <div class="settings-action-menu ${state.knowledgeChatMenuOpen ? "open" : ""}">
-        <button type="button" data-new-knowledge-chat>Nova conversa</button>
-        <div class="knowledge-chat-history">
-          ${chatHistory || '<span class="muted-text">Nenhuma conversa salva ainda.</span>'}
-        </div>
-      </div>
-    </div>
-  `;
   const articleModal = openArticle ? `
     <div class="modal-backdrop" data-knowledge-article-backdrop>
       <section class="modal-card knowledge-article-modal" role="dialog" aria-modal="true" aria-labelledby="knowledgeArticleTitle">
@@ -2697,9 +2680,7 @@ function renderKnowledgeContent() {
           <div class="knowledge-chat-head">
             <div>
               <h3>Assistente IA</h3>
-              <p class="muted-text">Exclusivo para dúvidas sobre uso do sistema.</p>
             </div>
-            ${chatMenu}
           </div>
           <div class="knowledge-chat-scroll" id="knowledgeChatScroll">
             ${emptyChat}
@@ -2758,38 +2739,6 @@ function bindKnowledgeControls(renderFn) {
     if (event.key !== "Enter" || event.altKey) return;
     event.preventDefault();
     document.querySelector("#knowledgeAiForm")?.requestSubmit();
-  });
-  document.querySelector("[data-knowledge-chat-menu]")?.addEventListener("click", (event) => {
-    event.stopPropagation();
-    state.knowledgeChatMenuOpen = !state.knowledgeChatMenuOpen;
-    rerender();
-  });
-  document.querySelector("[data-new-knowledge-chat]")?.addEventListener("click", () => {
-    if (knowledgeTypingTimer) clearTimeout(knowledgeTypingTimer);
-    knowledgeTypingTimer = null;
-    state.knowledgeActiveChatId = "";
-    state.knowledgeAiMessages = [];
-    state.knowledgeAiQuestion = "";
-    state.knowledgeChatMenuOpen = false;
-    rerender();
-  });
-  document.querySelectorAll("[data-load-knowledge-chat]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const session = (state.knowledgeChatSessions || []).find((item) => item.id === button.dataset.loadKnowledgeChat);
-      if (!session) return;
-      if (knowledgeTypingTimer) clearTimeout(knowledgeTypingTimer);
-      knowledgeTypingTimer = null;
-      state.knowledgeActiveChatId = session.id;
-      state.knowledgeAiMessages = (session.messages || []).map((message, index) => ({
-        id: `${session.id}-${index}`,
-        role: message.role,
-        text: message.text,
-        sources: message.sources || []
-      }));
-      state.knowledgeChatMenuOpen = false;
-      rerender();
-      scrollKnowledgeChatToBottom();
-    });
   });
   document.querySelector("#knowledgeAiForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
