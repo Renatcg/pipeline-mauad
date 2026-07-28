@@ -591,13 +591,14 @@ function renderViewHead(title, subtitle = "", options = {}) {
       <button id="pageFavoriteToggle" class="${state.favoritesOnly ? "primary" : ""}" title="Filtrar favoritos">★</button>
     </div>
   ` : "";
+  const actions = options.actions ? `<div class="view-head-actions">${options.actions}</div>` : "";
   return `
     <div class="view-head">
       <div class="view-title">
         <h1>${escapeHtml(title)}</h1>
         ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}
       </div>
-      ${filters}
+      ${filters || actions}
     </div>
   `;
 }
@@ -2470,13 +2471,6 @@ function renderKnowledgeContent() {
   ` : "";
   return `
     <section class="panel knowledge-panel">
-      <div class="panel-head">
-        <div>
-          <h2>Central de ajuda</h2>
-          <p class="muted-text">Tutoriais rápidos para usar o Pipeline Comercial no dia a dia.</p>
-        </div>
-        ${canCreateKnowledge() ? '<button class="primary" data-new-knowledge>Novo tutorial</button>' : ""}
-      </div>
       <div class="knowledge-layout">
         <div class="knowledge-main">
           <div class="knowledge-tools">
@@ -2653,7 +2647,9 @@ function bindKnowledgeControls(renderFn) {
 
 function renderKnowledgeView() {
   renderShell(`
-    ${renderViewHead("Ajuda", "Tutoriais e respostas rápidas sobre o uso do sistema")}
+    ${renderViewHead("Ajuda", "Tutoriais, busca e assistente de IA para usar o sistema", {
+      actions: canCreateKnowledge() ? '<button class="primary" data-new-knowledge>Novo tutorial</button>' : ""
+    })}
     ${renderKnowledgeContent()}
   `);
   bindKnowledgeControls(renderKnowledgeView);

@@ -436,6 +436,13 @@ textarea {
   margin-bottom: 18px;
 }
 
+.view-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .page-filters {
   width: auto;
   display: grid;
@@ -1453,11 +1460,12 @@ th {
 
 .knowledge-panel {
   display: grid;
-  gap: 14px;
+  gap: 12px;
+  padding: 14px;
 }
 
 .knowledge-tools {
-  max-width: 620px;
+  max-width: none;
 }
 
 .knowledge-categories {
@@ -1466,7 +1474,7 @@ th {
 
 .knowledge-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, calc(100vw - 250px - 22px - 22px - 378px - 14px)) 360px;
   gap: 14px;
   align-items: start;
 }
@@ -1608,15 +1616,15 @@ th {
 
 .knowledge-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
 }
 
 .knowledge-card {
   min-width: 0;
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 8px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: white;
@@ -1854,6 +1862,14 @@ th {
     flex-direction: column;
     height: auto;
     padding: 14px;
+  }
+
+  .view-head-actions {
+    justify-content: stretch;
+  }
+
+  .view-head-actions button {
+    width: 100%;
   }
 
   .content {
