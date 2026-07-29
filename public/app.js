@@ -3096,10 +3096,10 @@ function dateLabel(value) {
 }
 
 function levSettlementClass(status) {
-  const normalized = String(status || "").toLowerCase();
+  const normalized = levStatusKey(status);
   if (normalized.includes("paga")) return "status-active";
-  if (normalized.includes("nf")) return "chip chip-info";
-  if (normalized.includes("não contabilizada")) return "chip chip-warning";
+  if (normalized.includes("nf emitida") || normalized.includes("nf/provisionamento") || normalized.includes("provisionamento solicitado")) return "chip chip-info";
+  if (normalized.includes("nao contabilizada")) return "chip chip-warning";
   return "chip";
 }
 
@@ -3390,13 +3390,16 @@ function renderLevFinanceView() {
   const settlements = (finance.settlements || []).filter(matchesFinanceSearch);
   const isNfIssued = (item) => {
     const key = levStatusKey(item.status);
-    return key.includes("nf emitida") || Boolean(item.invoiceNumber || item.invoiceIssuedAt);
+    return key.includes("nf emitida")
+      || key.includes("nf/provisionamento")
+      || key.includes("provisionamento solicitado")
+      || Boolean(item.invoiceNumber || item.invoiceIssuedAt);
   };
   const isPaid = (item) => Boolean(item.paid || item.paidAt || levStatusKey(item.status) === "paga");
   const isIgnored = (item) => levStatusKey(item.status).includes("nao contabilizada") || levStatusKey(item.status).includes("ignorada");
   const pendingSales = allSales.filter((sale) => !isPaid(sale) && !isNfIssued(sale) && !isIgnored(sale));
   const nfSales = allSales.filter((sale) => !isPaid(sale) && isNfIssued(sale)).map((sale) => ({ ...sale, status: sale.status || "NF Emitida" }));
-  const nfSettlements = settlements.filter((settlement) => levStatusKey(settlement.status).includes("nf"));
+  const nfSettlements = settlements.filter(isNfIssued);
   const paidSettlements = settlements.filter((settlement) => levStatusKey(settlement.status) === "paga");
   const ignoredSettlements = settlements.filter(isIgnored);
   const nfUnits = new Set(nfSales.map((sale) => sale.unit));

@@ -1588,6 +1588,11 @@ function findLevFinanceRecord(db, rawKey) {
 
 function saleFromSettlement(db, settlement) {
   const commissionPercent = Number(db.levFinance.settings?.commissionPercent || 0);
+  const settlementStatus = levStatusKeyServer(settlement.status);
+  const hasInvoiceStatus = settlementStatus.includes("nf emitida")
+    || settlementStatus.includes("nf/provisionamento")
+    || settlementStatus.includes("provisionamento solicitado")
+    || Boolean(settlement.invoiceNumber || settlement.invoiceIssuedAt);
   const sale = {
     id: `lev-sale-${crypto.randomUUID()}`,
     sourceId: "",
@@ -1598,7 +1603,7 @@ function saleFromSettlement(db, settlement) {
     status: "Assinado",
     table: "",
     realEstate: String(settlement.realEstate || "").trim(),
-    eligible: levStatusKeyServer(settlement.status).includes("nf"),
+    eligible: hasInvoiceStatus,
     confirmedAt: "",
     confirmedBy: "",
     provisionDate: "",
