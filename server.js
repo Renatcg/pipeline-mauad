@@ -4057,6 +4057,7 @@ async function routeApi(req, res, db) {
       return sendJson(res, 400, { error: "Perfil inválido" });
     }
     if (Object.prototype.hasOwnProperty.call(body, "username")) {
+      if (user.role !== "Admin TI") return sendJson(res, 403, { error: "Apenas Admin TI pode alterar o e-mail de acesso" });
       const nextUsername = String(body.username || "").trim().toLowerCase();
       const isBuiltinAdmin = target.role === "Admin TI" && String(target.username || "").toLowerCase() === "admin";
       if (!isBuiltinAdmin && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextUsername)) {

@@ -166,6 +166,10 @@ function canAccessBases() {
   return state.user?.role === "Admin TI" || (state.accessibleBaseSources || []).length > 0;
 }
 
+function canEditUserEmail() {
+  return state.user?.role === "Admin TI";
+}
+
 function canAccessLevFinance() {
   return (state.user?.role === "Admin TI" && String(state.user?.username || "").toLowerCase() === "admin")
     || ["Gerente Financeiro", "Auxiliar Financeiro"].includes(state.user?.role);
@@ -2398,7 +2402,6 @@ function renderUserSettings() {
     const form = new FormData(event.currentTarget);
     const payload = {
       name: form.get("name"),
-      username: form.get("username"),
       role: form.get("role"),
       active: form.get("active") === "true",
       notifications: {
@@ -2408,6 +2411,7 @@ function renderUserSettings() {
       },
       operatesAsBroker: form.get("operatesAsBroker") === "on"
     };
+    if (form.has("username")) payload.username = form.get("username");
     if (isAssignableBrokerUser(editUser) && editUser.active && payload.active === false) {
       const reassignment = reassignPayloadForBrokerDeactivation(editUser);
       if (reassignment === null) return;
@@ -2437,6 +2441,7 @@ function renderUserSettings() {
 }
 
 function renderUserEditorModal(formUser, isEditing, roleOptions) {
+  const emailDisabled = isEditing && !canEditUserEmail();
   return `
     <div class="modal-backdrop" data-user-modal-backdrop>
       <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="userModalTitle">
@@ -2446,7 +2451,7 @@ function renderUserEditorModal(formUser, isEditing, roleOptions) {
         </div>
         <form id="userForm" class="form-grid">
           <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(formUser.name || "")}" required autofocus></div>
-          <div class="field"><label>E-mail de acesso</label><input name="username" type="email" value="${escapeHtml(formUser.username || "")}" required></div>
+          <div class="field"><label>E-mail de acesso</label><input name="username" type="email" value="${escapeHtml(formUser.username || "")}" required ${emailDisabled ? "disabled" : ""}>${emailDisabled ? "<small>Apenas Admin TI pode alterar o e-mail de acesso.</small>" : ""}</div>
           <div class="field"><label>Perfil</label><select name="role">${roleOptions.map((role) => `<option ${role === formUser.role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select></div>
           <div class="field"><label>Status</label><select name="active"><option value="true" ${formUser.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${formUser.active === false ? "selected" : ""}>Inativo</option></select></div>
           <div class="field full"><label>Operação comercial</label><label class="checkline settings-check"><input type="checkbox" name="operatesAsBroker" ${formUser.operatesAsBroker ? "checked" : ""}> Operar também como corretor</label><small>Quando ativo para Head ou Supervisor, o usuário pode receber leads como corretor sem perder a visão gerencial.</small></div>
