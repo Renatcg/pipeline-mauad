@@ -1,0 +1,101 @@
+# Pipeline Comercial Mauad - deploy em VPS com EasyPanel
+#
+# O banco continua sendo o Neon Cloud (externo). O codigo usa neon(DATABASE_URL)
+# em server.js:853, que e o driver HTTP da Neon e NAO conversa com um Postgres
+# comum. Trocar para um Postgres self-hosted exigiria um proxy compativel ou
+# alterar o driver no server.js.
+#
+# No EasyPanel: crie um servico do tipo "Compose", aponte para este repositorio
+# e configure as variaveis abaixo em Environment. Domínio e SSL sao configurados
+# na aba Domains apontando para a porta 4173.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pipeline-mauad:latest
+    restart: unless-stopped
+
+    # Encaminha sinais corretamente (redeploys rapidos, sem espera de timeout).
+    init: true
+
+    # OBRIGATORIO manter em 1, nao e preferencia.
+    # Toda requisicao faz read-modify-write do estado inteiro: loadDb()
+    # (server.js:4145) le o blob completo e saveDb() (server.js:892) reescreve
+    # tudo na linha unica app_state.id='main'. Duas replicas se sobrescrevem
+    # silenciosamente (last-write-wins) e leads somem sem erro nenhum.
+    deploy:
+      replicas: 1
+
+    environment:
+      # --- Rede: sem HOST=0.0.0.0 o container fica inalcancavel ---
+      HOST: 0.0.0.0
+      PORT: 4173
+
+      # --- Obrigatorias ---
+      # Connection string do Neon (a mesma usada na Vercel).
+      POSTGRES_URL: ${POSTGRES_URL}
+      # Chave HMAC dos cookies de sessao. Se ficar vazia, o server.js:728 cai
+      # num segredo publico conhecido. Copie o valor da Vercel para nao
+      # deslogar todos os usuarios na virada.
+      SESSION_SECRET: ${SESSION_SECRET}
+      # Base dos links dos e-mails de definicao de senha (server.js:1236).
+      APP_URL: ${APP_URL}
+
+      # --- Opcionais (defaults seguros no codigo quando ausentes) ---
+      # Semeia o usuario admin apenas no primeiro boot com banco vazio.
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      # Bearer token de /api/cron/meta-sync. Sem ele o endpoint responde 500.
+      CRON_SECRET: ${CRON_SECRET:-}
+
+      # E-mail transacional (Resend)
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+
+      # OpenAI - usado em /api/knowledge/ask e /api/lev-finance/extract
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+
+      # Evolution API (WhatsApp)
+      EVO_API_URL: ${EVO_API_URL:-}
+      EVO_API_KEY: ${EVO_API_KEY:-}
+      EVO_INSTANCE: ${EVO_INSTANCE:-}
+
+      # Meta / Facebook Lead Ads
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
+      META_APP_ID: ${META_APP_ID:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_PAGE_ACCESS_TOKEN: ${META_PAGE_ACCESS_TOKEN:-}
+      META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v25.0}
+      META_DEFAULT_ASSIGNED_TO: ${META_DEFAULT_ASSIGNED_TO:-}
+
+      # NAO definir VERCEL nem VERCEL_PROJECT_PRODUCTION_URL:
+      # VERCEL desvia o DATA_DIR para /tmp (server.js:8).
+
+    # Rede de seguranca do fallback em arquivo. Com POSTGRES_URL definida este
+    # volume fica praticamente ocioso, mas evita perda total de dados caso a
+    # variavel falte por engano.
+    volumes:
+      - pipeline-data:/app/data
+
+    # Exposto para o proxy interno do EasyPanel. Publique o dominio pela aba
+    # Domains apontando para a porta 4173 em vez de abrir a porta na VPS.
+    expose:
+      - "4173"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--spider", "http://127.0.0.1:4173/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pipeline-data:

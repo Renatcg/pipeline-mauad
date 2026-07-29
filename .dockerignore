@@ -1,0 +1,42 @@
+# Dados sensiveis - db.json e seed.json contem nomes e telefones reais de leads.
+# O Docker nao le o .gitignore, entao esta exclusao e obrigatoria por seguranca.
+data
+*.db
+*.sqlite
+
+# Dependencias - reinstaladas dentro da imagem pelo npm install
+node_modules
+npm-debug.log*
+
+# Segredos
+.env
+.env.*
+!.env.example
+
+# Especifico da Vercel - nao usado no container
+api
+vercel.json
+.vercelignore
+.vercel
+
+# Ferramentas locais de importacao (rodam da sua maquina, nao do container).
+# Os .py tem caminhos hardcoded de macOS e exigiriam Python na imagem.
+scripts
+start.command
+
+# Controle de versao e metadados
+.git
+.gitignore
+.github
+
+# Docs e infra - nao precisam estar na imagem
+README.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Lixo de sistema operacional e editores
+.DS_Store
+Thumbs.db
+.vscode
+.idea
