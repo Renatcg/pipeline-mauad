@@ -2744,6 +2744,19 @@ function publicLead(lead, user) {
   };
 }
 
+function publicLeadSummary(lead, user) {
+  const summary = publicLead(lead, user);
+  summary.comments = undefined;
+  if (summary.meta?.rawFields) {
+    summary.meta = {
+      ...summary.meta,
+      rawFields: undefined
+    };
+  }
+  summary.detailLoaded = false;
+  return summary;
+}
+
 async function readRawBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -3434,7 +3447,7 @@ async function routeApi(req, res, db) {
       pipelineStatuses: db.pipelineStatuses,
       tagDefinitions: db.tagDefinitions || [],
       users: db.users.map(publicUser),
-      leads: visibleLeads(db, user).map((lead) => publicLead(lead, user)),
+      leads: visibleLeads(db, user).map((lead) => publicLeadSummary(lead, user)),
       integrations: canManageSettings(user) ? db.integrations : null,
       baseAccess: canManagePipelineSettings(user) ? db.baseAccess : null,
       baseAccessSources: allBaseSources(db),
@@ -3819,6 +3832,12 @@ async function routeApi(req, res, db) {
   }
 
   const leadMatch = url.pathname.match(/^\/api\/leads\/([^/]+)$/);
+  if (leadMatch && method === "GET") {
+    const lead = visibleLeads(db, user).find((item) => item.id === leadMatch[1]);
+    if (!lead) return notFound(res);
+    return sendJson(res, 200, { lead: publicLead(lead, user) });
+  }
+
   if (leadMatch && method === "PATCH") {
     const lead = db.leads.find((item) => item.id === leadMatch[1]);
     if (!lead) return notFound(res);

@@ -1074,6 +1074,17 @@ async function patchLead(leadId, payload) {
   return result.lead;
 }
 
+async function fetchLeadDetail(leadId) {
+  const result = await api(`/api/leads/${encodeURIComponent(leadId)}`);
+  const index = state.leads.findIndex((item) => item.id === leadId);
+  if (index >= 0) {
+    state.leads[index] = result.lead;
+  } else {
+    state.leads.push(result.lead);
+  }
+  return result.lead;
+}
+
 function refreshFavoriteButtons(lead) {
   document.querySelectorAll("[data-favorite]").forEach((button) => {
     if (button.dataset.favorite !== lead.id) return;
@@ -1665,10 +1676,32 @@ function renderLeadDetail() {
   const lead = state.leads.find((item) => item.id === state.leadId);
   if (!lead) {
     renderShell(`
-      ${renderViewHead("Lead não encontrado", "Este registro não está disponível para o seu perfil")}
-      <button data-back-lead>Voltar</button>
+      ${renderViewHead("Carregando lead", "Buscando os detalhes do registro")}
+      <div class="panel"><div class="empty">Carregando detalhes...</div></div>
     `);
-    document.querySelector("[data-back-lead]")?.addEventListener("click", () => routeTo(state.previousView || "kanban"));
+    fetchLeadDetail(state.leadId)
+      .then(() => renderLeadDetail())
+      .catch(() => {
+        renderShell(`
+          ${renderViewHead("Lead não encontrado", "Este registro não está disponível para o seu perfil")}
+          <button data-back-lead>Voltar</button>
+        `);
+        document.querySelector("[data-back-lead]")?.addEventListener("click", () => routeTo(state.previousView || "kanban"));
+      });
+    return;
+  }
+
+  if (lead.detailLoaded === false) {
+    renderShell(`
+      ${renderViewHead(lead.name || "Carregando lead", "Buscando comentários e respostas do formulário")}
+      <div class="panel"><div class="empty">Carregando detalhes...</div></div>
+    `);
+    fetchLeadDetail(lead.id)
+      .then(() => renderLeadDetail())
+      .catch((error) => {
+        alert(error.message);
+        routeTo(state.previousView || "kanban");
+      });
     return;
   }
 
