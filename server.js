@@ -2975,9 +2975,13 @@ async function subscribeMetaLeadgenPage(pageId) {
   const id = String(pageId || "").trim();
   if (!id) throw new Error("ID da Página obrigatório");
   if (!META_PAGE_ACCESS_TOKEN) throw new Error("META_PAGE_ACCESS_TOKEN ausente");
-  const result = await metaGraphPost(`${id}/subscribed_apps`, { subscribed_fields: "leadgen" });
-  const subscribed = await metaGraphGet(`${id}/subscribed_apps`, { fields: "id,name,subscribed_fields" });
-  return { result, subscribed };
+  const page = await metaGraphGet(`${id}`, { fields: "id,name,access_token" });
+  if (!page.access_token) {
+    throw new Error("Não foi possível obter o token de acesso da Página. Confirme se o System User tem controle da Página e permissão pages_manage_metadata.");
+  }
+  const result = await metaGraphPost(`${id}/subscribed_apps`, { subscribed_fields: "leadgen" }, page.access_token);
+  const subscribed = await metaGraphGet(`${id}/subscribed_apps`, { fields: "id,name,subscribed_fields" }, page.access_token);
+  return { result, subscribed, page: { id: page.id, name: page.name || "" } };
 }
 
 async function diagnoseMeta(db) {
