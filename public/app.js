@@ -43,6 +43,8 @@ const state = {
   knowledgeOpenArticle: null,
   metaFormsTab: "active",
   levFinanceSearch: "",
+  levFinanceTab: "pending",
+  levFinanceExtraction: null,
   mobileNavOpen: false,
   lastAccessLogKey: "",
   creatingLead: false,
@@ -3229,37 +3231,85 @@ function renderBackupSettings() {
   });
 }
 
+function levStatusKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function levFinanceRow(item, options = {}) {
+  const canConfirm = Boolean(options.canConfirm && item.id);
+  return `
+    <tr>
+      <td>${escapeHtml(item.unit)}</td>
+      <td>${escapeHtml(item.client)}</td>
+      <td>${escapeHtml(item.signedAt)}</td>
+      <td>${money(item.contractValue)}</td>
+      <td>${item.commissionValue ? money(item.commissionValue) : "-"}</td>
+      <td>${escapeHtml(item.realEstate)}</td>
+      <td><span class="${levSettlementClass(item.status)}">${escapeHtml(item.status || options.statusLabel || "")}</span></td>
+      <td>${canConfirm ? `<button class="primary compact-button" data-confirm-lev-sale="${escapeHtml(item.id)}">Confirmar</button>` : "-"}</td>
+    </tr>
+  `;
+}
+
+function renderLevExtractionModal() {
+  const extraction = state.levFinanceExtraction;
+  if (!extraction) return "";
+  const validRows = (extraction.preview || []).map((sale) => levFinanceRow({ ...sale, status: "Prévia" })).join("");
+  const invalidRows = (extraction.invalid || []).map((sale) => `
+    <tr>
+      <td>${escapeHtml(sale.unit || "-")}</td>
+      <td>${escapeHtml(sale.client || "-")}</td>
+      <td>${escapeHtml(sale.signedAt || "-")}</td>
+      <td>${sale.contractValue ? money(sale.contractValue) : "-"}</td>
+      <td>${escapeHtml((sale.reasons || []).join(", "))}</td>
+    </tr>
+  `).join("");
+  return `
+    <div class="modal-backdrop" data-lev-extraction-backdrop>
+      <section class="modal-card wide-modal lev-preview-modal" role="dialog" aria-modal="true" aria-labelledby="levPreviewTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="levPreviewTitle">Conferir vendas extraídas</h2>
+            <p class="modal-subtitle">${escapeHtml(extraction.summary?.valid || 0)} válida(s), ${escapeHtml(extraction.summary?.invalid || 0)} inválida(s). Confira antes de importar.</p>
+          </div>
+          <button class="ghost-button" type="button" data-close-lev-extraction>Fechar</button>
+        </div>
+        <div class="table-wrap"><table class="access-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Comissão</th><th>Imobiliária</th><th>Status</th><th>Ação</th></tr></thead><tbody>${validRows || '<tr><td colspan="8" class="empty">Nenhuma venda válida para importar.</td></tr>'}</tbody></table></div>
+        ${invalidRows ? `<h3 class="section-subtitle">Linhas ignoradas</h3><div class="table-wrap"><table class="access-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Motivo</th></tr></thead><tbody>${invalidRows}</tbody></table></div>` : ""}
+        <div class="row-actions modal-actions">
+          <button class="secondary" type="button" data-close-lev-extraction>Cancelar</button>
+          <button class="primary" type="button" id="importLevPreviewButton" ${validRows ? "" : "disabled"}>Importar vendas válidas</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function renderLevFinanceView() {
   const finance = state.levFinance || { settings: {}, sales: [], receipts: [], paidUnits: [], settlements: [] };
   const term = state.levFinanceSearch.trim().toLocaleLowerCase("pt-BR");
   const matchesFinanceSearch = (item) => !term || levFinanceSearchText(item).includes(term);
-  const sales = (finance.sales || []).filter(matchesFinanceSearch);
-  const pendingSales = sales.filter((sale) => !sale.paid);
-  const totalContract = pendingSales.reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0);
-  const totalCommission = pendingSales.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0);
-  const settlementRows = (finance.settlements || []).filter(matchesFinanceSearch).map((settlement) => `
-    <tr>
-      <td>${escapeHtml(settlement.unit)}</td>
-      <td>${escapeHtml(settlement.client)}</td>
-      <td>${escapeHtml(settlement.signedAt)}</td>
-      <td>${money(settlement.contractValue)}</td>
-      <td>${settlement.commissionValue ? money(settlement.commissionValue) : "-"}</td>
-      <td>${escapeHtml(settlement.realEstate)}</td>
-      <td><span class="${levSettlementClass(settlement.status)}">${escapeHtml(settlement.status)}</span></td>
-    </tr>
-  `).join("");
-  const rows = pendingSales.map((sale) => `
-    <tr>
-      <td>${escapeHtml(sale.unit)}</td>
-      <td>${escapeHtml(sale.client)}</td>
-      <td>${escapeHtml(sale.signedAt)}</td>
-      <td>${money(sale.contractValue)}</td>
-      <td>${escapeHtml(sale.realEstate)}</td>
-      <td>${money(sale.commissionValue)}</td>
-      <td>${sale.eligible ? `<span class="status-active">Confirmada</span><br><small>${escapeHtml(dateLabel(sale.provisionDate))}</small>` : '<span class="chip">Pendente</span>'}</td>
-      <td>${sale.eligible ? '<span class="chip">E-mail enviado</span>' : `<button class="primary compact-button" data-confirm-lev-sale="${escapeHtml(sale.id)}">Confirmar</button>`}</td>
-    </tr>
-  `).join("");
+  const allSales = (finance.sales || []).filter(matchesFinanceSearch);
+  const pendingSales = allSales.filter((sale) => !sale.paid && !sale.eligible);
+  const nfSales = allSales.filter((sale) => !sale.paid && sale.eligible).map((sale) => ({ ...sale, status: "NF/provisionamento solicitado" }));
+  const settlements = (finance.settlements || []).filter(matchesFinanceSearch);
+  const nfSettlements = settlements.filter((settlement) => levStatusKey(settlement.status).includes("nf"));
+  const paidSettlements = settlements.filter((settlement) => levStatusKey(settlement.status) === "paga");
+  const ignoredSettlements = settlements.filter((settlement) => levStatusKey(settlement.status).includes("nao contabilizada") || levStatusKey(settlement.status).includes("ignorada"));
+  const nfUnits = new Set(nfSales.map((sale) => sale.unit));
+  const currentRowsByTab = {
+    pending: pendingSales,
+    nf: [...nfSales, ...nfSettlements.filter((settlement) => !nfUnits.has(settlement.unit))],
+    paid: paidSettlements,
+    ignored: ignoredSettlements
+  };
+  const activeRows = currentRowsByTab[state.levFinanceTab] || currentRowsByTab.pending;
+  const pendingContract = pendingSales.reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0);
+  const pendingCommission = pendingSales.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0);
+  const tableRows = activeRows.map((item) => levFinanceRow(item, { canConfirm: state.levFinanceTab === "pending" })).join("");
   const receiptRows = (finance.receipts || []).filter(matchesFinanceSearch).slice(0, 80).map((receipt) => `
     <tr>
       <td>${escapeHtml(receipt.unit)}</td>
@@ -3268,29 +3318,34 @@ function renderLevFinanceView() {
       <td>${escapeHtml(receipt.note || "")}</td>
     </tr>
   `).join("");
+  const tabs = [
+    ["pending", "Pendentes", pendingSales.length],
+    ["nf", "NF Emitida", currentRowsByTab.nf.length],
+    ["paid", "Pagas", paidSettlements.length],
+    ["ignored", "Ignoradas", ignoredSettlements.length]
+  ].map(([key, label, count]) => `<button class="${state.levFinanceTab === key ? "primary" : ""}" type="button" data-lev-finance-tab="${key}">${label} <span>${count}</span></button>`).join("");
+
   renderShell(`
-    ${renderViewHead("Financeiro Lev", "Controle de vendas, recebimentos e comissão da Lev")}
+    ${renderViewHead("Financeiro Lev", "Controle de vendas, recebimentos e comissão da Lev", {
+      actions: `
+        <input id="levImageInput" type="file" accept="image/*" hidden>
+        <button class="primary" type="button" id="submitLevImageButton">Submeter imagem</button>
+      `
+    })}
     <section class="panel compact-panel">
       <input id="levFinanceSearch" class="settings-search" placeholder="Pesquisar por unidade, cliente, imobiliária, status ou observação" value="${escapeHtml(state.levFinanceSearch)}">
     </section>
     <section class="metrics">
-      <div class="metric"><span>Vendas pendentes</span><strong>${pendingSales.length}</strong></div>
-      <div class="metric"><span>Valor contratos</span><strong>${money(totalContract)}</strong></div>
-      <div class="metric"><span>Comissão estimada</span><strong>${money(totalCommission)}</strong></div>
+      <div class="metric"><span>Pendentes</span><strong>${pendingSales.length}</strong></div>
+      <div class="metric"><span>Valor pendente</span><strong>${money(pendingContract)}</strong></div>
+      <div class="metric"><span>Comissão estimada</span><strong>${money(pendingCommission)}</strong></div>
       <div class="metric"><span>% comissão</span><strong>${escapeHtml(finance.settings?.commissionPercent || 0)}%</strong></div>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>Acerto Lev / histórico de vendas</h2></div>
-      <div class="table-wrap"><table class="access-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Comissão Lev</th><th>Imobiliária</th><th>Status</th></tr></thead><tbody>${settlementRows || '<tr><td colspan="7" class="empty">Nenhuma venda no histórico.</td></tr>'}</tbody></table></div>
+      <div class="tabs lev-finance-tabs">${tabs}</div>
+      <div class="table-wrap"><table class="access-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Comissão Lev</th><th>Imobiliária</th><th>Status</th><th>Ação</th></tr></thead><tbody>${tableRows || '<tr><td colspan="8" class="empty">Nenhum registro nesta aba.</td></tr>'}</tbody></table></div>
     </section>
     <section class="dashboard-grid finance-grid">
-      <section class="panel">
-        <div class="panel-head"><h2>Submissão da imagem</h2></div>
-        <form id="levImageForm" class="form-grid">
-          <div class="field full"><label>Imagem da planilha</label><input type="file" name="image" accept="image/*" required><small>O sistema extrai registros com assinatura preenchida e ignora unidades já pagas.</small></div>
-          <div class="field full"><button class="primary" type="submit">Extrair vendas da imagem</button></div>
-        </form>
-      </section>
       <section class="panel">
         <div class="panel-head"><h2>Recebimentos / conciliação</h2></div>
         <form id="levReceiptForm" class="form-grid">
@@ -3301,15 +3356,12 @@ function renderLevFinanceView() {
           <div class="field full"><button class="primary" type="submit">Registrar recebimento</button></div>
         </form>
       </section>
+      <section class="panel">
+        <div class="panel-head"><h2>Histórico de recebimentos</h2></div>
+        <div class="table-wrap"><table><thead><tr><th>Unidade</th><th>Valor</th><th>Recebido em</th><th>Observação</th></tr></thead><tbody>${receiptRows || '<tr><td colspan="4" class="empty">Nenhum recebimento registrado.</td></tr>'}</tbody></table></div>
+      </section>
     </section>
-    <section class="panel">
-      <div class="panel-head"><h2>Vendas extraídas pendentes</h2></div>
-      <div class="table-wrap"><table class="access-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Imobiliária</th><th>Comissão</th><th>Status</th><th>Ação</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhuma venda pendente.</td></tr>'}</tbody></table></div>
-    </section>
-    <section class="panel">
-      <div class="panel-head"><h2>Histórico de recebimentos</h2></div>
-      <div class="table-wrap"><table><thead><tr><th>Unidade</th><th>Valor</th><th>Recebido em</th><th>Observação</th></tr></thead><tbody>${receiptRows || '<tr><td colspan="4" class="empty">Nenhum recebimento registrado.</td></tr>'}</tbody></table></div>
-    </section>
+    ${renderLevExtractionModal()}
   `);
   bindLevFinanceControls();
 }
@@ -3324,6 +3376,12 @@ function readFileAsDataUrl(file) {
 }
 
 function bindLevFinanceControls() {
+  document.querySelectorAll("[data-lev-finance-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.levFinanceTab = button.dataset.levFinanceTab || "pending";
+      renderLevFinanceView();
+    });
+  });
   const financeSearch = document.querySelector("#levFinanceSearch");
   financeSearch?.addEventListener("input", (event) => {
     state.levFinanceSearch = event.target.value;
@@ -3340,17 +3398,44 @@ function bindLevFinanceControls() {
       });
     }, 250);
   });
-  document.querySelector("#levImageForm")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const button = event.currentTarget.querySelector("button[type='submit']");
-    const file = event.currentTarget.querySelector("input[type='file']")?.files?.[0];
+  document.querySelector("#submitLevImageButton")?.addEventListener("click", () => {
+    document.querySelector("#levImageInput")?.click();
+  });
+  document.querySelector("#levImageInput")?.addEventListener("change", async (event) => {
+    const button = document.querySelector("#submitLevImageButton");
+    const file = event.currentTarget.files?.[0];
     if (!file) return;
     try {
       setButtonBusy(button, true, "Extraindo...");
       const imageDataUrl = await readFileAsDataUrl(file);
       const data = await api("/api/lev-finance/extract", { method: "POST", body: JSON.stringify({ imageDataUrl }) });
+      state.levFinanceExtraction = data;
+      renderLevFinanceView();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    } finally {
+      event.currentTarget.value = "";
+    }
+  });
+  document.querySelectorAll("[data-close-lev-extraction], [data-lev-extraction-backdrop]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (event.target !== element && element.hasAttribute("data-lev-extraction-backdrop")) return;
+      state.levFinanceExtraction = null;
+      renderLevFinanceView();
+    });
+  });
+  document.querySelector("#importLevPreviewButton")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const sales = state.levFinanceExtraction?.preview || [];
+    if (!sales.length) return;
+    try {
+      setButtonBusy(button, true, "Importando...");
+      const data = await api("/api/lev-finance/import-extracted", { method: "POST", body: JSON.stringify({ sales }) });
       state.levFinance = data.levFinance;
-      alert(`Extração concluída: ${data.summary.created} nova(s), ${data.summary.duplicates} já existente(s), ${data.summary.paidSkipped} já paga(s), ${data.summary.invalidSkipped || 0} inválida(s).`);
+      state.levFinanceExtraction = null;
+      state.levFinanceTab = "pending";
+      alert(`Importação concluída: ${data.summary.created} nova(s), ${data.summary.duplicates} já existente(s), ${data.summary.paidSkipped} já paga(s), ${data.summary.invalidSkipped || 0} inválida(s).`);
       renderLevFinanceView();
     } catch (error) {
       setButtonBusy(button, false);

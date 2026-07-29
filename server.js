@@ -1050,6 +1050,9 @@ function migrateDb(db) {
     && settlements.findIndex((item) => item.unit === settlement.unit) === index
   ));
   if (db.levFinance.settlements.length !== previousLevSettlementsLength) changed = true;
+  const previousLevSalesAfterSettlementCleanup = db.levFinance.sales.length;
+  db.levFinance.sales = db.levFinance.sales.filter((sale) => !isLikelyScrambledLevSale(sale, db));
+  if (db.levFinance.sales.length !== previousLevSalesAfterSettlementCleanup) changed = true;
   db.levFinance.paidUnits = [...new Set([
     ...db.levFinance.paidUnits.map((unit) => String(unit || "").trim()).filter(Boolean),
     ...db.levFinance.receipts.map((receipt) => receipt.unit),
@@ -1346,7 +1349,16 @@ function isLikelyLevUnit(value) {
   const unit = normalizeLevUnit(value);
   if (!unit) return false;
   if (/[,.]/.test(unit) || unit.includes("R$")) return false;
-  return /^[A-Z]{2,}[A-Z0-9]{4,}$/.test(unit);
+  return /^(GCR|RGL|RES)[A-Z0-9]{4,}$/.test(unit);
+}
+
+function normalizeComparableText(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ");
 }
 
 function findLikelyLevUnit(raw = {}) {
@@ -1395,7 +1407,7 @@ function publicLevFinance(db) {
   return {
     settings: finance.settings || {},
     sales: (finance.sales || [])
-      .filter((sale) => isLikelyLevUnit(sale.unit))
+      .filter((sale) => isLikelyLevUnit(sale.unit) && !isLikelyScrambledLevSale(sale, db))
       .map((sale) => ({
         ...sale,
         unit: normalizeLevUnit(sale.unit),
@@ -1434,6 +1446,88 @@ function normalizeLevSale(raw, settings = {}) {
     commissionValue: contractValue * (commissionPercent / 100),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
+  };
+}
+
+function levSettlementIsPaidOrIgnored(settlement) {
+  const status = normalizeComparableText(settlement.status);
+  return status.includes("paga") || status.includes("nao contabilizada");
+}
+
+function sameMoneyApprox(a, b) {
+  return Math.abs(Number(a || 0) - Number(b || 0)) <= 100;
+}
+
+function isLikelyScrambledLevSale(sale, db) {
+  if (sale.eligible) return false;
+  const saleClient = normalizeComparableText(sale.client);
+  if (!saleClient) return false;
+  return (db.levFinance?.settlements || []).some((settlement) => (
+    levSettlementIsPaidOrIgnored(settlement)
+    && normalizeComparableText(settlement.client) === saleClient
+    && normalizeLevUnit(settlement.unit) !== normalizeLevUnit(sale.unit)
+    && sameMoneyApprox(settlement.contractValue, sale.contractValue)
+  ));
+}
+
+function levSaleValidation(db, sale) {
+  const reasons = [];
+  if (!sale.unit || !isLikelyLevUnit(sale.unit)) reasons.push("Unidade inválida");
+  if (!sale.sourceId || !/^\d+$/.test(String(sale.sourceId))) reasons.push("ID da linha ausente");
+  if (!sale.client) reasons.push("Cliente ausente");
+  if (!sale.signedAt) reasons.push("Assinatura ausente");
+  if (!String(sale.status || "").toLowerCase().includes("assinado")) reasons.push("Status não assinado");
+  if (!sale.contractValue) reasons.push("Valor do contrato ausente");
+  if (isLikelyScrambledLevSale(sale, db)) reasons.push("Possível linha embaralhada com venda já paga");
+  return reasons;
+}
+
+function levFinanceSettledUnits(db) {
+  return new Set([
+    ...(db.levFinance.paidUnits || []).map(normalizeLevUnit),
+    ...(db.levFinance.settlements || [])
+      .filter(levSettlementIsPaidOrIgnored)
+      .map((settlement) => normalizeLevUnit(settlement.unit))
+  ]);
+}
+
+function buildLevExtractionPreview(db, rawSales = []) {
+  const settled = levFinanceSettledUnits(db);
+  const seen = new Set();
+  const preview = [];
+  const invalid = [];
+  for (const raw of rawSales) {
+    const sale = normalizeLevSale(raw, db.levFinance.settings);
+    const reasons = levSaleValidation(db, sale);
+    if (!reasons.length && settled.has(sale.unit)) reasons.push("Venda já paga/ignorada");
+    if (!reasons.length && db.levFinance.sales.some((item) => item.unit === sale.unit)) reasons.push("Venda já existente");
+    if (!reasons.length && seen.has(sale.unit)) reasons.push("Unidade duplicada na extração");
+    seen.add(sale.unit);
+    const row = {
+      sourceId: sale.sourceId,
+      unit: sale.unit,
+      client: sale.client,
+      signedAt: sale.signedAt,
+      contractValue: sale.contractValue,
+      status: sale.status,
+      table: sale.table,
+      realEstate: sale.realEstate,
+      commissionPercent: sale.commissionPercent,
+      commissionValue: sale.commissionValue,
+      valid: !reasons.length,
+      reasons
+    };
+    if (row.valid) preview.push(row);
+    else invalid.push(row);
+  }
+  return {
+    preview,
+    invalid,
+    summary: {
+      extracted: rawSales.length,
+      valid: preview.length,
+      invalid: invalid.length
+    }
   };
 }
 
@@ -1481,7 +1575,9 @@ async function extractLevSalesFromImage(imageDataUrl) {
       instructions: [
         "Extraia de uma imagem de planilha apenas registros de vendas imobiliárias com Status Assinado e DtHr Assinatura preenchida.",
         "Responda somente JSON válido no formato {\"sales\":[...]} sem markdown.",
-        "A unidade deve vir da coluna Produto, não da coluna Valor contrato. Unidades sempre começam com letras, como GCR060107, RGLQDLF19 ou RES030307.",
+        "Nunca combine dados de linhas diferentes. Cada item deve representar uma única linha horizontal da planilha.",
+        "Use o ID da primeira coluna da mesma linha como sourceId. Se não conseguir ler o ID da linha, não inclua a linha.",
+        "A unidade deve vir da coluna Produto, não da coluna Valor contrato. Unidades válidas começam com GCR, RGL ou RES, como GCR060107, RGLQDLF19 ou RES030307.",
         "Nunca preencha unit com valores monetários como 450.000,00. Se houver dúvida, preserve o código da coluna Produto em unit.",
         "Cada item deve ter: sourceId, unit, contractValue, signedAt, client, status, table, realEstate.",
         "Preserve datas e valores como aparecem na imagem quando possível. Ignore linhas sem assinatura preenchida."
@@ -3135,20 +3231,25 @@ async function routeApi(req, res, db) {
       await saveDb(db);
       return sendJson(res, 400, { error: error.message });
     }
-    const settled = new Set([
-      ...(db.levFinance.paidUnits || []).map(normalizeLevUnit),
-      ...(db.levFinance.settlements || [])
-        .filter((settlement) => settlement.status === "Paga" || settlement.status === "Não contabilizada antes de jan/2026")
-        .map((settlement) => normalizeLevUnit(settlement.unit))
-    ]);
+    const extraction = buildLevExtractionPreview(db, rawSales);
+    audit(db, user, "PREVIEW_LEV_SALES_IMAGE", extraction.summary);
+    await saveDb(db);
+    return sendJson(res, 200, extraction);
+  }
+
+  if (method === "POST" && url.pathname === "/api/lev-finance/import-extracted") {
+    if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const rawSales = Array.isArray(body.sales) ? body.sales : [];
+    if (!rawSales.length) return sendJson(res, 400, { error: "Nenhuma venda válida para importar" });
+    const settled = levFinanceSettledUnits(db);
     let created = 0;
     let duplicates = 0;
     let paidSkipped = 0;
     let invalidSkipped = 0;
     for (const raw of rawSales) {
       const sale = normalizeLevSale(raw, db.levFinance.settings);
-      if (!sale.unit || !sale.signedAt || !String(sale.status || "").toLowerCase().includes("assinado")) continue;
-      if (!isLikelyLevUnit(sale.unit)) {
+      if (levSaleValidation(db, sale).length) {
         invalidSkipped += 1;
         continue;
       }
