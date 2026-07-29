@@ -2554,6 +2554,14 @@ function renderIntegrationSettings() {
         ${renderMetaDiagnostics()}
       </section>
       <section class="integration-help">
+        <h2>Assinar webhook da Página</h2>
+        <p class="muted">Use quando o app Mauad Pipeline não aparecer no teste de leads de uma Página. Informe o ID da Página, não o ID do formulário.</p>
+        <form id="metaPageSubscribeForm" class="form-grid compact-form">
+          <div class="field"><label>ID da Página Meta</label><input name="pageId" required placeholder="Ex.: 1729847061689789"></div>
+          <div class="field"><label>&nbsp;</label><button class="primary" type="submit">Assinar leadgen</button></div>
+        </form>
+      </section>
+      <section class="integration-help">
         <h2>Importar lead Meta por ID</h2>
         <form id="metaLeadImportForm" class="form-grid compact-form">
           <div class="field"><label>Leadgen ID</label><input name="leadgenId" required placeholder="Cole o leadgen_id do teste"></div>
@@ -2681,6 +2689,30 @@ function renderIntegrationSettings() {
         alert(error.message);
       }
     });
+  });
+  document.querySelector("#metaPageSubscribeForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const pageId = String(form.get("pageId") || "").trim();
+    const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+    if (!pageId) return;
+    try {
+      setButtonBusy(submitButton, true, "Assinando...");
+      const data = await api("/api/integrations/meta/subscribe-page", {
+        method: "POST",
+        body: JSON.stringify({ pageId })
+      });
+      const app = (data.subscribed?.data || []).find((item) => String(item.subscribed_fields || "").includes("leadgen"));
+      state.settingsNotice = app
+        ? `Página ${pageId} assinada para leadgen. Valide no Ads Leads Test.`
+        : `Página ${pageId} assinada, mas confirme a lista de apps no diagnóstico.`;
+      await loadState();
+      state.settingsTab = "integrations";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(submitButton, false);
+      alert(error.message);
+    }
   });
   document.querySelector("#metaLeadImportForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();

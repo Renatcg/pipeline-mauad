@@ -2958,6 +2958,28 @@ async function metaGraphGet(pathname, params = {}, token = META_PAGE_ACCESS_TOKE
   return data;
 }
 
+async function metaGraphPost(pathname, params = {}, token = META_PAGE_ACCESS_TOKEN) {
+  const url = new URL(`https://graph.facebook.com/${META_GRAPH_VERSION}/${pathname.replace(/^\/+/, "")}`);
+  url.searchParams.set("access_token", token);
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null && value !== "") body.set(key, value);
+  }
+  const response = await fetch(url, { method: "POST", body });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error?.message || "Falha na Graph API");
+  return data;
+}
+
+async function subscribeMetaLeadgenPage(pageId) {
+  const id = String(pageId || "").trim();
+  if (!id) throw new Error("ID da Página obrigatório");
+  if (!META_PAGE_ACCESS_TOKEN) throw new Error("META_PAGE_ACCESS_TOKEN ausente");
+  const result = await metaGraphPost(`${id}/subscribed_apps`, { subscribed_fields: "leadgen" });
+  const subscribed = await metaGraphGet(`${id}/subscribed_apps`, { fields: "id,name,subscribed_fields" });
+  return { result, subscribed };
+}
+
 async function diagnoseMeta(db) {
   const checks = [];
   const add = (name, status, detail = "") => checks.push({ name, status, detail });
@@ -4138,6 +4160,23 @@ async function routeApi(req, res, db) {
       return sendJson(res, 200, { ok: true, ...result });
     } catch (error) {
       integrationEvent(db, "META", "SYNC_MANUAL_ERROR", { error: error.message });
+      await saveDb(db);
+      return sendJson(res, 400, { error: error.message });
+    }
+  }
+
+  if (url.pathname === "/api/integrations/meta/subscribe-page" && method === "POST") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const pageId = String(body.pageId || "").trim();
+    try {
+      const result = await subscribeMetaLeadgenPage(pageId);
+      integrationEvent(db, "META", "PAGE_SUBSCRIBED", { pageId, fields: "leadgen" });
+      audit(db, user, "SUBSCRIBE_META_PAGE", { pageId });
+      await saveDb(db);
+      return sendJson(res, 200, { ok: true, ...result });
+    } catch (error) {
+      integrationEvent(db, "META", "PAGE_SUBSCRIBE_ERROR", { pageId, error: error.message });
       await saveDb(db);
       return sendJson(res, 400, { error: error.message });
     }
