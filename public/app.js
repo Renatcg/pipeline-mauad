@@ -691,12 +691,18 @@ function renderMultiFilter(id, label, selected, options) {
     <details class="multi-filter" id="${escapeHtml(id)}">
       <summary>${escapeHtml(label)} <strong>${escapeHtml(filterSummary(selected, "Todos"))}</strong></summary>
       <div class="multi-filter-menu">
-        ${options.map((option) => `
-          <label>
-            <input type="checkbox" data-multi-filter="${escapeHtml(id)}" value="${escapeHtml(option.value)}" ${selected.includes(option.value) ? "checked" : ""}>
-            <span>${escapeHtml(option.label)}</span>
-          </label>
-        `).join("")}
+        <div class="multi-filter-options">
+          ${options.map((option) => `
+            <label>
+              <input type="checkbox" data-multi-filter-option="${escapeHtml(id)}" value="${escapeHtml(option.value)}" ${selected.includes(option.value) ? "checked" : ""}>
+              <span>${escapeHtml(option.label)}</span>
+            </label>
+          `).join("")}
+        </div>
+        <div class="multi-filter-actions">
+          <button type="button" data-multi-filter-clear="${escapeHtml(id)}">Limpar</button>
+          <button type="button" class="primary tiny" data-multi-filter-apply="${escapeHtml(id)}">Aplicar</button>
+        </div>
       </div>
     </details>
   `;
@@ -735,13 +741,6 @@ function bindPageFilters() {
       });
     }, 320);
   };
-  const scheduleFilterRender = () => {
-    if (pageSearchRenderTimer) clearTimeout(pageSearchRenderTimer);
-    pageSearchRenderTimer = setTimeout(() => {
-      pageSearchRenderTimer = null;
-      renderApp();
-    }, 420);
-  };
   search?.addEventListener("compositionstart", () => {
     composingSearch = true;
   });
@@ -764,16 +763,24 @@ function bindPageFilters() {
     state.favoritesOnly = !state.favoritesOnly;
     renderApp();
   });
-  document.querySelectorAll("[data-multi-filter]").forEach((checkbox) => {
-    checkbox.addEventListener("change", (event) => {
-      const key = event.target.dataset.multiFilter;
+  document.querySelectorAll(".multi-filter-menu").forEach((menu) => {
+    menu.addEventListener("click", (event) => event.stopPropagation());
+  });
+  document.querySelectorAll("[data-multi-filter-clear]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      const key = event.currentTarget.dataset.multiFilterClear;
       if (!["projectFilters", "brokerFilters"].includes(key)) return;
-      const value = event.target.value;
-      const selected = new Set(state[key]);
-      if (event.target.checked) selected.add(value);
-      else selected.delete(value);
-      state[key] = [...selected];
-      scheduleFilterRender();
+      document.querySelectorAll(`[data-multi-filter-option="${key}"]`).forEach((checkbox) => {
+        checkbox.checked = false;
+      });
+    });
+  });
+  document.querySelectorAll("[data-multi-filter-apply]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      const key = event.currentTarget.dataset.multiFilterApply;
+      if (!["projectFilters", "brokerFilters"].includes(key)) return;
+      state[key] = [...document.querySelectorAll(`[data-multi-filter-option="${key}"]:checked`)].map((checkbox) => checkbox.value);
+      renderApp();
     });
   });
   addLeadButton?.addEventListener("click", () => {

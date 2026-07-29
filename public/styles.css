@@ -526,12 +526,17 @@ textarea {
   z-index: 30;
   width: 240px;
   max-height: 260px;
-  overflow: auto;
+  overflow: hidden;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fff;
   box-shadow: var(--shadow);
+}
+
+.multi-filter-options {
+  max-height: 198px;
+  overflow: auto;
 }
 
 .multi-filter-menu label {
@@ -557,6 +562,26 @@ textarea {
 
 .multi-filter-menu label:hover {
   background: var(--soft);
+}
+
+.multi-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.multi-filter-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.multi-filter-actions .tiny {
+  min-height: 30px;
 }
 
 .actions {
