@@ -972,10 +972,20 @@ function migrateDb(db) {
     db.levFinance.settlements = [];
     changed = true;
   }
+  const settledLevUnits = new Set([
+    ...db.levFinance.paidUnits.map(normalizeLevUnit),
+    ...DEFAULT_LEV_SETTLEMENTS
+      .filter((settlement) => settlement.status === "Paga" || settlement.status === "Não contabilizada antes de jan/2026")
+      .map((settlement) => normalizeLevUnit(settlement.unit)),
+    ...(db.levFinance.settlements || [])
+      .filter((settlement) => settlement.status === "Paga" || settlement.status === "Não contabilizada antes de jan/2026")
+      .map((settlement) => normalizeLevUnit(settlement.unit))
+  ]);
+  const previousLevSalesLength = db.levFinance.sales.length;
   db.levFinance.sales = db.levFinance.sales.map((sale) => ({
     id: String(sale.id || `lev-sale-${crypto.randomUUID()}`),
     sourceId: String(sale.sourceId || "").trim(),
-    unit: String(sale.unit || sale.produto || "").trim(),
+    unit: normalizeLevUnit(sale.unit || sale.produto || ""),
     client: String(sale.client || "").trim(),
     contractValue: Number(sale.contractValue || 0),
     signedAt: String(sale.signedAt || "").trim(),
@@ -991,10 +1001,15 @@ function migrateDb(db) {
     commissionValue: Number(sale.commissionValue || 0),
     createdAt: sale.createdAt || new Date().toISOString(),
     updatedAt: sale.updatedAt || sale.createdAt || new Date().toISOString()
-  })).filter((sale, index, sales) => sale.unit && sales.findIndex((item) => item.unit === sale.unit) === index);
+  })).filter((sale, index, sales) => (
+    isLikelyLevUnit(sale.unit)
+    && !settledLevUnits.has(sale.unit)
+    && sales.findIndex((item) => item.unit === sale.unit) === index
+  ));
+  if (db.levFinance.sales.length !== previousLevSalesLength) changed = true;
   db.levFinance.receipts = db.levFinance.receipts.map((receipt) => ({
     id: String(receipt.id || `lev-receipt-${crypto.randomUUID()}`),
-    unit: String(receipt.unit || "").trim(),
+    unit: normalizeLevUnit(receipt.unit || ""),
     amount: Number(receipt.amount || 0),
     receivedAt: String(receipt.receivedAt || "").trim(),
     note: String(receipt.note || "").trim(),
@@ -1016,7 +1031,7 @@ function migrateDb(db) {
   }
   db.levFinance.settlements = db.levFinance.settlements.map((settlement) => ({
     id: String(settlement.id || `lev-settlement-${crypto.randomUUID()}`),
-    unit: String(settlement.unit || "").trim(),
+    unit: normalizeLevUnit(settlement.unit || ""),
     projectCode: String(settlement.projectCode || "").trim(),
     contractValueText: String(settlement.contractValueText || "").trim(),
     commissionValueText: String(settlement.commissionValueText || "").trim(),
@@ -1318,6 +1333,17 @@ function formatCurrency(value) {
   return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
+function normalizeLevUnit(value) {
+  return String(value || "").trim().toUpperCase().replace(/\s+/g, "");
+}
+
+function isLikelyLevUnit(value) {
+  const unit = normalizeLevUnit(value);
+  if (!unit) return false;
+  if (/[,.]/.test(unit) || unit.includes("R$")) return false;
+  return /^[A-Z]{2,}[A-Z0-9]{4,}$/.test(unit);
+}
+
 function parseBrazilDate(value) {
   const text = String(value || "").trim();
   const match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
@@ -1344,13 +1370,22 @@ function provisionFridayForRequest(sentAt = new Date()) {
 
 function publicLevFinance(db) {
   const finance = db.levFinance || { settings: {}, sales: [], receipts: [], paidUnits: [], settlements: [] };
-  const paid = new Set(finance.paidUnits || []);
+  const paid = new Set([
+    ...(finance.paidUnits || []).map(normalizeLevUnit),
+    ...(finance.settlements || [])
+      .filter((settlement) => settlement.status === "Paga" || settlement.status === "Não contabilizada antes de jan/2026")
+      .map((settlement) => normalizeLevUnit(settlement.unit))
+  ]);
   return {
     settings: finance.settings || {},
-    sales: (finance.sales || []).map((sale) => ({
-      ...sale,
-      paid: paid.has(sale.unit)
-    })).sort((a, b) => (parseBrazilDate(b.signedAt)?.getTime() || new Date(b.createdAt).getTime()) - (parseBrazilDate(a.signedAt)?.getTime() || new Date(a.createdAt).getTime())),
+    sales: (finance.sales || [])
+      .filter((sale) => isLikelyLevUnit(sale.unit))
+      .map((sale) => ({
+        ...sale,
+        unit: normalizeLevUnit(sale.unit),
+        paid: paid.has(normalizeLevUnit(sale.unit))
+      }))
+      .sort((a, b) => (parseBrazilDate(b.signedAt)?.getTime() || new Date(b.createdAt).getTime()) - (parseBrazilDate(a.signedAt)?.getTime() || new Date(a.createdAt).getTime())),
     receipts: finance.receipts || [],
     paidUnits: finance.paidUnits || [],
     settlements: (finance.settlements || []).sort((a, b) => (parseBrazilDate(b.signedAt)?.getTime() || new Date(b.createdAt).getTime()) - (parseBrazilDate(a.signedAt)?.getTime() || new Date(a.createdAt).getTime()))
@@ -1358,7 +1393,7 @@ function publicLevFinance(db) {
 }
 
 function normalizeLevSale(raw, settings = {}) {
-  const unit = String(raw.unit || raw.produto || raw["Produto"] || "").trim();
+  const unit = normalizeLevUnit(raw.unit || raw.produto || raw["Produto"] || "");
   const contractValue = parseMoney(raw.contractValue ?? raw.valorContrato ?? raw["Valor contrato"]);
   const commissionPercent = Number(settings.commissionPercent || 0);
   return {
@@ -3080,17 +3115,22 @@ async function routeApi(req, res, db) {
       return sendJson(res, 400, { error: error.message });
     }
     const settled = new Set([
-      ...(db.levFinance.paidUnits || []),
+      ...(db.levFinance.paidUnits || []).map(normalizeLevUnit),
       ...(db.levFinance.settlements || [])
         .filter((settlement) => settlement.status === "Paga" || settlement.status === "Não contabilizada antes de jan/2026")
-        .map((settlement) => settlement.unit)
+        .map((settlement) => normalizeLevUnit(settlement.unit))
     ]);
     let created = 0;
     let duplicates = 0;
     let paidSkipped = 0;
+    let invalidSkipped = 0;
     for (const raw of rawSales) {
       const sale = normalizeLevSale(raw, db.levFinance.settings);
       if (!sale.unit || !sale.signedAt || !String(sale.status || "").toLowerCase().includes("assinado")) continue;
+      if (!isLikelyLevUnit(sale.unit)) {
+        invalidSkipped += 1;
+        continue;
+      }
       if (settled.has(sale.unit)) {
         paidSkipped += 1;
         continue;
@@ -3103,9 +3143,9 @@ async function routeApi(req, res, db) {
       upsertLevSettlement(db, sale, "Extraída, aguardando confirmação", "Imagem submetida no Financeiro Lev");
       created += 1;
     }
-    audit(db, user, "IMPORT_LEV_SALES_IMAGE", { extracted: rawSales.length, created, duplicates, paidSkipped });
+    audit(db, user, "IMPORT_LEV_SALES_IMAGE", { extracted: rawSales.length, created, duplicates, paidSkipped, invalidSkipped });
     await saveDb(db);
-    return sendJson(res, 200, { levFinance: publicLevFinance(db), summary: { extracted: rawSales.length, created, duplicates, paidSkipped } });
+    return sendJson(res, 200, { levFinance: publicLevFinance(db), summary: { extracted: rawSales.length, created, duplicates, paidSkipped, invalidSkipped } });
   }
 
   if (method === "POST" && url.pathname === "/api/lev-finance/receipts") {

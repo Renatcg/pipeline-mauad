@@ -3229,7 +3229,7 @@ function bindLevFinanceControls() {
       const imageDataUrl = await readFileAsDataUrl(file);
       const data = await api("/api/lev-finance/extract", { method: "POST", body: JSON.stringify({ imageDataUrl }) });
       state.levFinance = data.levFinance;
-      alert(`Extração concluída: ${data.summary.created} nova(s), ${data.summary.duplicates} já existente(s), ${data.summary.paidSkipped} já paga(s).`);
+      alert(`Extração concluída: ${data.summary.created} nova(s), ${data.summary.duplicates} já existente(s), ${data.summary.paidSkipped} já paga(s), ${data.summary.invalidSkipped || 0} inválida(s).`);
       renderLevFinanceView();
     } catch (error) {
       setButtonBusy(button, false);
