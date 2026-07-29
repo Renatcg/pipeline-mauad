@@ -1127,6 +1127,10 @@ function migrateDb(db) {
     }
   }
   for (const user of db.users || []) {
+    if (user.operatesAsBroker == null) {
+      user.operatesAsBroker = false;
+      changed = true;
+    }
     if (!user.notifications || typeof user.notifications !== "object" || Array.isArray(user.notifications)) {
       user.notifications = { email: false, whatsapp: false, whatsappNumber: "" };
       changed = true;
@@ -2147,6 +2151,14 @@ function manageableRoles(user) {
 
 function canManageLeads(user) {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(user.role);
+}
+
+function canOperateAsBroker(user) {
+  return user.role === "Corretor" || (["Head Comercial", "Supervisor Comercial"].includes(user.role) && Boolean(user.operatesAsBroker));
+}
+
+function isAssignableBroker(user) {
+  return Boolean(user?.active && canOperateAsBroker(user));
 }
 
 function canAccessLevFinance(user) {
@@ -3178,7 +3190,7 @@ async function routeApi(req, res, db) {
     const assignedUser = user.role === "Corretor"
       ? user
       : body.lead?.assignedTo
-        ? db.users.find((item) => item.id === body.lead.assignedTo && item.role === "Corretor" && item.active)
+        ? db.users.find((item) => item.id === body.lead.assignedTo && isAssignableBroker(item))
         : null;
     if (body.lead?.assignedTo && user.role !== "Corretor" && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
     if (mode === "overwrite") {
@@ -3227,7 +3239,7 @@ async function routeApi(req, res, db) {
     const assignedUser = user.role === "Corretor"
       ? user
       : body.assignedTo
-        ? db.users.find((item) => item.id === body.assignedTo && item.role === "Corretor" && item.active)
+        ? db.users.find((item) => item.id === body.assignedTo && isAssignableBroker(item))
         : null;
     if (body.assignedTo && user.role !== "Corretor" && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
     const validTags = registeredTagNames(db);
@@ -3296,7 +3308,7 @@ async function routeApi(req, res, db) {
         lead.favoritesByUser[user.id] = Boolean(body.favorite);
         lead.favorite = Object.values(lead.favoritesByUser).some(Boolean);
       } else if (key === "assignedTo") {
-        const assignedUser = body.assignedTo ? db.users.find((item) => item.id === body.assignedTo && item.role === "Corretor" && item.active) : null;
+        const assignedUser = body.assignedTo ? db.users.find((item) => item.id === body.assignedTo && isAssignableBroker(item)) : null;
         if (body.assignedTo && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
         lead.assignedTo = assignedUser?.id || null;
         lead.assignedName = assignedUser?.name || "";
@@ -3315,7 +3327,7 @@ async function routeApi(req, res, db) {
         to: lead.assignedName || ""
       });
       if (lead.assignedTo) {
-        const assignedUser = db.users.find((item) => item.id === lead.assignedTo && item.role === "Corretor" && item.active);
+        const assignedUser = db.users.find((item) => item.id === lead.assignedTo && isAssignableBroker(item));
         if (assignedUser) await notifyLeadAssignment(db, lead, assignedUser, Boolean(previousAssignedTo));
       }
     }
@@ -3409,7 +3421,8 @@ async function routeApi(req, res, db) {
     rememberLeadBaseOrigin(lead);
     lead.inPipeline = true;
     lead.status = db.pipelineStatuses[0];
-    if (user.role === "Corretor") {
+    const body = await readBody(req);
+    if (user.role === "Corretor" || (canOperateAsBroker(user) && body.assignToSelf)) {
       lead.assignedTo = user.id;
       lead.assignedName = user.name;
     }
@@ -3460,6 +3473,7 @@ async function routeApi(req, res, db) {
       username,
       role: body.role,
       active: Boolean(body.active),
+      operatesAsBroker: ["Head Comercial", "Supervisor Comercial"].includes(body.role) && Boolean(body.operatesAsBroker),
       notifications: normalizeNotificationPreferences(body.notifications),
       passwordHash: null,
       createdAt: now,
@@ -3483,11 +3497,12 @@ async function routeApi(req, res, db) {
     if (Object.prototype.hasOwnProperty.call(body, "role") && !manageableRoles(user).includes(body.role)) {
       return sendJson(res, 400, { error: "Perfil inválido" });
     }
-    const willDeactivateBroker = target.role === "Corretor" && target.active && body.active === false;
+    const currentAssignableBroker = isAssignableBroker(target);
+    const willDeactivateBroker = currentAssignableBroker && target.active && body.active === false;
     const assignedLeads = willDeactivateBroker ? db.leads.filter((lead) => lead.inPipeline && lead.assignedTo === target.id) : [];
     if (assignedLeads.length) {
       const replacement = body.reassignTo
-        ? db.users.find((item) => item.id === body.reassignTo && item.role === "Corretor" && item.active && item.id !== target.id)
+        ? db.users.find((item) => item.id === body.reassignTo && isAssignableBroker(item) && item.id !== target.id)
         : null;
       if (!replacement) {
         return sendJson(res, 409, {
@@ -3504,6 +3519,9 @@ async function routeApi(req, res, db) {
     }
     for (const key of ["name", "role", "active"]) {
       if (Object.prototype.hasOwnProperty.call(body, key)) target[key] = body[key];
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "operatesAsBroker")) {
+      target.operatesAsBroker = ["Head Comercial", "Supervisor Comercial"].includes(target.role) && Boolean(body.operatesAsBroker);
     }
     if (Object.prototype.hasOwnProperty.call(body, "notifications")) {
       target.notifications = normalizeNotificationPreferences(body.notifications);

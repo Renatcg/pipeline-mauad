@@ -51,6 +51,8 @@ const state = {
   baseSource: "TODOS",
   baseSort: { key: "name", direction: "asc" },
   sheetSort: { key: "name", direction: "asc" },
+  projectFilters: [],
+  brokerFilters: [],
   favoriteRequests: {},
   brokerMenuBound: false,
   inactivityTimer: null,
@@ -184,17 +186,25 @@ function canCreateLeads() {
   return canManageLeads() || state.user?.role === "Corretor";
 }
 
+function currentUserCanOperateAsBroker() {
+  return Boolean(state.user && isAssignableBrokerUser(state.user));
+}
+
 function canRollbackLead(lead) {
   return canManageLeads() || (state.user?.role === "Corretor" && lead.assignedTo === state.user.id);
 }
 
 function activeBrokerForLead(lead) {
-  return state.users.find((user) => user.id === lead.assignedTo && user.role === "Corretor" && user.active) || null;
+  return state.users.find((user) => user.id === lead.assignedTo && isAssignableBrokerUser(user)) || null;
+}
+
+function isAssignableBrokerUser(user) {
+  return Boolean(user?.active && (user.role === "Corretor" || (["Head Comercial", "Supervisor Comercial"].includes(user.role) && user.operatesAsBroker)));
 }
 
 function activeBrokers() {
   return state.users
-    .filter((user) => user.role === "Corretor" && user.active)
+    .filter(isAssignableBrokerUser)
     .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
 }
 
@@ -267,7 +277,13 @@ function filteredLeads() {
 }
 
 function pipelineLeads() {
-  return filteredLeads().filter((lead) => lead.inPipeline && (state.user?.role !== "Corretor" || lead.assignedTo === state.user.id));
+  return filteredLeads().filter((lead) => {
+    if (!lead.inPipeline) return false;
+    if (state.user?.role === "Corretor" && lead.assignedTo !== state.user.id) return false;
+    if (state.projectFilters.length && !state.projectFilters.includes(leadProjectValue(lead))) return false;
+    if (state.brokerFilters.length && !state.brokerFilters.includes(lead.assignedTo || "__none__")) return false;
+    return true;
+  });
 }
 
 function odysseiaLeads() {
@@ -351,8 +367,20 @@ function sortBaseLeads(leads) {
   return sortLeadsForTable(leads, state.baseSort, { blankHistoricalBaseStatus: true });
 }
 
-function baseLeadCount() {
-  return filteredLeads().filter((lead) => isAvailableBaseLead(lead) || lead.source === "META" || MANUAL_BASE_SOURCES.includes(lead.source)).length;
+function baseSourcesForTotal(lead) {
+  const sources = new Set();
+  if (lead.source) sources.add(lead.source);
+  if (lead.baseSourceBeforePipeline) sources.add(lead.baseSourceBeforePipeline);
+  if (lead.previousPipelineSource && lead.previousPipelineSource !== "Pipeline GDrive") sources.add(lead.previousPipelineSource);
+  return [...sources].filter(Boolean);
+}
+
+function baseLeadCount(source = "TODOS") {
+  return state.leads.filter((lead) => {
+    const sources = baseSourcesForTotal(lead);
+    if (!sources.length) return false;
+    return source === "TODOS" ? sources.length > 0 : sources.includes(source);
+  }).length;
 }
 
 function leadBaseStatus(lead, options = {}) {
@@ -622,9 +650,11 @@ function renderShell(content) {
 
 function renderViewHead(title, subtitle = "", options = {}) {
   const showAddLead = Boolean(options.addLead && canCreateLeads());
+  const pipelineFilters = options.pipelineFilters ? renderPipelineFilterControls() : "";
   const filters = options.filters ? `
     <div class="page-filters ${showAddLead ? "with-add-lead" : ""}">
       ${showAddLead ? '<button id="addLeadButton" class="primary add-lead-button">Adicionar Lead</button>' : ""}
+      ${pipelineFilters}
       <input id="pageSearch" value="${escapeHtml(state.search)}" placeholder="Buscar lead, telefone, fase ou corretor">
       <button id="pageFavoriteToggle" class="${state.favoritesOnly ? "primary" : ""}" title="Filtrar favoritos">★</button>
     </div>
@@ -639,6 +669,42 @@ function renderViewHead(title, subtitle = "", options = {}) {
       </div>
       ${filters || actions}
     </div>
+  `;
+}
+
+function filterSummary(selected, fallback) {
+  if (!selected.length) return fallback;
+  if (selected.length === 1) return "1 selecionado";
+  return `${selected.length} selecionados`;
+}
+
+function renderMultiFilter(id, label, selected, options) {
+  return `
+    <details class="multi-filter" id="${escapeHtml(id)}">
+      <summary>${escapeHtml(label)} <strong>${escapeHtml(filterSummary(selected, "Todos"))}</strong></summary>
+      <div class="multi-filter-menu">
+        ${options.map((option) => `
+          <label>
+            <input type="checkbox" data-multi-filter="${escapeHtml(id)}" value="${escapeHtml(option.value)}" ${selected.includes(option.value) ? "checked" : ""}>
+            <span>${escapeHtml(option.label)}</span>
+          </label>
+        `).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function renderPipelineFilterControls() {
+  const projectOptions = state.projects
+    .map((project) => ({ value: project, label: project }))
+    .filter((option) => option.value);
+  const brokerOptions = [
+    { value: "__none__", label: "Sem corretor" },
+    ...activeBrokers().map((broker) => ({ value: broker.id, label: broker.name }))
+  ];
+  return `
+    ${renderMultiFilter("projectFilters", "Empreendimento", state.projectFilters, projectOptions)}
+    ${canManageLeads() ? renderMultiFilter("brokerFilters", "Corretor", state.brokerFilters, brokerOptions) : ""}
   `;
 }
 
@@ -661,6 +727,13 @@ function bindPageFilters() {
       });
     }, 320);
   };
+  const scheduleFilterRender = () => {
+    if (pageSearchRenderTimer) clearTimeout(pageSearchRenderTimer);
+    pageSearchRenderTimer = setTimeout(() => {
+      pageSearchRenderTimer = null;
+      renderApp();
+    }, 420);
+  };
   search?.addEventListener("compositionstart", () => {
     composingSearch = true;
   });
@@ -682,6 +755,18 @@ function bindPageFilters() {
   favoriteToggle?.addEventListener("click", () => {
     state.favoritesOnly = !state.favoritesOnly;
     renderApp();
+  });
+  document.querySelectorAll("[data-multi-filter]").forEach((checkbox) => {
+    checkbox.addEventListener("change", (event) => {
+      const key = event.target.dataset.multiFilter;
+      if (!["projectFilters", "brokerFilters"].includes(key)) return;
+      const value = event.target.value;
+      const selected = new Set(state[key]);
+      if (event.target.checked) selected.add(value);
+      else selected.delete(value);
+      state[key] = [...selected];
+      scheduleFilterRender();
+    });
   });
   addLeadButton?.addEventListener("click", () => {
     state.creatingLead = true;
@@ -1022,7 +1107,7 @@ function renderKanban() {
     `;
   }).join("");
   const empty = !state.statuses.length ? '<section class="panel"><div class="empty">Cadastre o primeiro status em Configurações para começar o pipeline.</div></section>' : "";
-  renderShell(`${renderViewHead("Kanban", "Leads ativos no pipeline", { filters: true, addLead: true })}${renderMetrics(leads)}${empty}<section class="kanban">${columns}</section>`);
+  renderShell(`${renderViewHead("Kanban", "Leads ativos no pipeline", { filters: true, addLead: true, pipelineFilters: true })}${renderMetrics(leads)}${empty}<section class="kanban">${columns}</section>`);
   bindLeadActions();
   bindDragDrop();
   bindColumnDragDrop();
@@ -1349,7 +1434,7 @@ function renderSheet() {
   const tableOptions = { textStatus: true };
   const rows = leadRows(leads, tableOptions);
   renderShell(`
-    ${renderViewHead("Planilha", "Leads vindos do Meta, importações de pipeline e resgates das bases", { filters: true, addLead: true })}
+    ${renderViewHead("Planilha", "Leads vindos do Meta, importações de pipeline e resgates das bases", { filters: true, addLead: true, pipelineFilters: true })}
     ${renderMetrics(leads)}
     ${renderLeadsTable(rows, { ...tableOptions, sortable: true, sortScope: "sheet" })}
   `);
@@ -1382,7 +1467,7 @@ function renderLeadBases() {
   const rows = leadRows(leads, { readOnlyStatus: true, withRescue: true, blankHistoricalBaseStatus: true });
   const pending = leads.filter((lead) => !lead.inPipeline).length;
   const rescued = leads.filter((lead) => lead.inPipeline).length;
-  const totalBase = leads.length;
+  const totalBase = baseLeadCount(state.baseSource);
   renderShell(`
     ${renderViewHead("Bases de Leads", "Bases importadas separadas do pipeline comercial", { filters: true })}
     ${sources.length ? renderBaseSources(sources) : ""}
@@ -1406,7 +1491,11 @@ function renderLeadBases() {
     button.addEventListener("click", async () => {
       try {
         setButtonBusy(button, true, "Resgatando...");
-        const result = await api(`/api/leads/${button.dataset.rescue}/rescue`, { method: "POST" });
+        let assignToSelf = false;
+        if (["Head Comercial", "Supervisor Comercial"].includes(state.user?.role) && currentUserCanOperateAsBroker()) {
+          assignToSelf = confirm("Deseja resgatar este lead vinculado a você como corretor?\n\nOK: resgatar vinculado a você.\nCancelar: resgatar sem corretor para vincular depois.");
+        }
+        const result = await api(`/api/leads/${button.dataset.rescue}/rescue`, { method: "POST", body: JSON.stringify({ assignToSelf }) });
         const lead = state.leads.find((item) => item.id === result.lead.id);
         Object.assign(lead, result.lead);
         renderLeadBases();
@@ -1564,7 +1653,7 @@ function renderLeadDetail() {
   const brokerField = `
     <select name="assignedTo" ${canManageLeads() ? "" : "disabled"}>
       <option value="">Sem corretor</option>
-      ${state.users.filter((user) => user.role === "Corretor").map((user) => `<option value="${escapeHtml(user.id)}" ${user.id === lead.assignedTo ? "selected" : ""}>${escapeHtml(user.name)}${user.active ? "" : " (inativo)"}</option>`).join("")}
+      ${state.users.filter(isAssignableBrokerUser).map((user) => `<option value="${escapeHtml(user.id)}" ${user.id === lead.assignedTo ? "selected" : ""}>${escapeHtml(user.name)}</option>`).join("")}
     </select>
   `;
 
@@ -1882,7 +1971,7 @@ function closeUserActionMenus() {
 }
 
 function reassignPayloadForBrokerDeactivation(targetUser) {
-  if (targetUser?.role !== "Corretor" || !targetUser.active) return {};
+  if (!isAssignableBrokerUser(targetUser) || !targetUser.active) return {};
   const assignedCount = state.leads.filter((lead) => lead.inPipeline && lead.assignedTo === targetUser.id).length;
   if (!assignedCount) return {};
   const brokers = activeBrokers().filter((broker) => broker.id !== targetUser.id);
@@ -2077,9 +2166,10 @@ function renderUserSettings() {
         email: form.get("notifyEmail") === "on",
         whatsapp: form.get("notifyWhatsapp") === "on",
         whatsappNumber: form.get("whatsappNumber")
-      }
+      },
+      operatesAsBroker: form.get("operatesAsBroker") === "on"
     };
-    if (editUser?.role === "Corretor" && editUser.active && payload.active === false) {
+    if (isAssignableBrokerUser(editUser) && editUser.active && payload.active === false) {
       const reassignment = reassignPayloadForBrokerDeactivation(editUser);
       if (reassignment === null) return;
       Object.assign(payload, reassignment);
@@ -2120,6 +2210,7 @@ function renderUserEditorModal(formUser, isEditing, roleOptions) {
           <div class="field"><label>E-mail de acesso</label><input name="username" type="email" value="${escapeHtml(formUser.username || "")}" ${isEditing ? "disabled" : "required"}></div>
           <div class="field"><label>Perfil</label><select name="role">${roleOptions.map((role) => `<option ${role === formUser.role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select></div>
           <div class="field"><label>Status</label><select name="active"><option value="true" ${formUser.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${formUser.active === false ? "selected" : ""}>Inativo</option></select></div>
+          <div class="field full"><label>Operação comercial</label><label class="checkline settings-check"><input type="checkbox" name="operatesAsBroker" ${formUser.operatesAsBroker ? "checked" : ""}> Operar também como corretor</label><small>Quando ativo para Head ou Supervisor, o usuário pode receber leads como corretor sem perder a visão gerencial.</small></div>
           <div class="field"><label>Notificar por e-mail</label><label class="checkline settings-check"><input type="checkbox" name="notifyEmail" ${formUser.notifications?.email ? "checked" : ""}> Receber novos leads</label></div>
           <div class="field"><label>Notificar por WhatsApp</label><label class="checkline settings-check"><input type="checkbox" name="notifyWhatsapp" ${formUser.notifications?.whatsapp ? "checked" : ""}> Receber novos leads</label></div>
           <div class="field full"><label>Número de WhatsApp</label><input name="whatsappNumber" value="${escapeHtml(formUser.notifications?.whatsappNumber || "")}" placeholder="Ex.: 5521999999999"><small>Use DDD. Se não informar o código do país, o sistema considera Brasil (+55).</small></div>

@@ -459,14 +459,19 @@ textarea {
 
 .page-filters {
   width: auto;
-  display: grid;
-  grid-template-columns: 174px 42px;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .page-filters.with-add-lead {
   width: auto;
-  grid-template-columns: auto 174px 42px;
+}
+
+.page-filters input#pageSearch {
+  width: 174px;
 }
 
 .page-filters button {
@@ -480,6 +485,69 @@ textarea {
   font-size: 13px;
   font-weight: 800;
   white-space: nowrap;
+}
+
+.multi-filter {
+  position: relative;
+}
+
+.multi-filter summary {
+  min-height: 36px;
+  min-width: 154px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.multi-filter summary::-webkit-details-marker {
+  display: none;
+}
+
+.multi-filter summary strong {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.multi-filter-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  width: 240px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.multi-filter-menu label {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.multi-filter-menu label:hover {
+  background: var(--soft);
 }
 
 .actions {
@@ -2009,16 +2077,35 @@ th {
 
   .page-filters {
     width: 100%;
-    grid-template-columns: 1fr 42px;
+    justify-content: stretch;
   }
 
   .page-filters.with-add-lead {
     width: 100%;
-    grid-template-columns: 1fr 42px;
   }
 
   .page-filters .add-lead-button {
-    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .page-filters input#pageSearch {
+    flex: 1 1 180px;
+    width: auto;
+  }
+
+  .multi-filter {
+    flex: 1 1 160px;
+  }
+
+  .multi-filter summary {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .multi-filter-menu {
+    left: 0;
+    right: auto;
+    width: min(280px, calc(100vw - 32px));
   }
 
   .metrics {
