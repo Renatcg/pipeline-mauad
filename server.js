@@ -769,7 +769,12 @@ const META_APP_SECRET = process.env.META_APP_SECRET || "";
 const META_PAGE_ACCESS_TOKEN = process.env.META_PAGE_ACCESS_TOKEN || "";
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 const META_DEFAULT_ASSIGNED_TO = process.env.META_DEFAULT_ASSIGNED_TO || "";
+const APP_SCHEMA_VERSION = 2026072901;
+const DB_CACHE_TTL_MS = 3000;
 let sqlClientPromise = null;
+let postgresInitialized = false;
+let dbCache = null;
+let dbCacheAt = 0;
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -833,6 +838,7 @@ function buildDefaultDb() {
   const adminPassword = process.env.INITIAL_ADMIN_PASSWORD || "Admin@12345";
   const now = new Date().toISOString();
   const db = {
+    schemaVersion: APP_SCHEMA_VERSION,
     roles: seed.roles || ROLES,
     projects: seed.projects || DEFAULT_PROJECTS,
     pipelineStatuses: [],
@@ -886,15 +892,19 @@ async function getSql() {
 }
 
 async function ensurePostgresState() {
+  if (dbCache && Date.now() - dbCacheAt < DB_CACHE_TTL_MS) return dbCache;
   const sql = await getSql();
   if (!sql) return null;
-  await sql`
-    CREATE TABLE IF NOT EXISTS app_state (
-      id text PRIMARY KEY,
-      data jsonb NOT NULL,
-      updated_at timestamptz NOT NULL DEFAULT now()
-    )
-  `;
+  if (!postgresInitialized) {
+    await sql`
+      CREATE TABLE IF NOT EXISTS app_state (
+        id text PRIMARY KEY,
+        data jsonb NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `;
+    postgresInitialized = true;
+  }
   const rows = await sql`SELECT data FROM app_state WHERE id = 'main' LIMIT 1`;
   if (rows.length) {
     const db = migrateDb(rows[0].data);
@@ -907,10 +917,14 @@ async function ensurePostgresState() {
         DO UPDATE SET data = EXCLUDED.data, updated_at = now()
       `;
     }
+    dbCache = db;
+    dbCacheAt = Date.now();
     return db;
   }
   const db = buildDefaultDb();
   await sql`INSERT INTO app_state (id, data) VALUES ('main', ${JSON.stringify(db)}::jsonb)`;
+  dbCache = db;
+  dbCacheAt = Date.now();
   return db;
 }
 
@@ -920,6 +934,8 @@ async function loadDb() {
 }
 
 async function saveDb(db) {
+  dbCache = db;
+  dbCacheAt = Date.now();
   if (!DATABASE_URL) {
     writeDb(db);
     return;
@@ -934,6 +950,8 @@ async function saveDb(db) {
 }
 
 async function saveAccessLog(db) {
+  dbCache = db;
+  dbCacheAt = Date.now();
   if (!DATABASE_URL) {
     writeDb(db);
     return;
@@ -948,7 +966,8 @@ async function saveAccessLog(db) {
 }
 
 function migrateDb(db) {
-  let changed = false;
+  if (db?.schemaVersion === APP_SCHEMA_VERSION) return db;
+  let changed = db?.schemaVersion !== APP_SCHEMA_VERSION;
   if (!Array.isArray(db.auditLog)) {
     db.auditLog = [];
     changed = true;
@@ -1274,6 +1293,7 @@ function migrateDb(db) {
       })
       .filter((form, index, forms) => form.id && forms.findIndex((item) => item.id === form.id) === index);
   }
+  db.schemaVersion = APP_SCHEMA_VERSION;
   if (changed) Object.defineProperty(db, "__dirty", { value: true, enumerable: false, configurable: true });
   return db;
 }
@@ -2745,16 +2765,13 @@ function publicLead(lead, user) {
 }
 
 function publicLeadSummary(lead, user) {
-  const summary = publicLead(lead, user);
-  summary.comments = undefined;
-  if (summary.meta?.rawFields) {
-    summary.meta = {
-      ...summary.meta,
-      rawFields: undefined
-    };
-  }
-  summary.detailLoaded = false;
-  return summary;
+  const { comments, favoritesByUser, meta, ...summary } = lead;
+  return {
+    ...summary,
+    meta: meta ? { ...meta, rawFields: undefined } : meta,
+    favorite: Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite),
+    detailLoaded: false
+  };
 }
 
 async function readRawBody(req) {
