@@ -285,6 +285,42 @@ textarea {
   min-width: 640px;
 }
 
+.muted-copy {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-subhead {
+  margin: 18px 0 8px;
+  font-size: 15px;
+}
+
+.base-access-table {
+  min-width: 980px;
+}
+
+.base-access-table small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.source-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.source-checks .checkline {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+}
+
 .settings-search {
   max-width: 360px;
 }

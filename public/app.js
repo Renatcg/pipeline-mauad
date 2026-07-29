@@ -13,6 +13,9 @@ const state = {
   users: [],
   leads: [],
   integrations: null,
+  baseAccess: null,
+  baseAccessSources: [],
+  accessibleBaseSources: [],
   auditLog: [],
   accessLog: [],
   fupLeadLog: [],
@@ -122,7 +125,11 @@ async function api(path, options = {}) {
 
 function allowedViews() {
   const views = profileAccess[state.user?.role] || [];
-  return views.filter((view) => view !== "finance" || canAccessLevFinance());
+  return views.filter((view) => {
+    if (view === "finance") return canAccessLevFinance();
+    if (view === "odysseia") return canAccessBases();
+    return true;
+  });
 }
 
 function clearInactivityTimer() {
@@ -153,6 +160,10 @@ function userName(id) {
 
 function canManageLeads() {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(state.user?.role);
+}
+
+function canAccessBases() {
+  return state.user?.role === "Admin TI" || (state.accessibleBaseSources || []).length > 0;
 }
 
 function canAccessLevFinance() {
@@ -308,12 +319,13 @@ function isAvailableBaseLead(lead) {
 }
 
 function baseSources() {
+  const allowed = new Set(state.accessibleBaseSources || []);
   let sources = [...new Set(state.leads
     .filter((lead) => isAvailableBaseLead(lead) || lead.source === "META" || MANUAL_BASE_SOURCES.includes(lead.source))
     .map((lead) => lead.source)
-    .filter(Boolean))].sort();
+    .filter((source) => source && (state.user?.role === "Admin TI" || allowed.has(source))))].sort();
   for (const source of MANUAL_BASE_SOURCES) {
-    if (!sources.includes(source)) sources.push(source);
+    if ((state.user?.role === "Admin TI" || allowed.has(source)) && !sources.includes(source)) sources.push(source);
   }
   if (sources.includes("ODYSSEIA")) sources.unshift(...sources.splice(sources.indexOf("ODYSSEIA"), 1));
   if (sources.includes("META")) sources.push(...sources.splice(sources.indexOf("META"), 1));
@@ -583,6 +595,9 @@ async function loadState() {
   state.users = data.users;
   state.leads = data.leads;
   state.integrations = data.integrations;
+  state.baseAccess = data.baseAccess || null;
+  state.baseAccessSources = data.baseAccessSources || [];
+  state.accessibleBaseSources = data.accessibleBaseSources || [];
   state.integrationLog = data.integrationLog || [];
   state.auditLog = data.auditLog;
   state.accessLog = data.accessLog || [];
@@ -1864,6 +1879,7 @@ function settingsLayout(content) {
         ${canManageSystemSettings() ? settingsTabButton("integrations", "Integrações") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("statuses", "Status do pipeline") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("tags", "Etiquetas") : ""}
+        ${canManagePipelineSettings() ? settingsTabButton("baseAccess", "Permissões de Bases") : ""}
         ${canManageSystemSettings() ? settingsTabButton("logs", "Logs") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("projects", "Empreendimentos") : ""}
         ${canManageLevFinanceSettings() ? settingsTabButton("levFinance", "Financeiro Lev") : ""}
@@ -1884,12 +1900,13 @@ function settingsLayout(content) {
 
 function renderSettings() {
   if (["integrations", "logs", "knowledge", "backup"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
-  if (["statuses", "tags", "projects"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
+  if (["statuses", "tags", "projects", "baseAccess"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) state.settingsTab = canManageLevFinanceSettings() ? "levFinance" : "knowledge";
   if (state.settingsTab === "integrations") return renderIntegrationSettings();
   if (state.settingsTab === "statuses") return renderStatusSettings();
   if (state.settingsTab === "tags") return renderTagSettings();
+  if (state.settingsTab === "baseAccess") return renderBaseAccessSettings();
   if (state.settingsTab === "logs") return renderLogSettings();
   if (state.settingsTab === "projects") return renderProjectSettings();
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
@@ -1938,6 +1955,129 @@ function bindSettingsActionMenus() {
   });
   document.querySelectorAll(".action-menu-list").forEach((menu) => {
     menu.addEventListener("click", (event) => event.stopPropagation());
+  });
+}
+
+function baseAccessSourceChecks(scope, id, selected = []) {
+  const sources = state.baseAccessSources || [];
+  const usesAll = !selected.length;
+  return `
+    <div class="source-checks" data-base-access-sources="${escapeHtml(scope)}:${escapeHtml(id)}">
+      <label class="checkline settings-check">
+        <input type="checkbox" data-base-access-all="${escapeHtml(scope)}:${escapeHtml(id)}" ${usesAll ? "checked" : ""}>
+        Todas
+      </label>
+      ${sources.map((source) => `
+        <label class="checkline settings-check">
+          <input type="checkbox" data-base-access-source="${escapeHtml(scope)}:${escapeHtml(id)}" value="${escapeHtml(source)}" ${usesAll || selected.includes(source) ? "checked" : ""}>
+          ${escapeHtml(baseSourceLabel(source))}
+        </label>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderBaseAccessSettings() {
+  const access = state.baseAccess || { roles: {}, users: {} };
+  const commercialUsers = state.users
+    .filter((user) => !["Gerente Financeiro", "Auxiliar Financeiro"].includes(user.role))
+    .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+  const roleRows = state.roles.map((role) => {
+    const rule = access.roles?.[role] || { enabled: false, sources: [] };
+    const locked = role === "Admin TI";
+    return `
+      <tr data-base-role-row="${escapeHtml(role)}">
+        <td>${escapeHtml(role)}</td>
+        <td><label class="checkline settings-check"><input type="checkbox" data-base-role-enabled="${escapeHtml(role)}" ${rule.enabled ? "checked" : ""} ${locked ? "disabled" : ""}> Acessa Bases</label></td>
+        <td>${baseAccessSourceChecks("role", role, rule.sources || [])}</td>
+      </tr>
+    `;
+  }).join("");
+  const userRows = commercialUsers.map((user) => {
+    const rule = access.users?.[user.id] || { override: false, enabled: true, sources: [] };
+    return `
+      <tr data-base-user-row="${escapeHtml(user.id)}">
+        <td><strong>${escapeHtml(user.name)}</strong><br><small>${escapeHtml(user.username)}</small></td>
+        <td>${escapeHtml(user.role)}</td>
+        <td><label class="checkline settings-check"><input type="checkbox" data-base-user-override="${escapeHtml(user.id)}" ${rule.override ? "checked" : ""}> Regra própria</label></td>
+        <td><label class="checkline settings-check"><input type="checkbox" data-base-user-enabled="${escapeHtml(user.id)}" ${rule.enabled ? "checked" : ""}> Acessa Bases</label></td>
+        <td>${baseAccessSourceChecks("user", user.id, rule.sources || [])}</td>
+      </tr>
+    `;
+  }).join("");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Permissões de Bases</h2>
+        <button class="primary" type="button" id="saveBaseAccess">Salvar permissões</button>
+      </div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
+      <p class="muted-copy">Configure quem acessa a tela Bases e quais origens aparecem para cada perfil ou usuário. Se o usuário tiver regra própria, ela substitui a regra do perfil.</p>
+      <h3 class="settings-subhead">Por perfil</h3>
+      <div class="table-wrap"><table class="access-table base-access-table"><thead><tr><th>Perfil</th><th>Acesso</th><th>Bases permitidas</th></tr></thead><tbody>${roleRows}</tbody></table></div>
+      <h3 class="settings-subhead">Por usuário</h3>
+      <div class="table-wrap"><table class="access-table base-access-table"><thead><tr><th>Usuário</th><th>Perfil</th><th>Regra</th><th>Acesso</th><th>Bases permitidas</th></tr></thead><tbody>${userRows}</tbody></table></div>
+    </section>
+  `);
+  bindSettingsCommon();
+  bindBaseAccessControls();
+}
+
+function selectedBaseAccessSources(scope, id) {
+  const key = `${scope}:${id}`;
+  const all = document.querySelector(`[data-base-access-all="${CSS.escape(key)}"]`)?.checked;
+  if (all) return [];
+  return [...document.querySelectorAll(`[data-base-access-source="${CSS.escape(key)}"]:checked`)].map((input) => input.value);
+}
+
+function bindBaseAccessControls() {
+  const syncSourceGroup = (key) => {
+    const all = document.querySelector(`[data-base-access-all="${CSS.escape(key)}"]`);
+    const sources = [...document.querySelectorAll(`[data-base-access-source="${CSS.escape(key)}"]`)];
+    if (!all) return;
+    if (all.checked) sources.forEach((input) => { input.checked = true; });
+  };
+  document.querySelectorAll("[data-base-access-all]").forEach((input) => {
+    input.addEventListener("change", () => syncSourceGroup(input.dataset.baseAccessAll));
+  });
+  document.querySelectorAll("[data-base-access-source]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const key = input.dataset.baseAccessSource;
+      const all = document.querySelector(`[data-base-access-all="${CSS.escape(key)}"]`);
+      const sources = [...document.querySelectorAll(`[data-base-access-source="${CSS.escape(key)}"]`)];
+      if (all) all.checked = sources.every((item) => item.checked);
+    });
+  });
+  document.querySelector("#saveBaseAccess")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const roles = {};
+    state.roles.forEach((role) => {
+      roles[role] = {
+        enabled: document.querySelector(`[data-base-role-enabled="${CSS.escape(role)}"]`)?.checked || role === "Admin TI",
+        sources: selectedBaseAccessSources("role", role)
+      };
+    });
+    const users = {};
+    state.users.forEach((user) => {
+      users[user.id] = {
+        override: Boolean(document.querySelector(`[data-base-user-override="${CSS.escape(user.id)}"]`)?.checked),
+        enabled: Boolean(document.querySelector(`[data-base-user-enabled="${CSS.escape(user.id)}"]`)?.checked),
+        sources: selectedBaseAccessSources("user", user.id)
+      };
+    });
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const data = await api("/api/base-access", { method: "PUT", body: JSON.stringify({ roles, users }) });
+      state.baseAccess = data.baseAccess;
+      state.baseAccessSources = data.baseAccessSources || state.baseAccessSources;
+      state.accessibleBaseSources = data.accessibleBaseSources || state.accessibleBaseSources;
+      state.leads = data.leads || state.leads;
+      state.settingsNotice = "Permissões de bases salvas.";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
   });
 }
 

@@ -22,6 +22,13 @@ const DEFAULT_TAG_DEFINITIONS = [
   { id: "tag-documentacao", name: "Documentação", color: "#475467" }
 ];
 const KNOWLEDGE_CATEGORIES = ["Primeiros passos", "Leads e Pipeline", "Bases", "Meta Leads", "Configurações", "Notificações", "Logs e Auditoria"];
+const DEFAULT_BASE_ACCESS = {
+  roles: Object.fromEntries(ROLES.map((role) => [role, {
+    enabled: ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor"].includes(role),
+    sources: []
+  }])),
+  users: {}
+};
 const DEFAULT_KNOWLEDGE_ARTICLES = [
   {
     id: "kb-primeiros-passos",
@@ -957,6 +964,37 @@ function migrateDb(db) {
   if (!Array.isArray(db.integrationLog)) {
     db.integrationLog = [];
     changed = true;
+  }
+  if (!db.baseAccess || typeof db.baseAccess !== "object" || Array.isArray(db.baseAccess)) {
+    db.baseAccess = structuredClone(DEFAULT_BASE_ACCESS);
+    changed = true;
+  }
+  if (!db.baseAccess.roles || typeof db.baseAccess.roles !== "object" || Array.isArray(db.baseAccess.roles)) {
+    db.baseAccess.roles = structuredClone(DEFAULT_BASE_ACCESS.roles);
+    changed = true;
+  }
+  if (!db.baseAccess.users || typeof db.baseAccess.users !== "object" || Array.isArray(db.baseAccess.users)) {
+    db.baseAccess.users = {};
+    changed = true;
+  }
+  for (const role of ROLES) {
+    const current = db.baseAccess.roles[role] || DEFAULT_BASE_ACCESS.roles[role] || { enabled: false, sources: [] };
+    db.baseAccess.roles[role] = {
+      enabled: current.enabled !== false,
+      sources: Array.isArray(current.sources) ? current.sources.map((source) => String(source || "").trim()).filter(Boolean) : []
+    };
+  }
+  for (const [userId, rule] of Object.entries(db.baseAccess.users)) {
+    if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
+      delete db.baseAccess.users[userId];
+      changed = true;
+      continue;
+    }
+    db.baseAccess.users[userId] = {
+      override: Boolean(rule.override),
+      enabled: rule.enabled !== false,
+      sources: Array.isArray(rule.sources) ? rule.sources.map((source) => String(source || "").trim()).filter(Boolean) : []
+    };
   }
   if (!Array.isArray(db.knowledgeArticles)) {
     db.knowledgeArticles = DEFAULT_KNOWLEDGE_ARTICLES.map((article) => ({ ...article }));
@@ -2482,14 +2520,61 @@ function isAvailableBaseLead(lead) {
   return hasBaseHistory(lead) && !lead.assignedTo;
 }
 
+function baseSourcesForLead(lead) {
+  const sources = new Set();
+  if (lead.source) sources.add(lead.source);
+  if (lead.baseSourceBeforePipeline) sources.add(lead.baseSourceBeforePipeline);
+  if (lead.previousPipelineSource) sources.add(lead.previousPipelineSource);
+  return [...sources].filter(Boolean);
+}
+
+function allBaseSources(db) {
+  const sources = new Set(["ODYSSEIA", "RD Station", "OAB", "Vinhos na Serra", "Pipeline GDrive", "META", "Stand", "Lista RMeirelles"]);
+  for (const lead of db.leads || []) {
+    for (const source of baseSourcesForLead(lead)) sources.add(source);
+  }
+  return [...sources]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
+}
+
+function baseAccessRuleForUser(db, user) {
+  if (user.role === "Admin TI") return { enabled: true, sources: [] };
+  const userRule = db.baseAccess?.users?.[user.id];
+  if (userRule?.override) return userRule;
+  return db.baseAccess?.roles?.[user.role] || { enabled: false, sources: [] };
+}
+
+function accessibleBaseSources(db, user) {
+  const rule = baseAccessRuleForUser(db, user);
+  if (!rule.enabled) return [];
+  const allSources = allBaseSources(db);
+  const selected = Array.isArray(rule.sources) ? rule.sources.filter(Boolean) : [];
+  return selected.length ? selected.filter((source) => allSources.includes(source)) : allSources;
+}
+
+function canAccessBases(db, user) {
+  return accessibleBaseSources(db, user).length > 0;
+}
+
+function canAccessBaseLead(db, user, lead) {
+  if (!isAvailableBaseLead(lead) && lead.source !== "META") return false;
+  const allowed = accessibleBaseSources(db, user);
+  if (!allowed.length) return false;
+  return baseSourcesForLead(lead).some((source) => allowed.includes(source));
+}
+
 function visibleLeads(db, user) {
   if (user.role === "Corretor") {
     return db.leads.filter((lead) => {
       if (lead.inPipeline && lead.assignedTo) return lead.assignedTo === user.id;
-      return isAvailableBaseLead(lead);
+      return canAccessBaseLead(db, user, lead);
     });
   }
-  return db.leads;
+  return db.leads.filter((lead) => {
+    if (lead.inPipeline) return true;
+    return canAccessBaseLead(db, user, lead);
+  });
 }
 
 function canEditLead(user, lead) {
@@ -3325,6 +3410,9 @@ async function routeApi(req, res, db) {
       users: db.users.map(publicUser),
       leads: visibleLeads(db, user).map((lead) => publicLead(lead, user)),
       integrations: canManageSettings(user) ? db.integrations : null,
+      baseAccess: canManagePipelineSettings(user) ? db.baseAccess : null,
+      baseAccessSources: allBaseSources(db),
+      accessibleBaseSources: accessibleBaseSources(db, user),
       knowledgeCategories: KNOWLEDGE_CATEGORIES,
       knowledgeArticles: visibleKnowledgeArticles(db, user),
       knowledgeChatSessions: userKnowledgeChatSessions(db, user),
@@ -3841,6 +3929,7 @@ async function routeApi(req, res, db) {
     if (!canManageLeads(user) && user.role !== "Corretor") return sendJson(res, 403, { error: "Sem permissão" });
     const lead = db.leads.find((item) => item.id === rescueMatch[1]);
     if (!lead) return notFound(res);
+    if (!canAccessBaseLead(db, user, lead)) return sendJson(res, 403, { error: "Sem permissão para acessar esta base" });
     if (lead.inPipeline) return sendJson(res, 400, { error: "Este lead já está no pipeline" });
     if (!db.pipelineStatuses.length) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de resgatar leads" });
     rememberLeadBaseOrigin(lead);
@@ -4352,6 +4441,45 @@ async function routeApi(req, res, db) {
       db: exported
     }, {
       "Content-Disposition": `attachment; filename="pipeline-mauad-backup-${new Date().toISOString().slice(0, 10)}.json"`
+    });
+  }
+
+  if (url.pathname === "/api/base-access" && method === "PUT") {
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const sourceSet = new Set(allBaseSources(db));
+    const next = { roles: {}, users: {} };
+    const roleRules = body.roles && typeof body.roles === "object" && !Array.isArray(body.roles) ? body.roles : {};
+    for (const role of ROLES) {
+      const rule = roleRules[role] || {};
+      next.roles[role] = {
+        enabled: Boolean(rule.enabled),
+        sources: Array.isArray(rule.sources)
+          ? [...new Set(rule.sources.map((source) => String(source || "").trim()).filter((source) => sourceSet.has(source)))]
+          : []
+      };
+    }
+    const userRules = body.users && typeof body.users === "object" && !Array.isArray(body.users) ? body.users : {};
+    const validUserIds = new Set(db.users.map((item) => item.id));
+    for (const [userId, rule] of Object.entries(userRules)) {
+      if (!validUserIds.has(userId) || !rule || typeof rule !== "object" || Array.isArray(rule)) continue;
+      next.users[userId] = {
+        override: Boolean(rule.override),
+        enabled: Boolean(rule.enabled),
+        sources: Array.isArray(rule.sources)
+          ? [...new Set(rule.sources.map((source) => String(source || "").trim()).filter((source) => sourceSet.has(source)))]
+          : []
+      };
+    }
+    next.roles["Admin TI"] = { enabled: true, sources: [] };
+    db.baseAccess = next;
+    audit(db, user, "UPDATE_BASE_ACCESS", { roles: Object.keys(next.roles).length, users: Object.keys(next.users).length });
+    await saveDb(db);
+    return sendJson(res, 200, {
+      baseAccess: db.baseAccess,
+      baseAccessSources: allBaseSources(db),
+      accessibleBaseSources: accessibleBaseSources(db, user),
+      leads: visibleLeads(db, user).map((lead) => publicLead(lead, user))
     });
   }
 
