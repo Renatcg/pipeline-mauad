@@ -3387,12 +3387,18 @@ function renderLevFinanceView() {
   const term = state.levFinanceSearch.trim().toLocaleLowerCase("pt-BR");
   const matchesFinanceSearch = (item) => !term || levFinanceSearchText(item).includes(term);
   const allSales = (finance.sales || []).filter(matchesFinanceSearch);
-  const pendingSales = allSales.filter((sale) => !sale.paid && !sale.eligible);
-  const nfSales = allSales.filter((sale) => !sale.paid && sale.eligible).map((sale) => ({ ...sale, status: sale.status || "NF/provisionamento solicitado" }));
   const settlements = (finance.settlements || []).filter(matchesFinanceSearch);
+  const isNfIssued = (item) => {
+    const key = levStatusKey(item.status);
+    return key.includes("nf emitida") || Boolean(item.invoiceNumber || item.invoiceIssuedAt);
+  };
+  const isPaid = (item) => Boolean(item.paid || item.paidAt || levStatusKey(item.status) === "paga");
+  const isIgnored = (item) => levStatusKey(item.status).includes("nao contabilizada") || levStatusKey(item.status).includes("ignorada");
+  const pendingSales = allSales.filter((sale) => !isPaid(sale) && !isNfIssued(sale) && !isIgnored(sale));
+  const nfSales = allSales.filter((sale) => !isPaid(sale) && isNfIssued(sale)).map((sale) => ({ ...sale, status: sale.status || "NF Emitida" }));
   const nfSettlements = settlements.filter((settlement) => levStatusKey(settlement.status).includes("nf"));
   const paidSettlements = settlements.filter((settlement) => levStatusKey(settlement.status) === "paga");
-  const ignoredSettlements = settlements.filter((settlement) => levStatusKey(settlement.status).includes("nao contabilizada") || levStatusKey(settlement.status).includes("ignorada"));
+  const ignoredSettlements = settlements.filter(isIgnored);
   const nfUnits = new Set(nfSales.map((sale) => sale.unit));
   const currentRowsByTab = {
     pending: pendingSales,
@@ -3401,8 +3407,14 @@ function renderLevFinanceView() {
     ignored: ignoredSettlements
   };
   const activeRows = currentRowsByTab[state.levFinanceTab] || currentRowsByTab.pending;
-  const pendingContract = pendingSales.reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0);
-  const pendingCommission = pendingSales.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0);
+  const activeTabLabel = {
+    pending: "Pendentes",
+    nf: "NF Emitida",
+    paid: "Pagas",
+    ignored: "Ignoradas"
+  }[state.levFinanceTab] || "Pendentes";
+  const activeContract = activeRows.reduce((sum, item) => sum + Number(item.contractValue || 0), 0);
+  const activeCommission = activeRows.reduce((sum, item) => sum + Number(item.commissionValue || 0), 0);
   const tableRows = activeRows.map((item) => levFinanceRow(item, { statusKey: state.levFinanceTab })).join("");
   const receiptRows = (finance.receipts || []).filter(matchesFinanceSearch).slice(0, 80).map((receipt) => `
     <tr>
@@ -3430,9 +3442,9 @@ function renderLevFinanceView() {
       <input id="levFinanceSearch" class="settings-search" placeholder="Pesquisar por unidade, cliente, imobiliária, status ou observação" value="${escapeHtml(state.levFinanceSearch)}">
     </section>
     <section class="metrics">
-      <div class="metric"><span>Pendentes</span><strong>${pendingSales.length}</strong></div>
-      <div class="metric"><span>Valor pendente</span><strong>${money(pendingContract)}</strong></div>
-      <div class="metric"><span>Comissão estimada</span><strong>${money(pendingCommission)}</strong></div>
+      <div class="metric"><span>${escapeHtml(activeTabLabel)}</span><strong>${activeRows.length}</strong></div>
+      <div class="metric"><span>Valor da aba</span><strong>${money(activeContract)}</strong></div>
+      <div class="metric"><span>Comissão da aba</span><strong>${money(activeCommission)}</strong></div>
       <div class="metric"><span>% comissão</span><strong>${escapeHtml(finance.settings?.commissionPercent || 0)}%</strong></div>
     </section>
     <section class="panel">
