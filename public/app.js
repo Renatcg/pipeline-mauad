@@ -45,6 +45,7 @@ const state = {
   levFinanceSearch: "",
   levFinanceTab: "pending",
   levFinanceExtraction: null,
+  levFinanceModal: null,
   mobileNavOpen: false,
   lastAccessLogKey: "",
   creatingLead: false,
@@ -3097,6 +3098,7 @@ function dateLabel(value) {
 function levSettlementClass(status) {
   const normalized = String(status || "").toLowerCase();
   if (normalized.includes("paga")) return "status-active";
+  if (normalized.includes("nf")) return "chip chip-info";
   if (normalized.includes("não contabilizada")) return "chip chip-warning";
   return "chip";
 }
@@ -3110,6 +3112,9 @@ function levFinanceSearchText(item) {
     item.commissionValue,
     item.realEstate,
     item.status,
+    item.invoiceNumber,
+    item.invoiceIssuedAt,
+    item.paidAt,
     item.note,
     item.receivedAt
   ].filter(Boolean).join(" ").toLocaleLowerCase("pt-BR");
@@ -3130,17 +3135,6 @@ function renderLevFinanceSettings() {
         <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar configurações</button></div></div>
       </form>
     </section>
-    ${canResetLevFinance() ? `
-      <section class="panel danger-zone">
-        <div class="panel-head">
-          <div>
-            <h2>Zerar dados financeiros</h2>
-            <p>Remove vendas pendentes, NF emitida, pagas, ignoradas e histórico de recebimentos. Mantém % de comissão e e-mails configurados.</p>
-          </div>
-        </div>
-        <button class="danger-button" type="button" id="resetLevFinanceButton">Zerar Financeiro Lev</button>
-      </section>
-    ` : ""}
   `);
   bindSettingsCommon();
   document.querySelector("#levFinanceSettingsForm")?.addEventListener("submit", async (event) => {
@@ -3155,21 +3149,6 @@ function renderLevFinanceSettings() {
       });
       state.levFinance = data.levFinance;
       state.settingsNotice = "Configurações financeiras salvas.";
-      renderSettings();
-    } catch (error) {
-      setButtonBusy(button, false);
-      alert(error.message);
-    }
-  });
-  document.querySelector("#resetLevFinanceButton")?.addEventListener("click", async (event) => {
-    if (!confirm("Tem certeza que deseja zerar todas as vendas, recebimentos e históricos do Financeiro Lev? Esta ação não pode ser desfeita.")) return;
-    if (!confirm("Confirma novamente? As abas Pendentes, NF Emitida, Pagas e Ignoradas ficarão vazias.")) return;
-    const button = event.currentTarget;
-    try {
-      setButtonBusy(button, true, "Zerando...");
-      const data = await api("/api/lev-finance/data", { method: "DELETE" });
-      state.levFinance = data.levFinance;
-      state.settingsNotice = `Financeiro Lev zerado: ${data.cleared.sales} venda(s), ${data.cleared.settlements} histórico(s), ${data.cleared.receipts} recebimento(s).`;
       renderSettings();
     } catch (error) {
       setButtonBusy(button, false);
@@ -3269,7 +3248,39 @@ function levStatusKey(value) {
 }
 
 function levFinanceRow(item, options = {}) {
-  const canConfirm = Boolean(options.canConfirm && item.id);
+  if (options.readOnly) {
+    const detail = [
+      item.invoiceNumber ? `NF ${escapeHtml(item.invoiceNumber)}` : "",
+      item.invoiceIssuedAt ? `emitida em ${escapeHtml(dateLabel(item.invoiceIssuedAt))}` : "",
+      item.paidAt ? `paga em ${escapeHtml(dateLabel(item.paidAt))}` : ""
+    ].filter(Boolean).join(" · ");
+    return `
+      <tr>
+        <td>${escapeHtml(item.unit)}</td>
+        <td>${escapeHtml(item.client)}</td>
+        <td>${escapeHtml(item.signedAt)}</td>
+        <td>${money(item.contractValue)}</td>
+        <td>${item.commissionValue ? money(item.commissionValue) : "-"}</td>
+        <td>${escapeHtml(item.realEstate)}</td>
+        <td><span class="${levSettlementClass(item.status)}">${escapeHtml(item.status || options.statusLabel || "")}</span>${detail ? `<br><small>${detail}</small>` : ""}</td>
+        <td>-</td>
+      </tr>
+    `;
+  }
+  const recordKey = item.id || `unit:${item.unit}`;
+  const statusKey = options.statusKey || state.levFinanceTab || "pending";
+  const actions = [
+    `<button type="button" data-lev-action="edit" data-lev-key="${escapeHtml(recordKey)}">Editar</button>`,
+    statusKey === "pending" || statusKey === "ignored" ? `<button type="button" data-lev-action="confirm" data-lev-key="${escapeHtml(recordKey)}">Confirmar</button>` : "",
+    statusKey === "pending" || statusKey === "ignored" ? `<button type="button" data-lev-action="invoice" data-lev-key="${escapeHtml(recordKey)}">Alterar para NF Emitida</button>` : "",
+    statusKey === "pending" || statusKey === "nf" ? `<button type="button" data-lev-action="paid" data-lev-key="${escapeHtml(recordKey)}">Alterar para NF Paga</button>` : "",
+    `<button type="button" class="danger-menu-item" data-lev-action="delete" data-lev-key="${escapeHtml(recordKey)}">Excluir</button>`
+  ];
+  const detail = [
+    item.invoiceNumber ? `NF ${escapeHtml(item.invoiceNumber)}` : "",
+    item.invoiceIssuedAt ? `emitida em ${escapeHtml(dateLabel(item.invoiceIssuedAt))}` : "",
+    item.paidAt ? `paga em ${escapeHtml(dateLabel(item.paidAt))}` : ""
+  ].filter(Boolean).join(" · ");
   return `
     <tr>
       <td>${escapeHtml(item.unit)}</td>
@@ -3278,8 +3289,8 @@ function levFinanceRow(item, options = {}) {
       <td>${money(item.contractValue)}</td>
       <td>${item.commissionValue ? money(item.commissionValue) : "-"}</td>
       <td>${escapeHtml(item.realEstate)}</td>
-      <td><span class="${levSettlementClass(item.status)}">${escapeHtml(item.status || options.statusLabel || "")}</span></td>
-      <td>${canConfirm ? `<button class="primary compact-button" data-confirm-lev-sale="${escapeHtml(item.id)}">Confirmar</button>` : "-"}</td>
+      <td><span class="${levSettlementClass(item.status)}">${escapeHtml(item.status || options.statusLabel || "")}</span>${detail ? `<br><small>${detail}</small>` : ""}</td>
+      <td>${renderSettingsActionMenu(`lev-${recordKey}`, actions)}</td>
     </tr>
   `;
 }
@@ -3287,7 +3298,7 @@ function levFinanceRow(item, options = {}) {
 function renderLevExtractionModal() {
   const extraction = state.levFinanceExtraction;
   if (!extraction) return "";
-  const validRows = (extraction.preview || []).map((sale) => levFinanceRow({ ...sale, status: "Prévia" })).join("");
+  const validRows = (extraction.preview || []).map((sale) => levFinanceRow({ ...sale, status: "Prévia" }, { readOnly: true })).join("");
   const invalidRows = (extraction.invalid || []).map((sale) => `
     <tr>
       <td>${escapeHtml(sale.unit || "-")}</td>
@@ -3318,13 +3329,66 @@ function renderLevExtractionModal() {
   `;
 }
 
+function levFinanceRecordByKey(key) {
+  const decoded = String(key || "");
+  const unitKey = decoded.startsWith("unit:") ? decoded.slice(5) : "";
+  const sales = state.levFinance?.sales || [];
+  const settlements = state.levFinance?.settlements || [];
+  return sales.find((item) => item.id === decoded || (unitKey && item.unit === unitKey))
+    || settlements.find((item) => item.id === decoded || item.unit === unitKey || item.unit === decoded)
+    || null;
+}
+
+function renderLevFinanceModal() {
+  const modal = state.levFinanceModal;
+  if (!modal) return "";
+  const record = levFinanceRecordByKey(modal.key) || {};
+  const title = {
+    edit: "Editar venda",
+    invoice: "Alterar para NF Emitida",
+    paid: "Alterar para NF Paga"
+  }[modal.type] || "Financeiro Lev";
+  const editFields = modal.type === "edit" ? `
+    <div class="field"><label>Unidade</label><input name="unit" value="${escapeHtml(record.unit || "")}" required></div>
+    <div class="field"><label>Cliente</label><input name="client" value="${escapeHtml(record.client || "")}"></div>
+    <div class="field"><label>Assinatura</label><input name="signedAt" value="${escapeHtml(record.signedAt || "")}"></div>
+    <div class="field"><label>Valor contrato</label><input name="contractValue" value="${escapeHtml(record.contractValue || "")}"></div>
+    <div class="field"><label>Comissão Lev</label><input name="commissionValue" value="${escapeHtml(record.commissionValue || "")}"></div>
+    <div class="field"><label>Imobiliária</label><input name="realEstate" value="${escapeHtml(record.realEstate || "")}"></div>
+  ` : "";
+  const invoiceFields = modal.type === "invoice" ? `
+    <div class="field"><label>Número da NF</label><input name="invoiceNumber" value="${escapeHtml(record.invoiceNumber || "")}" required></div>
+    <div class="field"><label>Data de emissão</label><input name="invoiceIssuedAt" type="date" value="${escapeHtml(record.invoiceIssuedAt || new Date().toISOString().slice(0, 10))}" required></div>
+  ` : "";
+  const paidFields = modal.type === "paid" ? `
+    <div class="field"><label>Data de pagamento</label><input name="paidAt" type="date" value="${escapeHtml(record.paidAt || new Date().toISOString().slice(0, 10))}" required></div>
+  ` : "";
+  return `
+    <div class="modal-backdrop" data-lev-modal-backdrop>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="levFinanceModalTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="levFinanceModalTitle">${title}</h2>
+            <p class="modal-subtitle">${escapeHtml(record.unit || "")}${record.client ? ` · ${escapeHtml(record.client)}` : ""}</p>
+          </div>
+          <button class="ghost-button" type="button" data-close-lev-modal>Fechar</button>
+        </div>
+        <form id="levFinanceRecordForm" class="form-grid editor">
+          ${editFields || invoiceFields || paidFields}
+          <div class="field full"><div class="row-actions modal-actions"><button class="secondary" type="button" data-close-lev-modal>Cancelar</button><button class="primary" type="submit">Salvar</button></div></div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
 function renderLevFinanceView() {
   const finance = state.levFinance || { settings: {}, sales: [], receipts: [], paidUnits: [], settlements: [] };
   const term = state.levFinanceSearch.trim().toLocaleLowerCase("pt-BR");
   const matchesFinanceSearch = (item) => !term || levFinanceSearchText(item).includes(term);
   const allSales = (finance.sales || []).filter(matchesFinanceSearch);
   const pendingSales = allSales.filter((sale) => !sale.paid && !sale.eligible);
-  const nfSales = allSales.filter((sale) => !sale.paid && sale.eligible).map((sale) => ({ ...sale, status: "NF/provisionamento solicitado" }));
+  const nfSales = allSales.filter((sale) => !sale.paid && sale.eligible).map((sale) => ({ ...sale, status: sale.status || "NF/provisionamento solicitado" }));
   const settlements = (finance.settlements || []).filter(matchesFinanceSearch);
   const nfSettlements = settlements.filter((settlement) => levStatusKey(settlement.status).includes("nf"));
   const paidSettlements = settlements.filter((settlement) => levStatusKey(settlement.status) === "paga");
@@ -3339,7 +3403,7 @@ function renderLevFinanceView() {
   const activeRows = currentRowsByTab[state.levFinanceTab] || currentRowsByTab.pending;
   const pendingContract = pendingSales.reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0);
   const pendingCommission = pendingSales.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0);
-  const tableRows = activeRows.map((item) => levFinanceRow(item, { canConfirm: state.levFinanceTab === "pending" })).join("");
+  const tableRows = activeRows.map((item) => levFinanceRow(item, { statusKey: state.levFinanceTab })).join("");
   const receiptRows = (finance.receipts || []).filter(matchesFinanceSearch).slice(0, 80).map((receipt) => `
     <tr>
       <td>${escapeHtml(receipt.unit)}</td>
@@ -3392,6 +3456,7 @@ function renderLevFinanceView() {
       </section>
     </section>
     ${renderLevExtractionModal()}
+    ${renderLevFinanceModal()}
   `);
   bindLevFinanceControls();
 }
@@ -3406,6 +3471,7 @@ function readFileAsDataUrl(file) {
 }
 
 function bindLevFinanceControls() {
+  bindSettingsActionMenus();
   document.querySelectorAll("[data-lev-finance-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       state.levFinanceTab = button.dataset.levFinanceTab || "pending";
@@ -3480,6 +3546,71 @@ function bindLevFinanceControls() {
       setButtonBusy(button, true, "Registrando...");
       const data = await api("/api/lev-finance/receipts", { method: "POST", body: JSON.stringify(Object.fromEntries(form.entries())) });
       state.levFinance = data.levFinance;
+      renderLevFinanceView();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+  document.querySelectorAll("[data-lev-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const key = button.dataset.levKey;
+      const action = button.dataset.levAction;
+      if (["edit", "invoice", "paid"].includes(action)) {
+        state.levFinanceModal = { type: action, key };
+        renderLevFinanceView();
+        return;
+      }
+      if (action === "delete") {
+        if (!confirm("Excluir este registro financeiro? Esta ação remove a venda, histórico e recebimentos vinculados à unidade.")) return;
+        try {
+          const data = await api(`/api/lev-finance/records/${encodeURIComponent(key)}`, { method: "DELETE" });
+          state.levFinance = data.levFinance;
+          renderLevFinanceView();
+        } catch (error) {
+          alert(error.message);
+        }
+        return;
+      }
+      if (action === "confirm") {
+        if (!confirm("Confirmar venda, elegibilidade e enviar e-mail de aprovisionamento?")) return;
+        try {
+          const data = await api(`/api/lev-finance/records/${encodeURIComponent(key)}`, { method: "PATCH", body: JSON.stringify({ action: "confirm" }) });
+          state.levFinance = data.levFinance;
+          if (!data.email?.sent) alert(`Venda confirmada, mas o e-mail não foi enviado: ${data.email?.reason || "falha desconhecida"}`);
+          renderLevFinanceView();
+        } catch (error) {
+          alert(error.message);
+        }
+      }
+    });
+  });
+  document.querySelectorAll("[data-close-lev-modal], [data-lev-modal-backdrop]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (event.target !== element && element.hasAttribute("data-lev-modal-backdrop")) return;
+      state.levFinanceModal = null;
+      renderLevFinanceView();
+    });
+  });
+  document.querySelector("#levFinanceRecordForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button[type='submit']");
+    const modal = state.levFinanceModal;
+    if (!modal) return;
+    const form = new FormData(event.currentTarget);
+    const payload = Object.fromEntries(form.entries());
+    const body = modal.type === "edit"
+      ? { action: "edit", fields: payload }
+      : modal.type === "invoice"
+        ? { action: "invoice_issued", ...payload }
+        : { action: "paid", ...payload };
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const data = await api(`/api/lev-finance/records/${encodeURIComponent(modal.key)}`, { method: "PATCH", body: JSON.stringify(body) });
+      state.levFinance = data.levFinance;
+      state.levFinanceModal = null;
+      if (modal.type === "invoice") state.levFinanceTab = "nf";
+      if (modal.type === "paid") state.levFinanceTab = "paid";
       renderLevFinanceView();
     } catch (error) {
       setButtonBusy(button, false);

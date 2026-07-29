@@ -998,6 +998,9 @@ function migrateDb(db) {
     confirmedBy: sale.confirmedBy || "",
     provisionDate: sale.provisionDate || "",
     provisionEmailSentAt: sale.provisionEmailSentAt || "",
+    invoiceNumber: String(sale.invoiceNumber || "").trim(),
+    invoiceIssuedAt: String(sale.invoiceIssuedAt || "").trim(),
+    paidAt: String(sale.paidAt || "").trim(),
     commissionPercent: Number(sale.commissionPercent || db.levFinance.settings.commissionPercent || 0),
     commissionValue: Number(sale.commissionValue || 0),
     createdAt: sale.createdAt || new Date().toISOString(),
@@ -1045,6 +1048,9 @@ function migrateDb(db) {
     client: String(settlement.client || "").trim(),
     realEstate: String(settlement.realEstate || "").trim(),
     status: String(settlement.status || "").trim(),
+    invoiceNumber: String(settlement.invoiceNumber || "").trim(),
+    invoiceIssuedAt: String(settlement.invoiceIssuedAt || "").trim(),
+    paidAt: String(settlement.paidAt || "").trim(),
     source: String(settlement.source || "").trim(),
     createdAt: settlement.createdAt || new Date().toISOString(),
     updatedAt: settlement.updatedAt || settlement.createdAt || new Date().toISOString()
@@ -1445,6 +1451,9 @@ function normalizeLevSale(raw, settings = {}) {
     confirmedBy: "",
     provisionDate: "",
     provisionEmailSentAt: "",
+    invoiceNumber: String(raw.invoiceNumber || raw.numeroNf || raw["NF"] || "").trim(),
+    invoiceIssuedAt: String(raw.invoiceIssuedAt || raw.emissaoNf || "").trim(),
+    paidAt: String(raw.paidAt || raw.dataPagamento || "").trim(),
     commissionPercent,
     commissionValue: contractValue * (commissionPercent / 100),
     createdAt: new Date().toISOString(),
@@ -1551,6 +1560,9 @@ function upsertLevSettlement(db, sale, status, source = "Financeiro Lev") {
     client: String(sale.client || "").trim(),
     realEstate: String(sale.realEstate || "").trim(),
     status,
+    invoiceNumber: String(sale.invoiceNumber || "").trim(),
+    invoiceIssuedAt: String(sale.invoiceIssuedAt || "").trim(),
+    paidAt: String(sale.paidAt || "").trim(),
     source,
     updatedAt: new Date().toISOString()
   };
@@ -1563,6 +1575,91 @@ function upsertLevSettlement(db, sale, status, source = "Financeiro Lev") {
       createdAt: new Date().toISOString()
     });
   }
+}
+
+function findLevFinanceRecord(db, rawKey) {
+  const key = decodeURIComponent(String(rawKey || ""));
+  const unitKey = key.startsWith("unit:") ? normalizeLevUnit(key.slice(5)) : "";
+  const sale = db.levFinance.sales.find((item) => item.id === key || (unitKey && normalizeLevUnit(item.unit) === unitKey));
+  const unit = normalizeLevUnit(unitKey || sale?.unit || key);
+  const settlement = db.levFinance.settlements.find((item) => item.id === key || normalizeLevUnit(item.unit) === unit);
+  return { sale, settlement, unit };
+}
+
+function saleFromSettlement(db, settlement) {
+  const commissionPercent = Number(db.levFinance.settings?.commissionPercent || 0);
+  const sale = {
+    id: `lev-sale-${crypto.randomUUID()}`,
+    sourceId: "",
+    unit: normalizeLevUnit(settlement.unit),
+    client: String(settlement.client || "").trim(),
+    contractValue: Number(settlement.contractValue || 0),
+    signedAt: String(settlement.signedAt || "").trim(),
+    status: "Assinado",
+    table: "",
+    realEstate: String(settlement.realEstate || "").trim(),
+    eligible: levStatusKeyServer(settlement.status).includes("nf"),
+    confirmedAt: "",
+    confirmedBy: "",
+    provisionDate: "",
+    provisionEmailSentAt: "",
+    invoiceNumber: String(settlement.invoiceNumber || "").trim(),
+    invoiceIssuedAt: String(settlement.invoiceIssuedAt || "").trim(),
+    paidAt: String(settlement.paidAt || "").trim(),
+    commissionPercent,
+    commissionValue: Number(settlement.commissionValue || 0) || Number(settlement.contractValue || 0) * (commissionPercent / 100),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  db.levFinance.sales.push(sale);
+  return sale;
+}
+
+function levStatusKeyServer(value) {
+  return normalizeComparableText(value);
+}
+
+function applyLevRecordFields(db, sale, settlement, fields = {}) {
+  const oldUnit = normalizeLevUnit(sale?.unit || settlement?.unit);
+  const nextUnit = fields.unit !== undefined ? normalizeLevUnit(fields.unit) : oldUnit;
+  if (fields.unit !== undefined && !isLikelyLevUnit(nextUnit)) throw new Error("Unidade inválida");
+  const patch = {
+    unit: nextUnit,
+    client: fields.client !== undefined ? String(fields.client || "").trim() : undefined,
+    signedAt: fields.signedAt !== undefined ? String(fields.signedAt || "").trim() : undefined,
+    contractValue: fields.contractValue !== undefined ? parseMoney(fields.contractValue) : undefined,
+    commissionValue: fields.commissionValue !== undefined ? parseMoney(fields.commissionValue) : undefined,
+    realEstate: fields.realEstate !== undefined ? String(fields.realEstate || "").trim() : undefined,
+    invoiceNumber: fields.invoiceNumber !== undefined ? String(fields.invoiceNumber || "").trim() : undefined,
+    invoiceIssuedAt: fields.invoiceIssuedAt !== undefined ? String(fields.invoiceIssuedAt || "").trim() : undefined,
+    paidAt: fields.paidAt !== undefined ? String(fields.paidAt || "").trim() : undefined
+  };
+  for (const target of [sale, settlement].filter(Boolean)) {
+    for (const [key, value] of Object.entries(patch)) {
+      if (value !== undefined) target[key] = value;
+    }
+    target.updatedAt = new Date().toISOString();
+  }
+  if (sale && patch.contractValue !== undefined && fields.commissionValue === undefined) {
+    sale.commissionValue = Number(sale.contractValue || 0) * (Number(sale.commissionPercent || db.levFinance.settings?.commissionPercent || 0) / 100);
+  }
+  if (settlement && patch.contractValue !== undefined && fields.commissionValue === undefined) {
+    settlement.commissionValue = Number(settlement.contractValue || 0) * (Number(sale?.commissionPercent || db.levFinance.settings?.commissionPercent || 0) / 100);
+  }
+  if (oldUnit && nextUnit && oldUnit !== nextUnit) {
+    db.levFinance.paidUnits = db.levFinance.paidUnits.map((unit) => normalizeLevUnit(unit) === oldUnit ? nextUnit : unit);
+    db.levFinance.receipts.forEach((receipt) => {
+      if (normalizeLevUnit(receipt.unit) === oldUnit) receipt.unit = nextUnit;
+    });
+  }
+}
+
+function deleteLevFinanceRecord(db, sale, settlement, unit) {
+  const targetUnit = normalizeLevUnit(unit || sale?.unit || settlement?.unit);
+  db.levFinance.sales = db.levFinance.sales.filter((item) => item !== sale && normalizeLevUnit(item.unit) !== targetUnit);
+  db.levFinance.settlements = db.levFinance.settlements.filter((item) => item !== settlement && normalizeLevUnit(item.unit) !== targetUnit);
+  db.levFinance.paidUnits = db.levFinance.paidUnits.filter((item) => normalizeLevUnit(item) !== targetUnit);
+  db.levFinance.receipts = db.levFinance.receipts.filter((item) => normalizeLevUnit(item.unit) !== targetUnit);
 }
 
 async function extractLevSalesFromImage(imageDataUrl) {
@@ -3322,6 +3419,79 @@ async function routeApi(req, res, db) {
     audit(db, user, "REGISTER_LEV_RECEIPTS", { units: units.length, amount });
     await saveDb(db);
     return sendJson(res, 201, { levFinance: publicLevFinance(db) });
+  }
+
+  const levRecordMatch = url.pathname.match(/^\/api\/lev-finance\/records\/([^/]+)$/);
+  if (levRecordMatch && method === "PATCH") {
+    if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const { sale, settlement, unit } = findLevFinanceRecord(db, levRecordMatch[1]);
+    if (!sale && !settlement) return notFound(res);
+    let targetSale = sale;
+    const action = String(body.action || "edit");
+
+    if (action === "edit") {
+      applyLevRecordFields(db, sale, settlement, body.fields || {});
+    } else if (action === "confirm") {
+      targetSale = targetSale || saleFromSettlement(db, settlement);
+      targetSale.eligible = true;
+      targetSale.status = "NF/provisionamento solicitado";
+      targetSale.confirmedAt = new Date().toISOString();
+      targetSale.confirmedBy = user.username;
+      targetSale.provisionDate = provisionFridayForRequest(new Date());
+      targetSale.commissionPercent = Number(db.levFinance.settings.commissionPercent || targetSale.commissionPercent || 0);
+      targetSale.commissionValue = Number(targetSale.contractValue || 0) * (targetSale.commissionPercent / 100);
+      upsertLevSettlement(db, targetSale, "NF/provisionamento solicitado", "Venda confirmada no Financeiro Lev");
+      const email = await sendLevProvisionEmail(db, targetSale);
+      if (email.sent) targetSale.provisionEmailSentAt = new Date().toISOString();
+      else integrationEvent(db, "LEV_FINANCE", "PROVISION_EMAIL_FAILED", { saleId: targetSale.id, unit: targetSale.unit, reason: email.reason });
+      targetSale.updatedAt = new Date().toISOString();
+      audit(db, user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: targetSale.id, unit: targetSale.unit, provisionDate: targetSale.provisionDate, emailSent: email.sent });
+      await saveDb(db);
+      return sendJson(res, 200, { levFinance: publicLevFinance(db), email });
+    } else if (action === "invoice_issued") {
+      targetSale = targetSale || saleFromSettlement(db, settlement);
+      targetSale.eligible = true;
+      targetSale.status = "NF Emitida";
+      targetSale.invoiceNumber = String(body.invoiceNumber || "").trim();
+      targetSale.invoiceIssuedAt = String(body.invoiceIssuedAt || new Date().toISOString().slice(0, 10)).trim();
+      targetSale.updatedAt = new Date().toISOString();
+      upsertLevSettlement(db, targetSale, "NF Emitida", "NF registrada no Financeiro Lev");
+    } else if (action === "paid") {
+      targetSale = targetSale || saleFromSettlement(db, settlement);
+      targetSale.status = "Paga";
+      targetSale.paidAt = String(body.paidAt || new Date().toISOString().slice(0, 10)).trim();
+      targetSale.updatedAt = new Date().toISOString();
+      if (!db.levFinance.paidUnits.includes(targetSale.unit)) db.levFinance.paidUnits.push(targetSale.unit);
+      upsertLevSettlement(db, targetSale, "Paga", "Pagamento registrado no Financeiro Lev");
+      if (!db.levFinance.receipts.some((receipt) => normalizeLevUnit(receipt.unit) === normalizeLevUnit(targetSale.unit) && receipt.receivedAt === targetSale.paidAt)) {
+        db.levFinance.receipts.unshift({
+          id: `lev-receipt-${crypto.randomUUID()}`,
+          unit: targetSale.unit,
+          amount: Number(targetSale.commissionValue || 0),
+          receivedAt: targetSale.paidAt,
+          note: targetSale.invoiceNumber ? `NF ${targetSale.invoiceNumber}` : "NF paga",
+          createdAt: new Date().toISOString(),
+          createdBy: user.username
+        });
+      }
+    } else {
+      return sendJson(res, 400, { error: "Ação inválida" });
+    }
+
+    audit(db, user, "UPDATE_LEV_FINANCE_RECORD", { action, unit: normalizeLevUnit(unit || targetSale?.unit || settlement?.unit) });
+    await saveDb(db);
+    return sendJson(res, 200, { levFinance: publicLevFinance(db) });
+  }
+
+  if (levRecordMatch && method === "DELETE") {
+    if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const { sale, settlement, unit } = findLevFinanceRecord(db, levRecordMatch[1]);
+    if (!sale && !settlement) return notFound(res);
+    deleteLevFinanceRecord(db, sale, settlement, unit);
+    audit(db, user, "DELETE_LEV_FINANCE_RECORD", { unit: normalizeLevUnit(unit || sale?.unit || settlement?.unit) });
+    await saveDb(db);
+    return sendJson(res, 200, { levFinance: publicLevFinance(db) });
   }
 
   const levConfirmMatch = url.pathname.match(/^\/api\/lev-finance\/sales\/([^/]+)\/confirm$/);

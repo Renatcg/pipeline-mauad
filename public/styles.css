@@ -820,6 +820,11 @@ tr[data-open-lead] {
   color: var(--warn);
 }
 
+.chip-info {
+  background: #e0f2fe;
+  color: #075985;
+}
+
 .notification-icons {
   display: inline-flex;
   align-items: center;
