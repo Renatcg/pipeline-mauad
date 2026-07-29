@@ -2398,6 +2398,7 @@ function renderUserSettings() {
     const form = new FormData(event.currentTarget);
     const payload = {
       name: form.get("name"),
+      username: form.get("username"),
       role: form.get("role"),
       active: form.get("active") === "true",
       notifications: {
@@ -2445,7 +2446,7 @@ function renderUserEditorModal(formUser, isEditing, roleOptions) {
         </div>
         <form id="userForm" class="form-grid">
           <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(formUser.name || "")}" required autofocus></div>
-          <div class="field"><label>E-mail de acesso</label><input name="username" type="email" value="${escapeHtml(formUser.username || "")}" ${isEditing ? "disabled" : "required"}></div>
+          <div class="field"><label>E-mail de acesso</label><input name="username" type="email" value="${escapeHtml(formUser.username || "")}" required></div>
           <div class="field"><label>Perfil</label><select name="role">${roleOptions.map((role) => `<option ${role === formUser.role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select></div>
           <div class="field"><label>Status</label><select name="active"><option value="true" ${formUser.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${formUser.active === false ? "selected" : ""}>Inativo</option></select></div>
           <div class="field full"><label>Operação comercial</label><label class="checkline settings-check"><input type="checkbox" name="operatesAsBroker" ${formUser.operatesAsBroker ? "checked" : ""}> Operar também como corretor</label><small>Quando ativo para Head ou Supervisor, o usuário pode receber leads como corretor sem perder a visão gerencial.</small></div>

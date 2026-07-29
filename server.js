@@ -4056,6 +4056,16 @@ async function routeApi(req, res, db) {
     if (Object.prototype.hasOwnProperty.call(body, "role") && !manageableRoles(user).includes(body.role)) {
       return sendJson(res, 400, { error: "Perfil inválido" });
     }
+    if (Object.prototype.hasOwnProperty.call(body, "username")) {
+      const nextUsername = String(body.username || "").trim().toLowerCase();
+      const isBuiltinAdmin = target.role === "Admin TI" && String(target.username || "").toLowerCase() === "admin";
+      if (!isBuiltinAdmin && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextUsername)) {
+        return sendJson(res, 400, { error: "E-mail inválido" });
+      }
+      const emailInUse = db.users.some((item) => item.id !== target.id && String(item.username || "").toLowerCase() === nextUsername);
+      if (emailInUse) return sendJson(res, 400, { error: "Este e-mail já está em uso por outro usuário" });
+      if (!isBuiltinAdmin || nextUsername !== "admin") target.username = nextUsername;
+    }
     const currentAssignableBroker = isAssignableBroker(target);
     const willDeactivateBroker = currentAssignableBroker && target.active && body.active === false;
     const assignedLeads = willDeactivateBroker ? db.leads.filter((lead) => lead.inPipeline && lead.assignedTo === target.id) : [];
