@@ -956,6 +956,7 @@ function migrateDb(db) {
     provisionTo: String(db.levFinance.settings.provisionTo || "").trim(),
     provisionCc: String(db.levFinance.settings.provisionCc || "").trim()
   };
+  db.levFinance.defaultSettlementsCleared = Boolean(db.levFinance.defaultSettlementsCleared);
   if (!Array.isArray(db.levFinance.sales)) {
     db.levFinance.sales = [];
     changed = true;
@@ -1016,17 +1017,19 @@ function migrateDb(db) {
     createdAt: receipt.createdAt || new Date().toISOString(),
     createdBy: String(receipt.createdBy || "").trim()
   })).filter((receipt) => receipt.unit);
-  for (const settlement of DEFAULT_LEV_SETTLEMENTS) {
-    if (!db.levFinance.settlements.some((item) => item.unit === settlement.unit)) {
-      db.levFinance.settlements.push({
-        id: `lev-settlement-${settlement.unit}`,
-        ...settlement,
-        contractValue: parseMoney(settlement.contractValueText),
-        commissionValue: parseMoney(settlement.commissionValueText),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      });
-      changed = true;
+  if (!db.levFinance.defaultSettlementsCleared) {
+    for (const settlement of DEFAULT_LEV_SETTLEMENTS) {
+      if (!db.levFinance.settlements.some((item) => item.unit === settlement.unit)) {
+        db.levFinance.settlements.push({
+          id: `lev-settlement-${settlement.unit}`,
+          ...settlement,
+          contractValue: parseMoney(settlement.contractValueText),
+          commissionValue: parseMoney(settlement.commissionValueText),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+        changed = true;
+      }
     }
   }
   const previousLevSettlementsLength = db.levFinance.settlements.length;
@@ -2318,6 +2321,10 @@ function canAccessLevFinance(user) {
     || ["Gerente Financeiro", "Auxiliar Financeiro"].includes(user.role);
 }
 
+function canResetLevFinance(user) {
+  return user.role === "Admin TI" && String(user.username || "").toLowerCase() === "admin";
+}
+
 function hasBaseHistory(lead) {
   return Boolean(lead.sourceStatus || lead.odysseiaStatus);
 }
@@ -3216,6 +3223,24 @@ async function routeApi(req, res, db) {
     audit(db, user, "UPDATE_LEV_FINANCE_SETTINGS", { commissionPercent: db.levFinance.settings.commissionPercent });
     await saveDb(db);
     return sendJson(res, 200, { levFinance: publicLevFinance(db) });
+  }
+
+  if (method === "DELETE" && url.pathname === "/api/lev-finance/data") {
+    if (!canResetLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const cleared = {
+      sales: db.levFinance.sales.length,
+      receipts: db.levFinance.receipts.length,
+      paidUnits: db.levFinance.paidUnits.length,
+      settlements: db.levFinance.settlements.length
+    };
+    db.levFinance.sales = [];
+    db.levFinance.receipts = [];
+    db.levFinance.paidUnits = [];
+    db.levFinance.settlements = [];
+    db.levFinance.defaultSettlementsCleared = true;
+    audit(db, user, "RESET_LEV_FINANCE_DATA", cleared);
+    await saveDb(db);
+    return sendJson(res, 200, { ok: true, cleared, levFinance: publicLevFinance(db) });
   }
 
   if (method === "POST" && url.pathname === "/api/lev-finance/extract") {

@@ -159,6 +159,10 @@ function canAccessLevFinance() {
     || ["Gerente Financeiro", "Auxiliar Financeiro"].includes(state.user?.role);
 }
 
+function canResetLevFinance() {
+  return state.user?.role === "Admin TI" && String(state.user?.username || "").toLowerCase() === "admin";
+}
+
 function canDeleteComments() {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(state.user?.role);
 }
@@ -3126,6 +3130,17 @@ function renderLevFinanceSettings() {
         <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar configurações</button></div></div>
       </form>
     </section>
+    ${canResetLevFinance() ? `
+      <section class="panel danger-zone">
+        <div class="panel-head">
+          <div>
+            <h2>Zerar dados financeiros</h2>
+            <p>Remove vendas pendentes, NF emitida, pagas, ignoradas e histórico de recebimentos. Mantém % de comissão e e-mails configurados.</p>
+          </div>
+        </div>
+        <button class="danger-button" type="button" id="resetLevFinanceButton">Zerar Financeiro Lev</button>
+      </section>
+    ` : ""}
   `);
   bindSettingsCommon();
   document.querySelector("#levFinanceSettingsForm")?.addEventListener("submit", async (event) => {
@@ -3140,6 +3155,21 @@ function renderLevFinanceSettings() {
       });
       state.levFinance = data.levFinance;
       state.settingsNotice = "Configurações financeiras salvas.";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+  document.querySelector("#resetLevFinanceButton")?.addEventListener("click", async (event) => {
+    if (!confirm("Tem certeza que deseja zerar todas as vendas, recebimentos e históricos do Financeiro Lev? Esta ação não pode ser desfeita.")) return;
+    if (!confirm("Confirma novamente? As abas Pendentes, NF Emitida, Pagas e Ignoradas ficarão vazias.")) return;
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Zerando...");
+      const data = await api("/api/lev-finance/data", { method: "DELETE" });
+      state.levFinance = data.levFinance;
+      state.settingsNotice = `Financeiro Lev zerado: ${data.cleared.sales} venda(s), ${data.cleared.settlements} histórico(s), ${data.cleared.receipts} recebimento(s).`;
       renderSettings();
     } catch (error) {
       setButtonBusy(button, false);
