@@ -1382,7 +1382,7 @@ function renderLeadBases() {
   const rows = leadRows(leads, { readOnlyStatus: true, withRescue: true, blankHistoricalBaseStatus: true });
   const pending = leads.filter((lead) => !lead.inPipeline).length;
   const rescued = leads.filter((lead) => lead.inPipeline).length;
-  const totalBase = baseLeadCount();
+  const totalBase = leads.length;
   renderShell(`
     ${renderViewHead("Bases de Leads", "Bases importadas separadas do pipeline comercial", { filters: true })}
     ${sources.length ? renderBaseSources(sources) : ""}
