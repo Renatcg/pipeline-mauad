@@ -1029,6 +1029,7 @@ function migrateDb(db) {
       changed = true;
     }
   }
+  const previousLevSettlementsLength = db.levFinance.settlements.length;
   db.levFinance.settlements = db.levFinance.settlements.map((settlement) => ({
     id: String(settlement.id || `lev-settlement-${crypto.randomUUID()}`),
     unit: normalizeLevUnit(settlement.unit || ""),
@@ -1044,7 +1045,11 @@ function migrateDb(db) {
     source: String(settlement.source || "").trim(),
     createdAt: settlement.createdAt || new Date().toISOString(),
     updatedAt: settlement.updatedAt || settlement.createdAt || new Date().toISOString()
-  })).filter((settlement, index, settlements) => settlement.unit && settlements.findIndex((item) => item.unit === settlement.unit) === index);
+  })).filter((settlement, index, settlements) => (
+    isLikelyLevUnit(settlement.unit)
+    && settlements.findIndex((item) => item.unit === settlement.unit) === index
+  ));
+  if (db.levFinance.settlements.length !== previousLevSettlementsLength) changed = true;
   db.levFinance.paidUnits = [...new Set([
     ...db.levFinance.paidUnits.map((unit) => String(unit || "").trim()).filter(Boolean),
     ...db.levFinance.receipts.map((receipt) => receipt.unit),
@@ -1388,7 +1393,10 @@ function publicLevFinance(db) {
       .sort((a, b) => (parseBrazilDate(b.signedAt)?.getTime() || new Date(b.createdAt).getTime()) - (parseBrazilDate(a.signedAt)?.getTime() || new Date(a.createdAt).getTime())),
     receipts: finance.receipts || [],
     paidUnits: finance.paidUnits || [],
-    settlements: (finance.settlements || []).sort((a, b) => (parseBrazilDate(b.signedAt)?.getTime() || new Date(b.createdAt).getTime()) - (parseBrazilDate(a.signedAt)?.getTime() || new Date(a.createdAt).getTime()))
+    settlements: (finance.settlements || [])
+      .filter((settlement) => isLikelyLevUnit(settlement.unit))
+      .map((settlement) => ({ ...settlement, unit: normalizeLevUnit(settlement.unit) }))
+      .sort((a, b) => (parseBrazilDate(b.signedAt)?.getTime() || new Date(b.createdAt).getTime()) - (parseBrazilDate(a.signedAt)?.getTime() || new Date(a.createdAt).getTime()))
   };
 }
 
