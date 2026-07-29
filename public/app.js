@@ -2994,6 +2994,13 @@ function dateLabel(value) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("pt-BR");
 }
 
+function levSettlementClass(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized.includes("paga")) return "status-active";
+  if (normalized.includes("não contabilizada")) return "chip chip-warning";
+  return "chip";
+}
+
 function renderLevFinanceSettings() {
   const settings = state.levFinance?.settings || {};
   settingsLayout(`
@@ -3032,11 +3039,22 @@ function renderLevFinanceSettings() {
 }
 
 function renderLevFinanceView() {
-  const finance = state.levFinance || { settings: {}, sales: [], receipts: [], paidUnits: [] };
+  const finance = state.levFinance || { settings: {}, sales: [], receipts: [], paidUnits: [], settlements: [] };
   const sales = finance.sales || [];
   const pendingSales = sales.filter((sale) => !sale.paid);
   const totalContract = pendingSales.reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0);
   const totalCommission = pendingSales.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0);
+  const settlementRows = (finance.settlements || []).map((settlement) => `
+    <tr>
+      <td>${escapeHtml(settlement.unit)}</td>
+      <td>${escapeHtml(settlement.client)}</td>
+      <td>${escapeHtml(settlement.signedAt)}</td>
+      <td>${money(settlement.contractValue)}</td>
+      <td>${settlement.commissionValue ? money(settlement.commissionValue) : "-"}</td>
+      <td>${escapeHtml(settlement.realEstate)}</td>
+      <td><span class="${levSettlementClass(settlement.status)}">${escapeHtml(settlement.status)}</span></td>
+    </tr>
+  `).join("");
   const rows = pendingSales.map((sale) => `
     <tr>
       <td>${escapeHtml(sale.unit)}</td>
@@ -3064,6 +3082,10 @@ function renderLevFinanceView() {
       <div class="metric"><span>Valor contratos</span><strong>${money(totalContract)}</strong></div>
       <div class="metric"><span>Comissão estimada</span><strong>${money(totalCommission)}</strong></div>
       <div class="metric"><span>% comissão</span><strong>${escapeHtml(finance.settings?.commissionPercent || 0)}%</strong></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Acerto Lev / histórico de vendas</h2></div>
+      <div class="table-wrap"><table class="access-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Comissão Lev</th><th>Imobiliária</th><th>Status</th></tr></thead><tbody>${settlementRows || '<tr><td colspan="7" class="empty">Nenhuma venda no histórico.</td></tr>'}</tbody></table></div>
     </section>
     <section class="dashboard-grid finance-grid">
       <section class="panel">

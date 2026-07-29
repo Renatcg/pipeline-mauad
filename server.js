@@ -84,6 +84,646 @@ const DEFAULT_KNOWLEDGE_ARTICLES = [
     published: true
   }
 ];
+const DEFAULT_LEV_SETTLEMENTS = [
+  {
+    "unit": "RGLQDLF19",
+    "projectCode": "RGL",
+    "contractValueText": "730.052,18",
+    "commissionValueText": "3.650,26",
+    "signedAt": "04/06/26 12:02:44",
+    "client": "Leila Cristina Nunes Gomes",
+    "realEstate": "Construtora Mauad Ltda",
+    "status": "NF emitida, aguardando sexta-feira",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040203",
+    "projectCode": "GCR",
+    "contractValueText": "420.900,00",
+    "commissionValueText": "2.104,50",
+    "signedAt": "21/06/26 10:19:25",
+    "client": "Breno Vagner Bezerra Vicente",
+    "realEstate": "Mr Negocios Imobiliarios",
+    "status": "NF emitida, aguardando sexta-feira",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060201",
+    "projectCode": "GCR",
+    "contractValueText": "627.737,34",
+    "commissionValueText": "3.138,69",
+    "signedAt": "28/05/26 08:36:19",
+    "client": "Eduardo Pinheiro do Nascimento",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050104",
+    "projectCode": "GCR",
+    "contractValueText": "766.271,95",
+    "commissionValueText": "3.831,36",
+    "signedAt": "18/02/26 07:12:48",
+    "client": "Eduardo Anjo Barreto",
+    "realEstate": "Velith e Barbosa Imoveis",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR030101",
+    "projectCode": "GCR",
+    "contractValueText": "619.464,92",
+    "commissionValueText": "3.097,32",
+    "signedAt": "18/02/26 17:54:27",
+    "client": "Cláudia Everilde Coutinho Mendes Bento",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR030303",
+    "projectCode": "GCR",
+    "contractValueText": "421.387,55",
+    "commissionValueText": "2.106,94",
+    "signedAt": "24/02/26 17:11:03",
+    "client": "Rodrigo Noronha de Carvalho",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060104",
+    "projectCode": "GCR",
+    "contractValueText": "625.459,33",
+    "commissionValueText": "3.127,30",
+    "signedAt": "21/05/26 14:56:06",
+    "client": "Marcia de Lima Leitão",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060103",
+    "projectCode": "GCR",
+    "contractValueText": "448.673,08",
+    "commissionValueText": "2.243,37",
+    "signedAt": "20/05/26 16:41:35",
+    "client": "Marcia de Lima Leitão",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR030305",
+    "projectCode": "GCR",
+    "contractValueText": "568.205,46",
+    "commissionValueText": "2.841,03",
+    "signedAt": "28/02/26 19:43:40",
+    "client": "Alexsandro Gonçalves Amaral",
+    "realEstate": "Bruno Medeiros da Silva",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050206",
+    "projectCode": "GCR",
+    "contractValueText": "397.601,32",
+    "commissionValueText": "1.988,01",
+    "signedAt": "21/03/26 16:05:40",
+    "client": "Ronaldo Maia Botelho",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040106",
+    "projectCode": "GCR",
+    "contractValueText": "442.080,00",
+    "commissionValueText": "2.210,40",
+    "signedAt": "05/05/26 22:57:29",
+    "client": "Paula Camara de Oliveira",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050304",
+    "projectCode": "GCR",
+    "contractValueText": "550.661,45",
+    "commissionValueText": "2.753,31",
+    "signedAt": "20/03/26 15:48:39",
+    "client": "Ana Maria de Azambuja Mancini Correa",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040202",
+    "projectCode": "GCR",
+    "contractValueText": "369.096,52",
+    "commissionValueText": "1.845,48",
+    "signedAt": "18/02/26 10:18:59",
+    "client": "Danielle Tito Loureiro",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR030206",
+    "projectCode": "GCR",
+    "contractValueText": "397.601,32",
+    "commissionValueText": "1.988,01",
+    "signedAt": "31/03/26 12:16:35",
+    "client": "Tavane Rosado de Aquino Odontologia",
+    "realEstate": "Construtora Mauad Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050202",
+    "projectCode": "GCR",
+    "contractValueText": "397.601,32",
+    "commissionValueText": "1.988,01",
+    "signedAt": "21/03/26 14:21:50",
+    "client": "Sylvio Maia Botelho",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040303",
+    "projectCode": "GCR",
+    "contractValueText": "200.000,00",
+    "commissionValueText": "1.000,00",
+    "signedAt": "21/03/26 19:14:06",
+    "client": "Keyla Blank de Cnop",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060207",
+    "projectCode": "GCR",
+    "contractValueText": "348.000,00",
+    "commissionValueText": "1.740,00",
+    "signedAt": "10/02/26 22:48:40",
+    "client": "Robson Correa Santos",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040304",
+    "projectCode": "GCR",
+    "contractValueText": "325.000,00",
+    "commissionValueText": "1.625,00",
+    "signedAt": "14/03/26 16:50:25",
+    "client": "Keyla Blank de Cnop",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060206",
+    "projectCode": "GCR",
+    "contractValueText": "342.322,00",
+    "commissionValueText": "1.711,61",
+    "signedAt": "07/02/26 14:26:50",
+    "client": "Mauricio Elisio Martins Loureiro",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060301",
+    "projectCode": "GCR",
+    "contractValueText": "309.090,00",
+    "commissionValueText": "1.545,45",
+    "signedAt": "04/03/26 17:54:57",
+    "client": "Rafael Estevam de Brito",
+    "realEstate": "Construtora Mauad Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050103",
+    "projectCode": "GCR",
+    "contractValueText": "425.282,64",
+    "commissionValueText": "2.126,41",
+    "signedAt": "18/02/26 22:40:27",
+    "client": "Ricardo Portilho da Costa",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR030308",
+    "projectCode": "GCR",
+    "contractValueText": "599.104,04",
+    "commissionValueText": "2.995,52",
+    "signedAt": "04/03/26 14:44:08",
+    "client": "Wilson Palha de Castro Neto",
+    "realEstate": "Construtora Mauad Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060302",
+    "projectCode": "GCR",
+    "contractValueText": "190.910,00",
+    "commissionValueText": "954,55",
+    "signedAt": "04/03/26 18:04:57",
+    "client": "Rafael Estevam de Brito",
+    "realEstate": "Construtora Mauad Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060308",
+    "projectCode": "GCR",
+    "contractValueText": "720.213,78",
+    "commissionValueText": "3.601,07",
+    "signedAt": "03/03/26 20:18:15",
+    "client": "Ronaldo Andrade D Alcântara",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060101",
+    "projectCode": "GCR",
+    "contractValueText": "650.024,00",
+    "commissionValueText": "3.250,12",
+    "signedAt": "25/02/26 10:37:56",
+    "client": "Guilherme Pinto Nazar",
+    "realEstate": "Mega Empreendimentos e Consultoria Imobiliaria Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050107",
+    "projectCode": "GCR",
+    "contractValueText": "417.000,00",
+    "commissionValueText": "2.085,00",
+    "signedAt": "24/02/26 16:30:29",
+    "client": "Shirley de Souza Pinto",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050301",
+    "projectCode": "GCR",
+    "contractValueText": "580.926,52",
+    "commissionValueText": "2.904,63",
+    "signedAt": "06/02/26 20:06:02",
+    "client": "Lords Participacoes Ltda",
+    "realEstate": "Construtora Mauad Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR030102",
+    "projectCode": "GCR",
+    "contractValueText": "420.707,60",
+    "commissionValueText": "2.103,54",
+    "signedAt": "13/02/26 18:35:59",
+    "client": "Teresa Celina Campello de Siqueira e Pinto",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050308",
+    "projectCode": "GCR",
+    "contractValueText": "705.573,87",
+    "commissionValueText": "3.527,87",
+    "signedAt": "11/02/26 12:40:59",
+    "client": "Cássia Cavalcante Silva",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040302",
+    "projectCode": "GCR",
+    "contractValueText": "388.873,88",
+    "commissionValueText": "1.944,37",
+    "signedAt": "06/02/26 19:11:40",
+    "client": "Erica Alves Bezerra da Cruz",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040301",
+    "projectCode": "GCR",
+    "contractValueText": "580.926,52",
+    "commissionValueText": "2.904,63",
+    "signedAt": "08/02/26 10:44:55",
+    "client": "Sergio Ricardo Marinatto",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060307",
+    "projectCode": "GCR",
+    "contractValueText": "377.605,64",
+    "commissionValueText": "1.888,03",
+    "signedAt": "10/02/26 12:22:37",
+    "client": "Humberto Marques Siqueira da Silva",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040107",
+    "projectCode": "GCR",
+    "contractValueText": "430.158,60",
+    "commissionValueText": "2.150,79",
+    "signedAt": "11/02/26 21:17:27",
+    "client": "Romulo da Silva Campos",
+    "realEstate": "Brick Imobiliaria Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050303",
+    "projectCode": "GCR",
+    "contractValueText": "389.247,32",
+    "commissionValueText": "1.946,24",
+    "signedAt": "11/02/26 11:51:39",
+    "client": "Mauro Sérgio Fatuch Bayout",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040102",
+    "projectCode": "GCR",
+    "contractValueText": "420.707,89",
+    "commissionValueText": "2.103,54",
+    "signedAt": "11/02/26 10:22:12",
+    "client": "Laura Maria Maia Periard",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR030203",
+    "projectCode": "GCR",
+    "contractValueText": "374.242,40",
+    "commissionValueText": "1.871,21",
+    "signedAt": "10/02/26 21:14:07",
+    "client": "Adilson Pereira Pacheco",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050207",
+    "projectCode": "GCR",
+    "contractValueText": "344.483,00",
+    "commissionValueText": "1.722,42",
+    "signedAt": "10/02/26 20:15:10",
+    "client": "João Fernando Monteiro Campos",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060203",
+    "projectCode": "GCR",
+    "contractValueText": "377.460,00",
+    "commissionValueText": "1.887,30",
+    "signedAt": "10/02/26 19:55:13",
+    "client": "Juliana Nesi Cardoso Migliano Porto",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR030207",
+    "projectCode": "GCR",
+    "contractValueText": "361.500,00",
+    "commissionValueText": "1.807,50",
+    "signedAt": "10/02/26 15:53:41",
+    "client": "Marcio Jose Camara de Figueiredo",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040305",
+    "projectCode": "GCR",
+    "contractValueText": "717.264,28",
+    "commissionValueText": "3.586,32",
+    "signedAt": "10/02/26 12:25:11",
+    "client": "Thiago Cabral Rodrigues",
+    "realEstate": "Premier Brocker Imoveis",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050203",
+    "projectCode": "GCR",
+    "contractValueText": "479.732,00",
+    "commissionValueText": "2.398,66",
+    "signedAt": "09/02/26 21:30:21",
+    "client": "Danielle Flatow Cha",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040308",
+    "projectCode": "GCR",
+    "contractValueText": "696.481,00",
+    "commissionValueText": "3.482,41",
+    "signedAt": "09/02/26 19:01:42",
+    "client": "Jose Carlos Ferraz Junior",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060202",
+    "projectCode": "GCR",
+    "contractValueText": "377.460,00",
+    "commissionValueText": "1.887,30",
+    "signedAt": "09/02/26 17:33:14",
+    "client": "Camila Mury Alves Porto",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050306",
+    "projectCode": "GCR",
+    "contractValueText": "388.873,88",
+    "commissionValueText": "1.944,37",
+    "signedAt": "09/02/26 17:11:40",
+    "client": "Jeronymo Barbalho Maia Junior",
+    "realEstate": "Carla Maturano",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060303",
+    "projectCode": "GCR",
+    "contractValueText": "388.873,88",
+    "commissionValueText": "1.944,37",
+    "signedAt": "09/02/26 17:05:54",
+    "client": "Paulo Cesar Borges de Sousa",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050302",
+    "projectCode": "GCR",
+    "contractValueText": "388.873,88",
+    "commissionValueText": "1.944,37",
+    "signedAt": "09/02/26 14:32:04",
+    "client": "Leonardo Antonio Archimedes Bottari",
+    "realEstate": "Carla Maturano",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR050305",
+    "projectCode": "GCR",
+    "contractValueText": "573.748,44",
+    "commissionValueText": "2.868,74",
+    "signedAt": "09/02/26 10:42:33",
+    "client": "Adriana Cristina Devesa Saade",
+    "realEstate": "Analon Castro",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060306",
+    "projectCode": "GCR",
+    "contractValueText": "405.779,86",
+    "commissionValueText": "2.028,90",
+    "signedAt": "08/02/26 20:37:07",
+    "client": "Ana Gabriela Santa Marinha Pinheiro",
+    "realEstate": "Brick Imobiliaria Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040103",
+    "projectCode": "GCR",
+    "contractValueText": "537.895,88",
+    "commissionValueText": "2.689,48",
+    "signedAt": "08/02/26 14:10:37",
+    "client": "Marco Antonio Naslausky Mibielli",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR040307",
+    "projectCode": "GCR",
+    "contractValueText": "390.646,77",
+    "commissionValueText": "1.953,23",
+    "signedAt": "08/02/26 10:23:08",
+    "client": "Carlos Augusto Mendes Bittar",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR030107",
+    "projectCode": "GCR",
+    "contractValueText": "380.230,92",
+    "commissionValueText": "1.901,15",
+    "signedAt": "07/02/26 16:38:39",
+    "client": "Luiz Fabiano da Silva",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR030306",
+    "projectCode": "GCR",
+    "contractValueText": "405.700,00",
+    "commissionValueText": "2.028,50",
+    "signedAt": "07/02/26 16:22:50",
+    "client": "Marcos Jose Resnik",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR030202",
+    "projectCode": "GCR",
+    "contractValueText": "377.565,39",
+    "commissionValueText": "1.887,83",
+    "signedAt": "06/02/26 19:30:29",
+    "client": "Marcia de Freitas Milagres",
+    "realEstate": "My House Imoveis Ltda",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060304",
+    "projectCode": "GCR",
+    "contractValueText": "717.264,00",
+    "commissionValueText": "3.586,32",
+    "signedAt": "06/02/26 18:27:42",
+    "client": "Raphael da Silva Braga",
+    "realEstate": "Premier Brocker Imoveis",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "GCR060106",
+    "projectCode": "GCR",
+    "contractValueText": "439.499,80",
+    "commissionValueText": "2.197,50",
+    "signedAt": "06/02/26 16:30:50",
+    "client": "Juliano Bizzo Netto",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Paga",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "RGLQACA04",
+    "projectCode": "RGL",
+    "contractValueText": "1.592.626,20",
+    "commissionValueText": "",
+    "signedAt": "04/11/25 16:19:34",
+    "client": "Silvio José Martins Corrêa",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Não contabilizada antes de jan/2026",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "RGLQACA05",
+    "projectCode": "RGL",
+    "contractValueText": "1.588.000,00",
+    "commissionValueText": "",
+    "signedAt": "16/10/25 10:51:57",
+    "client": "Jorge Nunes de Oliveira",
+    "realEstate": "Mega Lançamentos Imobiliarios Ltda",
+    "status": "Não contabilizada antes de jan/2026",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  },
+  {
+    "unit": "RGLQBCA04",
+    "projectCode": "RGL",
+    "contractValueText": "3.246.630,00",
+    "commissionValueText": "",
+    "signedAt": "20/10/25 09:49:07",
+    "client": "Marco Aurelio Madruga Taboadela",
+    "realEstate": "Rmeirelles Negocios Imobiliarios Eireli",
+    "status": "Não contabilizada antes de jan/2026",
+    "source": "Acerto de Contas Remun LEV - Vendas.pdf"
+  }
+];
 const DATABASE_URL = process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
@@ -328,6 +968,10 @@ function migrateDb(db) {
     db.levFinance.paidUnits = [];
     changed = true;
   }
+  if (!Array.isArray(db.levFinance.settlements)) {
+    db.levFinance.settlements = [];
+    changed = true;
+  }
   db.levFinance.sales = db.levFinance.sales.map((sale) => ({
     id: String(sale.id || `lev-sale-${crypto.randomUUID()}`),
     sourceId: String(sale.sourceId || "").trim(),
@@ -357,9 +1001,39 @@ function migrateDb(db) {
     createdAt: receipt.createdAt || new Date().toISOString(),
     createdBy: String(receipt.createdBy || "").trim()
   })).filter((receipt) => receipt.unit);
+  for (const settlement of DEFAULT_LEV_SETTLEMENTS) {
+    if (!db.levFinance.settlements.some((item) => item.unit === settlement.unit)) {
+      db.levFinance.settlements.push({
+        id: `lev-settlement-${settlement.unit}`,
+        ...settlement,
+        contractValue: parseMoney(settlement.contractValueText),
+        commissionValue: parseMoney(settlement.commissionValueText),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      changed = true;
+    }
+  }
+  db.levFinance.settlements = db.levFinance.settlements.map((settlement) => ({
+    id: String(settlement.id || `lev-settlement-${crypto.randomUUID()}`),
+    unit: String(settlement.unit || "").trim(),
+    projectCode: String(settlement.projectCode || "").trim(),
+    contractValueText: String(settlement.contractValueText || "").trim(),
+    commissionValueText: String(settlement.commissionValueText || "").trim(),
+    contractValue: Number(settlement.contractValue || parseMoney(settlement.contractValueText)),
+    commissionValue: Number(settlement.commissionValue || parseMoney(settlement.commissionValueText)),
+    signedAt: String(settlement.signedAt || "").trim(),
+    client: String(settlement.client || "").trim(),
+    realEstate: String(settlement.realEstate || "").trim(),
+    status: String(settlement.status || "").trim(),
+    source: String(settlement.source || "").trim(),
+    createdAt: settlement.createdAt || new Date().toISOString(),
+    updatedAt: settlement.updatedAt || settlement.createdAt || new Date().toISOString()
+  })).filter((settlement, index, settlements) => settlement.unit && settlements.findIndex((item) => item.unit === settlement.unit) === index);
   db.levFinance.paidUnits = [...new Set([
     ...db.levFinance.paidUnits.map((unit) => String(unit || "").trim()).filter(Boolean),
-    ...db.levFinance.receipts.map((receipt) => receipt.unit)
+    ...db.levFinance.receipts.map((receipt) => receipt.unit),
+    ...db.levFinance.settlements.filter((settlement) => settlement.status === "Paga").map((settlement) => settlement.unit)
   ])];
   for (const defaultArticle of DEFAULT_KNOWLEDGE_ARTICLES) {
     if (!db.knowledgeArticles.some((article) => article.id === defaultArticle.id)) {
@@ -665,7 +1339,7 @@ function provisionFridayForRequest(sentAt = new Date()) {
 }
 
 function publicLevFinance(db) {
-  const finance = db.levFinance || { settings: {}, sales: [], receipts: [], paidUnits: [] };
+  const finance = db.levFinance || { settings: {}, sales: [], receipts: [], paidUnits: [], settlements: [] };
   const paid = new Set(finance.paidUnits || []);
   return {
     settings: finance.settings || {},
@@ -674,7 +1348,8 @@ function publicLevFinance(db) {
       paid: paid.has(sale.unit)
     })).sort((a, b) => (parseBrazilDate(b.signedAt)?.getTime() || new Date(b.createdAt).getTime()) - (parseBrazilDate(a.signedAt)?.getTime() || new Date(a.createdAt).getTime())),
     receipts: finance.receipts || [],
-    paidUnits: finance.paidUnits || []
+    paidUnits: finance.paidUnits || [],
+    settlements: (finance.settlements || []).sort((a, b) => (parseBrazilDate(b.signedAt)?.getTime() || new Date(b.createdAt).getTime()) - (parseBrazilDate(a.signedAt)?.getTime() || new Date(a.createdAt).getTime()))
   };
 }
 
@@ -704,6 +1379,37 @@ function normalizeLevSale(raw, settings = {}) {
   };
 }
 
+function upsertLevSettlement(db, sale, status, source = "Financeiro Lev") {
+  if (!db.levFinance) db.levFinance = {};
+  if (!Array.isArray(db.levFinance.settlements)) db.levFinance.settlements = [];
+  const unit = String(sale.unit || "").trim();
+  if (!unit) return;
+  const existing = db.levFinance.settlements.find((item) => item.unit === unit);
+  const data = {
+    unit,
+    projectCode: String(sale.projectCode || "").trim(),
+    contractValueText: sale.contractValueText || formatCurrency(sale.contractValue).replace("R$ ", ""),
+    commissionValueText: sale.commissionValueText || (sale.commissionValue ? formatCurrency(sale.commissionValue).replace("R$ ", "") : ""),
+    contractValue: Number(sale.contractValue || 0),
+    commissionValue: Number(sale.commissionValue || 0),
+    signedAt: String(sale.signedAt || "").trim(),
+    client: String(sale.client || "").trim(),
+    realEstate: String(sale.realEstate || "").trim(),
+    status,
+    source,
+    updatedAt: new Date().toISOString()
+  };
+  if (existing) {
+    Object.assign(existing, data);
+  } else {
+    db.levFinance.settlements.unshift({
+      id: `lev-settlement-${crypto.randomUUID()}`,
+      ...data,
+      createdAt: new Date().toISOString()
+    });
+  }
+}
+
 async function extractLevSalesFromImage(imageDataUrl) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY ausente para extração da imagem");
   const response = await fetch("https://api.openai.com/v1/responses", {
@@ -723,7 +1429,7 @@ async function extractLevSalesFromImage(imageDataUrl) {
       input: [{
         role: "user",
         content: [
-          { type: "input_text", text: "Extraia as vendas assinadas desta imagem." },
+          { type: "input_text", text: "Extraia as vendas assinadas desta imagem e responda em JSON válido." },
           { type: "input_image", image_url: imageDataUrl }
         ]
       }],
@@ -2361,14 +3067,19 @@ async function routeApi(req, res, db) {
       await saveDb(db);
       return sendJson(res, 400, { error: error.message });
     }
-    const paid = new Set(db.levFinance.paidUnits || []);
+    const settled = new Set([
+      ...(db.levFinance.paidUnits || []),
+      ...(db.levFinance.settlements || [])
+        .filter((settlement) => settlement.status === "Paga" || settlement.status === "Não contabilizada antes de jan/2026")
+        .map((settlement) => settlement.unit)
+    ]);
     let created = 0;
     let duplicates = 0;
     let paidSkipped = 0;
     for (const raw of rawSales) {
       const sale = normalizeLevSale(raw, db.levFinance.settings);
       if (!sale.unit || !sale.signedAt || !String(sale.status || "").toLowerCase().includes("assinado")) continue;
-      if (paid.has(sale.unit)) {
+      if (settled.has(sale.unit)) {
         paidSkipped += 1;
         continue;
       }
@@ -2377,6 +3088,7 @@ async function routeApi(req, res, db) {
         continue;
       }
       db.levFinance.sales.push(sale);
+      upsertLevSettlement(db, sale, "Extraída, aguardando confirmação", "Imagem submetida no Financeiro Lev");
       created += 1;
     }
     audit(db, user, "IMPORT_LEV_SALES_IMAGE", { extracted: rawSales.length, created, duplicates, paidSkipped });
@@ -2396,6 +3108,8 @@ async function routeApi(req, res, db) {
     const receivedAt = String(body.receivedAt || new Date().toISOString().slice(0, 10)).trim();
     for (const unit of units) {
       if (!db.levFinance.paidUnits.includes(unit)) db.levFinance.paidUnits.push(unit);
+      const sale = db.levFinance.sales.find((item) => item.unit === unit) || { unit, commissionValue: amount };
+      upsertLevSettlement(db, sale, "Paga", String(body.note || "Recebimento registrado").trim() || "Recebimento registrado");
       db.levFinance.receipts.unshift({
         id: `lev-receipt-${crypto.randomUUID()}`,
         unit,
@@ -2422,6 +3136,7 @@ async function routeApi(req, res, db) {
     sale.provisionDate = provisionFridayForRequest(new Date());
     sale.commissionPercent = Number(db.levFinance.settings.commissionPercent || sale.commissionPercent || 0);
     sale.commissionValue = Number(sale.contractValue || 0) * (sale.commissionPercent / 100);
+    upsertLevSettlement(db, sale, "NF/provisionamento solicitado", "Venda confirmada no Financeiro Lev");
     const email = await sendLevProvisionEmail(db, sale);
     if (email.sent) {
       sale.provisionEmailSentAt = new Date().toISOString();
