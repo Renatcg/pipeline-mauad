@@ -3053,12 +3053,18 @@ async function importMetaLeadById(db, actor, leadgenId, webhookValue = {}) {
   return created;
 }
 
-async function syncRecentMetaLeads(db, actor, { days = 7, limitPerForm = 200 } = {}) {
-  const forms = configuredMetaForms(db);
-  if (!forms.length) throw new Error("Cadastre pelo menos um ID de formulário do Meta");
+async function syncRecentMetaLeads(db, actor, { days = 7, limitPerForm = 200, formId = "" } = {}) {
+  const requestedFormId = String(formId || "").trim();
+  const forms = configuredMetaForms(db).filter((form) => !requestedFormId || form.id === requestedFormId);
+  if (!forms.length) {
+    throw new Error(requestedFormId
+      ? `Formulário Meta ${requestedFormId} não está cadastrado como ativo`
+      : "Cadastre pelo menos um ID de formulário do Meta");
+  }
   const sinceIso = new Date(Date.now() - Math.max(1, Number(days) || 7) * 24 * 60 * 60 * 1000).toISOString();
   const result = {
     forms: forms.length,
+    formId: requestedFormId,
     found: 0,
     created: 0,
     duplicates: 0,
@@ -3090,6 +3096,7 @@ async function syncRecentMetaLeads(db, actor, { days = 7, limitPerForm = 200 } =
 
   integrationEvent(db, "META", "SYNC_RECENT", {
     days,
+    formId: requestedFormId,
     forms: result.forms,
     found: result.found,
     created: result.created,
@@ -3098,6 +3105,7 @@ async function syncRecentMetaLeads(db, actor, { days = 7, limitPerForm = 200 } =
   });
   audit(db, actor, "SYNC_META_RECENT", {
     days,
+    formId: requestedFormId,
     forms: result.forms,
     found: result.found,
     created: result.created,
@@ -4036,7 +4044,7 @@ async function routeApi(req, res, db) {
     if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
     try {
-      const result = await syncRecentMetaLeads(db, user, { days: Number(body.days || 7) });
+      const result = await syncRecentMetaLeads(db, user, { days: Number(body.days || 7), formId: body.formId });
       await saveDb(db);
       return sendJson(res, 200, { ok: true, ...result });
     } catch (error) {

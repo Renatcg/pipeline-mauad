@@ -2375,11 +2375,14 @@ function renderIntegrationSettings() {
       <td>${escapeHtml(form.project || "Sem empreendimento")}</td>
       <td>
         ${renderSettingsActionMenu(`meta-form-${form.index}`, [
+          !form.archived
+            ? `<button type="button" data-sync-meta-form="${form.index}">Sincronizar este form</button>`
+            : "",
           `<button type="button" data-edit-meta-form="${form.index}">Editar</button>`,
           form.archived
             ? `<button type="button" data-restore-meta-form="${form.index}">Restaurar</button>`
             : `<button type="button" data-archive-meta-form="${form.index}">Arquivar</button>`
-        ])}
+        ].filter(Boolean))}
       </td>
     </tr>
   `).join("");
@@ -2516,6 +2519,28 @@ function renderIntegrationSettings() {
       setButtonBusy(button, false);
       alert(error.message);
     }
+  });
+  document.querySelectorAll("[data-sync-meta-form]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      const index = Number(event.currentTarget.dataset.syncMetaForm);
+      const formConfig = (state.integrations?.metaForms?.forms || [])[index];
+      if (!formConfig?.id) return;
+      const buttonLabel = event.currentTarget.textContent;
+      try {
+        setButtonBusy(event.currentTarget, true, "Sincronizando...");
+        const data = await api("/api/integrations/meta/sync-recent", {
+          method: "POST",
+          body: JSON.stringify({ days: 7, formId: formConfig.id })
+        });
+        state.settingsNotice = `${formConfig.name || formConfig.id}: ${data.created} novo(s), ${data.duplicates} já existente(s), ${data.errors.length} erro(s).`;
+        await loadState();
+        state.settingsTab = "integrations";
+        renderSettings();
+      } catch (error) {
+        setButtonBusy(event.currentTarget, false, buttonLabel);
+        alert(error.message);
+      }
+    });
   });
   document.querySelector("#metaLeadImportForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
