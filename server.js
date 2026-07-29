@@ -3719,7 +3719,7 @@ async function routeApi(req, res, db) {
     const allowed = canManageLeads(user) && lead.inPipeline
       ? ["status", "favorite", "assignedTo", "order", ...detailFields]
       : canEditLead(user, lead) && lead.inPipeline
-        ? ["favorite", ...detailFields]
+        ? ["status", "favorite", "order", ...detailFields]
       : ["favorite"];
     for (const key of allowed) {
       if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
