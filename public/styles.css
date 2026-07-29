@@ -575,6 +575,11 @@ textarea {
   overflow: auto;
 }
 
+.multi-filter-all {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
 .multi-filter-menu label {
   min-height: 34px;
   display: flex;
@@ -585,6 +590,21 @@ textarea {
   font-size: 13px;
   font-weight: 700;
   color: var(--text);
+}
+
+.multi-filter-menu label span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.multi-filter-menu label em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .multi-filter-menu input[type="checkbox"] {
@@ -739,9 +759,9 @@ textarea {
   background: white;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 10px;
+  padding: 9px 10px;
   display: grid;
-  gap: 8px;
+  gap: 5px;
   cursor: grab;
 }
 
@@ -754,6 +774,7 @@ textarea {
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+  line-height: 1.15;
 }
 
 .card-title strong {
@@ -781,6 +802,16 @@ textarea {
   background: transparent;
   border-color: transparent;
   color: var(--brand);
+}
+
+.card .meta {
+  gap: 3px;
+}
+
+.card-project {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 900;
 }
 
 .broker-menu {

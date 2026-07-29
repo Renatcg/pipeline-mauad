@@ -702,15 +702,20 @@ function filterSummary(selected, fallback) {
 }
 
 function renderMultiFilter(id, label, selected, options) {
+  const allChecked = !selected.length || options.every((option) => selected.includes(option.value));
   return `
     <details class="multi-filter" id="${escapeHtml(id)}">
       <summary>${escapeHtml(label)} <strong>${escapeHtml(filterSummary(selected, "Todos"))}</strong></summary>
       <div class="multi-filter-menu">
         <div class="multi-filter-options">
+          <label class="multi-filter-all">
+            <input type="checkbox" data-multi-filter-all="${escapeHtml(id)}" ${allChecked ? "checked" : ""}>
+            <span>Todos <em>(${options.reduce((total, option) => total + Number(option.count || 0), 0)})</em></span>
+          </label>
           ${options.map((option) => `
             <label>
               <input type="checkbox" data-multi-filter-option="${escapeHtml(id)}" value="${escapeHtml(option.value)}" ${selected.includes(option.value) ? "checked" : ""}>
-              <span>${escapeHtml(option.label)}</span>
+              <span>${escapeHtml(option.label)} <em>(${Number(option.count || 0)})</em></span>
             </label>
           `).join("")}
         </div>
@@ -723,13 +728,34 @@ function renderMultiFilter(id, label, selected, options) {
   `;
 }
 
+function pipelineFilterBaseLeads(skipKey = "") {
+  return filteredLeads().filter((lead) => {
+    if (!lead.inPipeline) return false;
+    if (state.user?.role === "Corretor" && lead.assignedTo !== state.user.id) return false;
+    if (skipKey !== "projectFilters" && state.projectFilters.length && !state.projectFilters.includes(leadProjectValue(lead) || "__none__")) return false;
+    if (skipKey !== "brokerFilters" && state.brokerFilters.length && !state.brokerFilters.includes(lead.assignedTo || "__none__")) return false;
+    return true;
+  });
+}
+
+function countBy(items, getKey) {
+  return items.reduce((acc, item) => {
+    const key = getKey(item) || "__none__";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
 function renderPipelineFilterControls() {
+  const projectCounts = countBy(pipelineFilterBaseLeads("projectFilters"), (lead) => leadProjectValue(lead));
+  const brokerCounts = countBy(pipelineFilterBaseLeads("brokerFilters"), (lead) => lead.assignedTo);
   const projectOptions = state.projects
-    .map((project) => ({ value: project, label: project }))
-    .filter((option) => option.value);
+    .map((project) => ({ value: project, label: project, count: projectCounts[project] || 0 }))
+    .filter((option) => option.value)
+    .concat({ value: "__none__", label: "Sem vínculo", count: projectCounts.__none__ || 0 });
   const brokerOptions = [
-    { value: "__none__", label: "Sem corretor" },
-    ...activeBrokers().map((broker) => ({ value: broker.id, label: broker.name }))
+    ...activeBrokers().map((broker) => ({ value: broker.id, label: broker.name, count: brokerCounts[broker.id] || 0 })),
+    { value: "__none__", label: "Sem vínculo", count: brokerCounts.__none__ || 0 }
   ];
   return `
     ${renderMultiFilter("projectFilters", "Empreendimento", state.projectFilters, projectOptions)}
@@ -781,6 +807,22 @@ function bindPageFilters() {
   document.querySelectorAll(".multi-filter-menu").forEach((menu) => {
     menu.addEventListener("click", (event) => event.stopPropagation());
   });
+  document.querySelectorAll("[data-multi-filter-all]").forEach((checkbox) => {
+    checkbox.addEventListener("change", (event) => {
+      const key = event.currentTarget.dataset.multiFilterAll;
+      document.querySelectorAll(`[data-multi-filter-option="${key}"]`).forEach((option) => {
+        option.checked = event.currentTarget.checked;
+      });
+    });
+  });
+  document.querySelectorAll("[data-multi-filter-option]").forEach((checkbox) => {
+    checkbox.addEventListener("change", (event) => {
+      const key = event.currentTarget.dataset.multiFilterOption;
+      const options = [...document.querySelectorAll(`[data-multi-filter-option="${key}"]`)];
+      const all = document.querySelector(`[data-multi-filter-all="${key}"]`);
+      if (all) all.checked = options.every((option) => option.checked);
+    });
+  });
   document.querySelectorAll("[data-multi-filter-clear]").forEach((button) => {
     button.addEventListener("click", (event) => {
       const key = event.currentTarget.dataset.multiFilterClear;
@@ -788,13 +830,17 @@ function bindPageFilters() {
       document.querySelectorAll(`[data-multi-filter-option="${key}"]`).forEach((checkbox) => {
         checkbox.checked = false;
       });
+      const all = document.querySelector(`[data-multi-filter-all="${key}"]`);
+      if (all) all.checked = false;
     });
   });
   document.querySelectorAll("[data-multi-filter-apply]").forEach((button) => {
     button.addEventListener("click", (event) => {
       const key = event.currentTarget.dataset.multiFilterApply;
       if (!["projectFilters", "brokerFilters"].includes(key)) return;
-      state[key] = [...document.querySelectorAll(`[data-multi-filter-option="${key}"]:checked`)].map((checkbox) => checkbox.value);
+      const options = [...document.querySelectorAll(`[data-multi-filter-option="${key}"]`)];
+      const selectedValues = options.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
+      state[key] = selectedValues.length === options.length ? [] : selectedValues;
       renderApp();
     });
   });
@@ -1109,6 +1155,7 @@ function brokerRedirectControl(lead) {
 
 function leadCard(lead) {
   const broker = activeBrokerForLead(lead);
+  const project = leadProjectValue(lead) || "Sem empreendimento";
   return `
     <article class="card" draggable="true" data-lead="${escapeHtml(lead.id)}" data-open-lead="${escapeHtml(lead.id)}">
       <div class="card-title">
@@ -1118,6 +1165,7 @@ function leadCard(lead) {
       </div>
       <div class="meta">
         <span>${escapeHtml(lead.phone || "Sem telefone")}</span>
+        <strong class="card-project">${escapeHtml(project)}</strong>
         <span>${escapeHtml(broker?.name || "Sem corretor")}</span>
       </div>
       ${renderLeadTags(lead, true)}
