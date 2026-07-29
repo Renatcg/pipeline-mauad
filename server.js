@@ -1349,6 +1349,17 @@ function isLikelyLevUnit(value) {
   return /^[A-Z]{2,}[A-Z0-9]{4,}$/.test(unit);
 }
 
+function findLikelyLevUnit(raw = {}) {
+  const preferredKeys = ["unit", "produto", "Produto", "product", "unidade", "Unidade"];
+  for (const key of preferredKeys) {
+    if (isLikelyLevUnit(raw[key])) return normalizeLevUnit(raw[key]);
+  }
+  for (const value of Object.values(raw || {})) {
+    if (isLikelyLevUnit(value)) return normalizeLevUnit(value);
+  }
+  return "";
+}
+
 function parseBrazilDate(value) {
   const text = String(value || "").trim();
   const match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
@@ -1401,7 +1412,7 @@ function publicLevFinance(db) {
 }
 
 function normalizeLevSale(raw, settings = {}) {
-  const unit = normalizeLevUnit(raw.unit || raw.produto || raw["Produto"] || "");
+  const unit = findLikelyLevUnit(raw);
   const contractValue = parseMoney(raw.contractValue ?? raw.valorContrato ?? raw["Valor contrato"]);
   const commissionPercent = Number(settings.commissionPercent || 0);
   return {
@@ -1470,6 +1481,8 @@ async function extractLevSalesFromImage(imageDataUrl) {
       instructions: [
         "Extraia de uma imagem de planilha apenas registros de vendas imobiliárias com Status Assinado e DtHr Assinatura preenchida.",
         "Responda somente JSON válido no formato {\"sales\":[...]} sem markdown.",
+        "A unidade deve vir da coluna Produto, não da coluna Valor contrato. Unidades sempre começam com letras, como GCR060107, RGLQDLF19 ou RES030307.",
+        "Nunca preencha unit com valores monetários como 450.000,00. Se houver dúvida, preserve o código da coluna Produto em unit.",
         "Cada item deve ter: sourceId, unit, contractValue, signedAt, client, status, table, realEstate.",
         "Preserve datas e valores como aparecem na imagem quando possível. Ignore linhas sem assinatura preenchida."
       ].join(" "),
@@ -3961,6 +3974,20 @@ async function routeApi(req, res, db) {
       leads: imported.leads.length,
       users: imported.users.length,
       source: DATABASE_URL ? "postgres" : "file"
+    });
+  }
+
+  if (url.pathname === "/api/admin/export-db" && method === "GET") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const exported = migrateDb(structuredClone(db));
+    audit(db, user, "EXPORT_DATABASE", { leads: exported.leads.length, users: exported.users.length });
+    await saveDb(db);
+    return sendJson(res, 200, {
+      exportedAt: new Date().toISOString(),
+      source: DATABASE_URL ? "postgres" : "file",
+      db: exported
+    }, {
+      "Content-Disposition": `attachment; filename="pipeline-mauad-backup-${new Date().toISOString().slice(0, 10)}.json"`
     });
   }
 

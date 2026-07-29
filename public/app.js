@@ -42,6 +42,7 @@ const state = {
   knowledgeAiLoading: false,
   knowledgeOpenArticle: null,
   metaFormsTab: "active",
+  levFinanceSearch: "",
   mobileNavOpen: false,
   lastAccessLogKey: "",
   creatingLead: false,
@@ -1852,6 +1853,7 @@ function settingsLayout(content) {
         ${canManageSystemSettings() ? settingsTabButton("logs", "Logs") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("projects", "Empreendimentos") : ""}
         ${canManageLevFinanceSettings() ? settingsTabButton("levFinance", "Financeiro Lev") : ""}
+        ${canManageSystemSettings() ? settingsTabButton("backup", "Backup") : ""}
         ${canManageSystemSettings() ? settingsTabButton("knowledge", "Base de conhecimento") : ""}
     </div>
     ${content}
@@ -1867,7 +1869,7 @@ function settingsLayout(content) {
 }
 
 function renderSettings() {
-  if (["integrations", "logs", "knowledge"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
+  if (["integrations", "logs", "knowledge", "backup"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
   if (["statuses", "tags", "projects"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) state.settingsTab = canManageLevFinanceSettings() ? "levFinance" : "knowledge";
@@ -1877,6 +1879,7 @@ function renderSettings() {
   if (state.settingsTab === "logs") return renderLogSettings();
   if (state.settingsTab === "projects") return renderProjectSettings();
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
+  if (state.settingsTab === "backup") return renderBackupSettings();
   if (state.settingsTab === "knowledge") return renderKnowledgeSettings();
   return renderUserSettings();
 }
@@ -3092,6 +3095,20 @@ function levSettlementClass(status) {
   return "chip";
 }
 
+function levFinanceSearchText(item) {
+  return [
+    item.unit,
+    item.client,
+    item.signedAt,
+    item.contractValue,
+    item.commissionValue,
+    item.realEstate,
+    item.status,
+    item.note,
+    item.receivedAt
+  ].filter(Boolean).join(" ").toLocaleLowerCase("pt-BR");
+}
+
 function renderLevFinanceSettings() {
   const settings = state.levFinance?.settings || {};
   settingsLayout(`
@@ -3129,13 +3146,98 @@ function renderLevFinanceSettings() {
   });
 }
 
+function downloadJsonFile(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Não foi possível ler o arquivo"));
+    reader.readAsText(file);
+  });
+}
+
+function renderBackupSettings() {
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Backup</h2>
+      </div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
+      <div class="form-grid editor">
+        <div class="field full">
+          <label>Baixar backup completo</label>
+          <small>Gera um arquivo JSON com leads, usuários, configurações, logs e dados financeiros.</small>
+          <div class="row-actions"><button class="primary" type="button" id="downloadBackupButton">Baixar backup</button></div>
+        </div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Importar backup</h2>
+      </div>
+      <form id="backupImportForm" class="form-grid editor">
+        <div class="field full"><label>Arquivo JSON de backup</label><input type="file" name="backup" accept="application/json,.json" required><small>A importação substitui a base atual pelo conteúdo do arquivo selecionado.</small></div>
+        <div class="field full"><div class="row-actions"><button class="danger-button" type="submit">Importar backup</button></div></div>
+      </form>
+    </section>
+  `);
+  bindSettingsCommon();
+  document.querySelector("#downloadBackupButton")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Gerando...");
+      const data = await api("/api/admin/export-db");
+      const filename = `pipeline-mauad-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      downloadJsonFile(filename, data);
+      setButtonBusy(button, false);
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+  document.querySelector("#backupImportForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button[type='submit']");
+    const file = event.currentTarget.querySelector("input[type='file']")?.files?.[0];
+    if (!file) return;
+    if (!confirm("Importar este backup vai substituir a base atual do sistema. Deseja continuar?")) return;
+    try {
+      setButtonBusy(button, true, "Importando...");
+      const text = await readFileAsText(file);
+      const parsed = JSON.parse(text);
+      const db = parsed.db || parsed;
+      const data = await api("/api/admin/import-db", { method: "POST", body: JSON.stringify({ db }) });
+      state.settingsNotice = `Backup importado com sucesso: ${data.leads} lead(s), ${data.users} usuário(s).`;
+      await loadState();
+      state.settingsTab = "backup";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+}
+
 function renderLevFinanceView() {
   const finance = state.levFinance || { settings: {}, sales: [], receipts: [], paidUnits: [], settlements: [] };
-  const sales = finance.sales || [];
+  const term = state.levFinanceSearch.trim().toLocaleLowerCase("pt-BR");
+  const matchesFinanceSearch = (item) => !term || levFinanceSearchText(item).includes(term);
+  const sales = (finance.sales || []).filter(matchesFinanceSearch);
   const pendingSales = sales.filter((sale) => !sale.paid);
   const totalContract = pendingSales.reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0);
   const totalCommission = pendingSales.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0);
-  const settlementRows = (finance.settlements || []).map((settlement) => `
+  const settlementRows = (finance.settlements || []).filter(matchesFinanceSearch).map((settlement) => `
     <tr>
       <td>${escapeHtml(settlement.unit)}</td>
       <td>${escapeHtml(settlement.client)}</td>
@@ -3158,7 +3260,7 @@ function renderLevFinanceView() {
       <td>${sale.eligible ? '<span class="chip">E-mail enviado</span>' : `<button class="primary compact-button" data-confirm-lev-sale="${escapeHtml(sale.id)}">Confirmar</button>`}</td>
     </tr>
   `).join("");
-  const receiptRows = (finance.receipts || []).slice(0, 80).map((receipt) => `
+  const receiptRows = (finance.receipts || []).filter(matchesFinanceSearch).slice(0, 80).map((receipt) => `
     <tr>
       <td>${escapeHtml(receipt.unit)}</td>
       <td>${money(receipt.amount)}</td>
@@ -3168,6 +3270,9 @@ function renderLevFinanceView() {
   `).join("");
   renderShell(`
     ${renderViewHead("Financeiro Lev", "Controle de vendas, recebimentos e comissão da Lev")}
+    <section class="panel compact-panel">
+      <input id="levFinanceSearch" class="settings-search" placeholder="Pesquisar por unidade, cliente, imobiliária, status ou observação" value="${escapeHtml(state.levFinanceSearch)}">
+    </section>
     <section class="metrics">
       <div class="metric"><span>Vendas pendentes</span><strong>${pendingSales.length}</strong></div>
       <div class="metric"><span>Valor contratos</span><strong>${money(totalContract)}</strong></div>
@@ -3219,6 +3324,22 @@ function readFileAsDataUrl(file) {
 }
 
 function bindLevFinanceControls() {
+  const financeSearch = document.querySelector("#levFinanceSearch");
+  financeSearch?.addEventListener("input", (event) => {
+    state.levFinanceSearch = event.target.value;
+    if (pageSearchRenderTimer) clearTimeout(pageSearchRenderTimer);
+    pageSearchRenderTimer = setTimeout(() => {
+      pageSearchRenderTimer = null;
+      renderLevFinanceView();
+      requestAnimationFrame(() => {
+        const nextSearch = document.querySelector("#levFinanceSearch");
+        if (!nextSearch) return;
+        nextSearch.focus({ preventScroll: true });
+        const position = nextSearch.value.length;
+        nextSearch.setSelectionRange(position, position);
+      });
+    }, 250);
+  });
   document.querySelector("#levImageForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector("button[type='submit']");
