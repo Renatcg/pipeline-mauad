@@ -3129,6 +3129,15 @@ function levFinanceSearchText(item) {
 
 function renderLevFinanceSettings() {
   const settings = state.levFinance?.settings || {};
+  const paymentSchedule = Array.isArray(settings.paymentSchedule) ? settings.paymentSchedule : [];
+  const scheduleRows = paymentSchedule.map((item) => `
+    <tr data-lev-schedule-row>
+      <td><input type="date" data-lev-schedule-start value="${escapeHtml(item.start || "")}" required></td>
+      <td><input type="date" data-lev-schedule-end value="${escapeHtml(item.end || "")}" required></td>
+      <td><input type="date" data-lev-schedule-payment value="${escapeHtml(item.paymentDate || "")}" required></td>
+      <td><button type="button" class="icon-button" data-remove-lev-schedule title="Remover faixa">×</button></td>
+    </tr>
+  `).join("");
   settingsLayout(`
     <section class="panel">
       <div class="panel-head">
@@ -3139,20 +3148,62 @@ function renderLevFinanceSettings() {
         <div class="field"><label>% comissão Lev</label><input name="commissionPercent" type="number" min="0" step="0.01" value="${escapeHtml(settings.commissionPercent || "")}" required></div>
         <div class="field"><label>E-mails Para</label><input name="provisionTo" value="${escapeHtml(settings.provisionTo || "")}" placeholder="financeiro@empresa.com.br" required></div>
         <div class="field full"><label>E-mails Cc</label><input name="provisionCc" value="${escapeHtml(settings.provisionCc || "")}" placeholder="email1@empresa.com.br, email2@empresa.com.br"></div>
+        <div class="field full">
+          <div class="panel-head compact-head">
+            <div>
+              <h3>Calendário de pagamento Mauad</h3>
+              <small>Define a data de pagamento usada no e-mail de aprovisionamento.</small>
+            </div>
+            <button type="button" id="addLevScheduleRow">Adicionar faixa</button>
+          </div>
+          <div class="table-wrap compact-table">
+            <table class="access-table lev-schedule-table">
+              <thead><tr><th>Início lançamento</th><th>Fim lançamento</th><th>Pagamento a partir de</th><th>Ação</th></tr></thead>
+              <tbody id="levScheduleRows">${scheduleRows || '<tr><td colspan="4" class="empty">Nenhuma faixa cadastrada.</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
         <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar configurações</button></div></div>
       </form>
     </section>
   `);
   bindSettingsCommon();
+  const scheduleBody = document.querySelector("#levScheduleRows");
+  const appendScheduleRow = (item = {}) => {
+    scheduleBody?.querySelector(".empty")?.closest("tr")?.remove();
+    scheduleBody?.insertAdjacentHTML("beforeend", `
+      <tr data-lev-schedule-row>
+        <td><input type="date" data-lev-schedule-start value="${escapeHtml(item.start || "")}" required></td>
+        <td><input type="date" data-lev-schedule-end value="${escapeHtml(item.end || "")}" required></td>
+        <td><input type="date" data-lev-schedule-payment value="${escapeHtml(item.paymentDate || "")}" required></td>
+        <td><button type="button" class="icon-button" data-remove-lev-schedule title="Remover faixa">×</button></td>
+      </tr>
+    `);
+  };
+  document.querySelector("#addLevScheduleRow")?.addEventListener("click", () => appendScheduleRow());
+  scheduleBody?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-lev-schedule]");
+    if (!button) return;
+    button.closest("[data-lev-schedule-row]")?.remove();
+  });
   document.querySelector("#levFinanceSettingsForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector("button[type='submit']");
     const form = new FormData(event.currentTarget);
+    const paymentSchedulePayload = [...document.querySelectorAll("[data-lev-schedule-row]")].map((row) => ({
+      start: row.querySelector("[data-lev-schedule-start]")?.value || "",
+      end: row.querySelector("[data-lev-schedule-end]")?.value || "",
+      paymentDate: row.querySelector("[data-lev-schedule-payment]")?.value || ""
+    })).filter((item) => item.start && item.end && item.paymentDate);
+    const payload = {
+      ...Object.fromEntries(form.entries()),
+      paymentSchedule: paymentSchedulePayload
+    };
     try {
       setButtonBusy(button, true, "Salvando...");
       const data = await api("/api/lev-finance/settings", {
         method: "PUT",
-        body: JSON.stringify(Object.fromEntries(form.entries()))
+        body: JSON.stringify(payload)
       });
       state.levFinance = data.levFinance;
       state.settingsNotice = "Configurações financeiras salvas.";

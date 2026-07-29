@@ -1164,6 +1164,42 @@ th {
   margin: 0;
 }
 
+.compact-head {
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.compact-head h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.compact-head small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.compact-table {
+  margin-top: 8px;
+}
+
+.lev-schedule-table input[type="date"] {
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.lev-schedule-table th,
+.lev-schedule-table td {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
 .lead-detail {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.75fr);

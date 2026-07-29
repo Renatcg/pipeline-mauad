@@ -84,6 +84,29 @@ const DEFAULT_KNOWLEDGE_ARTICLES = [
     published: true
   }
 ];
+const DEFAULT_LEV_PAYMENT_SCHEDULE = [
+  { start: "2026-07-14", end: "2026-07-20", paymentDate: "2026-08-07" },
+  { start: "2026-07-21", end: "2026-07-27", paymentDate: "2026-08-14" },
+  { start: "2026-07-28", end: "2026-08-03", paymentDate: "2026-08-21" },
+  { start: "2026-08-04", end: "2026-08-10", paymentDate: "2026-08-28" },
+  { start: "2026-08-11", end: "2026-08-17", paymentDate: "2026-09-04" },
+  { start: "2026-08-18", end: "2026-08-24", paymentDate: "2026-09-11" },
+  { start: "2026-08-25", end: "2026-08-31", paymentDate: "2026-09-18" },
+  { start: "2026-09-01", end: "2026-09-07", paymentDate: "2026-09-25" },
+  { start: "2026-09-08", end: "2026-09-14", paymentDate: "2026-10-02" },
+  { start: "2026-09-15", end: "2026-09-21", paymentDate: "2026-10-09" },
+  { start: "2026-09-22", end: "2026-09-28", paymentDate: "2026-10-16" },
+  { start: "2026-09-29", end: "2026-10-05", paymentDate: "2026-10-23" },
+  { start: "2026-10-06", end: "2026-10-12", paymentDate: "2026-10-30" },
+  { start: "2026-10-13", end: "2026-10-19", paymentDate: "2026-11-06" },
+  { start: "2026-10-20", end: "2026-10-26", paymentDate: "2026-11-13" },
+  { start: "2026-10-27", end: "2026-11-02", paymentDate: "2026-11-20" },
+  { start: "2026-11-03", end: "2026-11-09", paymentDate: "2026-11-27" },
+  { start: "2026-11-10", end: "2026-11-16", paymentDate: "2026-12-04" },
+  { start: "2026-11-17", end: "2026-11-23", paymentDate: "2026-12-11" },
+  { start: "2026-11-24", end: "2026-11-30", paymentDate: "2026-12-18" },
+  { start: "2026-12-01", end: "2026-12-07", paymentDate: "2026-12-25" }
+];
 const DEFAULT_LEV_SETTLEMENTS = [
   {
     "unit": "RGLQDLF19",
@@ -954,8 +977,19 @@ function migrateDb(db) {
   db.levFinance.settings = {
     commissionPercent: Number(db.levFinance.settings.commissionPercent || 0),
     provisionTo: String(db.levFinance.settings.provisionTo || "").trim(),
-    provisionCc: String(db.levFinance.settings.provisionCc || "").trim()
+    provisionCc: String(db.levFinance.settings.provisionCc || "").trim(),
+    paymentSchedule: Array.isArray(db.levFinance.settings.paymentSchedule)
+      ? db.levFinance.settings.paymentSchedule
+      : DEFAULT_LEV_PAYMENT_SCHEDULE.map((item) => ({ ...item }))
   };
+  db.levFinance.settings.paymentSchedule = db.levFinance.settings.paymentSchedule
+    .map((item) => ({
+      start: String(item.start || "").trim(),
+      end: String(item.end || "").trim(),
+      paymentDate: String(item.paymentDate || "").trim()
+    }))
+    .filter((item) => item.start && item.end && item.paymentDate)
+    .sort((a, b) => new Date(`${a.start}T00:00:00`).getTime() - new Date(`${b.start}T00:00:00`).getTime());
   db.levFinance.defaultSettlementsCleared = Boolean(db.levFinance.defaultSettlementsCleared);
   if (!Array.isArray(db.levFinance.sales)) {
     db.levFinance.sales = [];
@@ -1403,6 +1437,18 @@ function provisionFridayForRequest(sentAt = new Date()) {
   const provision = new Date(cutoffTuesday);
   provision.setDate(cutoffTuesday.getDate() + 24);
   return provision.toISOString().slice(0, 10);
+}
+
+function provisionDateFromPaymentSchedule(settings = {}, sentAt = new Date()) {
+  const base = new Date(sentAt);
+  base.setHours(0, 0, 0, 0);
+  const schedule = Array.isArray(settings.paymentSchedule) ? settings.paymentSchedule : [];
+  const match = schedule.find((item) => {
+    const start = new Date(`${item.start}T00:00:00`);
+    const end = new Date(`${item.end}T23:59:59`);
+    return !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && base >= start && base <= end;
+  });
+  return match?.paymentDate || provisionFridayForRequest(base);
 }
 
 function publicLevFinance(db) {
@@ -3317,10 +3363,19 @@ async function routeApi(req, res, db) {
   if (method === "PUT" && url.pathname === "/api/lev-finance/settings") {
     if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
+    const paymentSchedule = Array.isArray(body.paymentSchedule)
+      ? body.paymentSchedule.map((item) => ({
+        start: String(item.start || "").trim(),
+        end: String(item.end || "").trim(),
+        paymentDate: String(item.paymentDate || "").trim()
+      })).filter((item) => item.start && item.end && item.paymentDate)
+        .sort((a, b) => new Date(`${a.start}T00:00:00`).getTime() - new Date(`${b.start}T00:00:00`).getTime())
+      : db.levFinance.settings.paymentSchedule;
     db.levFinance.settings = {
       commissionPercent: Math.max(0, Number(body.commissionPercent || 0)),
       provisionTo: String(body.provisionTo || "").trim(),
-      provisionCc: String(body.provisionCc || "").trim()
+      provisionCc: String(body.provisionCc || "").trim(),
+      paymentSchedule
     };
     audit(db, user, "UPDATE_LEV_FINANCE_SETTINGS", { commissionPercent: db.levFinance.settings.commissionPercent });
     await saveDb(db);
@@ -3443,7 +3498,7 @@ async function routeApi(req, res, db) {
       targetSale.status = "NF/provisionamento solicitado";
       targetSale.confirmedAt = new Date().toISOString();
       targetSale.confirmedBy = user.username;
-      targetSale.provisionDate = provisionFridayForRequest(new Date());
+      targetSale.provisionDate = provisionDateFromPaymentSchedule(db.levFinance.settings, new Date());
       targetSale.commissionPercent = Number(db.levFinance.settings.commissionPercent || targetSale.commissionPercent || 0);
       targetSale.commissionValue = Number(targetSale.contractValue || 0) * (targetSale.commissionPercent / 100);
       upsertLevSettlement(db, targetSale, "NF/provisionamento solicitado", "Venda confirmada no Financeiro Lev");
@@ -3507,7 +3562,7 @@ async function routeApi(req, res, db) {
     sale.eligible = true;
     sale.confirmedAt = new Date().toISOString();
     sale.confirmedBy = user.username;
-    sale.provisionDate = provisionFridayForRequest(new Date());
+    sale.provisionDate = provisionDateFromPaymentSchedule(db.levFinance.settings, new Date());
     sale.commissionPercent = Number(db.levFinance.settings.commissionPercent || sale.commissionPercent || 0);
     sale.commissionValue = Number(sale.contractValue || 0) * (sale.commissionPercent / 100);
     upsertLevSettlement(db, sale, "NF/provisionamento solicitado", "Venda confirmada no Financeiro Lev");
