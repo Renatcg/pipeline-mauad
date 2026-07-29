@@ -53,6 +53,12 @@ button.primary:hover {
   background: var(--brand-strong);
 }
 
+.compact-button {
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
 .danger-button {
   background: #fff5f5;
   border-color: #f3b8b5;

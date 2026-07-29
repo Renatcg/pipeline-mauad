@@ -17,6 +17,7 @@ const state = {
   accessLog: [],
   fupLeadLog: [],
   integrationLog: [],
+  levFinance: null,
   knowledgeCategories: [],
   knowledgeArticles: [],
   knowledgeChatSessions: [],
@@ -58,11 +59,13 @@ const state = {
 };
 
 const profileAccess = {
-  "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "settings", "knowledge"],
+  "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "finance", "settings", "knowledge"],
   "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "settings", "knowledge"],
   "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"],
   Diretoria: ["dashboard", "sheet", "odysseia", "kanban", "knowledge"],
-  Corretor: ["kanban", "sheet", "odysseia", "knowledge"]
+  Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
+  "Gerente Financeiro": ["finance", "settings", "knowledge"],
+  "Auxiliar Financeiro": ["finance", "settings", "knowledge"]
 };
 
 const routeByView = {
@@ -70,6 +73,7 @@ const routeByView = {
   sheet: "/planilha",
   odysseia: "/bases",
   dashboard: "/dashboard",
+  finance: "/financeiro-lev",
   settings: "/configuracoes",
   knowledge: "/ajuda"
 };
@@ -80,6 +84,7 @@ const viewByRoute = {
   "/planilha": "sheet",
   "/bases": "odysseia",
   "/dashboard": "dashboard",
+  "/financeiro-lev": "finance",
   "/configuracoes": "settings",
   "/ajuda": "knowledge"
 };
@@ -110,7 +115,8 @@ async function api(path, options = {}) {
 }
 
 function allowedViews() {
-  return profileAccess[state.user?.role] || [];
+  const views = profileAccess[state.user?.role] || [];
+  return views.filter((view) => view !== "finance" || canAccessLevFinance());
 }
 
 function clearInactivityTimer() {
@@ -143,6 +149,11 @@ function canManageLeads() {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(state.user?.role);
 }
 
+function canAccessLevFinance() {
+  return (state.user?.role === "Admin TI" && String(state.user?.username || "").toLowerCase() === "admin")
+    || ["Gerente Financeiro", "Auxiliar Financeiro"].includes(state.user?.role);
+}
+
 function canDeleteComments() {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(state.user?.role);
 }
@@ -157,6 +168,10 @@ function canManageSystemSettings() {
 
 function canManagePipelineSettings() {
   return ["Admin TI", "Head Comercial"].includes(state.user?.role);
+}
+
+function canManageLevFinanceSettings() {
+  return canAccessLevFinance();
 }
 
 function editableRoles() {
@@ -221,6 +236,7 @@ function currentViewLabel() {
     sheet: "Planilha",
     odysseia: "Bases",
     dashboard: "Dashboard",
+    finance: "Financeiro Lev",
     settings: "Configurações",
     knowledge: "Ajuda",
     lead: "Detalhe do lead"
@@ -336,7 +352,7 @@ function sortBaseLeads(leads) {
 }
 
 function baseLeadCount() {
-  return state.leads.filter((lead) => !lead.inPipeline).length;
+  return filteredLeads().filter((lead) => isAvailableBaseLead(lead) || lead.source === "META" || MANUAL_BASE_SOURCES.includes(lead.source)).length;
 }
 
 function leadBaseStatus(lead, options = {}) {
@@ -535,6 +551,7 @@ async function loadState() {
   state.auditLog = data.auditLog;
   state.accessLog = data.accessLog || [];
   state.fupLeadLog = data.fupLeadLog || [];
+  state.levFinance = data.levFinance || null;
   state.knowledgeCategories = data.knowledgeCategories || [];
   state.knowledgeArticles = data.knowledgeArticles || [];
   state.knowledgeChatSessions = data.knowledgeChatSessions || [];
@@ -564,6 +581,7 @@ function renderShell(content) {
           ${navButton("sheet", "▤", "Planilha")}
           ${navButton("odysseia", "◎", "Bases")}
           ${navButton("dashboard", "◫", "Dashboard")}
+          ${navButton("finance", "▣", "Financeiro Lev")}
           ${navButton("settings", "⚙", "Configurações")}
           ${navButton("knowledge", "?", "Ajuda")}
         </nav>
@@ -1364,11 +1382,12 @@ function renderLeadBases() {
   const rows = leadRows(leads, { readOnlyStatus: true, withRescue: true, blankHistoricalBaseStatus: true });
   const pending = leads.filter((lead) => !lead.inPipeline).length;
   const rescued = leads.filter((lead) => lead.inPipeline).length;
+  const totalBase = baseLeadCount();
   renderShell(`
     ${renderViewHead("Bases de Leads", "Bases importadas separadas do pipeline comercial", { filters: true })}
     ${sources.length ? renderBaseSources(sources) : ""}
     <section class="metrics">
-      <div class="metric"><span>Total da base</span><strong>${leads.length}</strong></div>
+      <div class="metric"><span>Total da base</span><strong>${totalBase}</strong></div>
       <div class="metric"><span>A resgatar</span><strong>${pending}</strong></div>
       <div class="metric"><span>Resgatados</span><strong>${rescued}</strong></div>
       <div class="metric"><span>Origem</span><strong>${escapeHtml(baseSourceLabel(state.baseSource))}</strong></div>
@@ -1737,12 +1756,13 @@ function settingsLayout(content) {
   renderShell(`
     ${renderViewHead("Configurações", "Cadastros administrativos do sistema")}
       <div class="tabs">
-        ${settingsTabButton("users", "Usuários")}
+        ${canManageUsers() ? settingsTabButton("users", "Usuários") : ""}
         ${canManageSystemSettings() ? settingsTabButton("integrations", "Integrações") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("statuses", "Status do pipeline") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("tags", "Etiquetas") : ""}
         ${canManageSystemSettings() ? settingsTabButton("logs", "Logs") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("projects", "Empreendimentos") : ""}
+        ${canManageLevFinanceSettings() ? settingsTabButton("levFinance", "Financeiro Lev") : ""}
         ${canManageSystemSettings() ? settingsTabButton("knowledge", "Base de conhecimento") : ""}
     </div>
     ${content}
@@ -1760,11 +1780,14 @@ function settingsLayout(content) {
 function renderSettings() {
   if (["integrations", "logs", "knowledge"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
   if (["statuses", "tags", "projects"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
+  if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
+  if (state.settingsTab === "users" && !canManageUsers()) state.settingsTab = canManageLevFinanceSettings() ? "levFinance" : "knowledge";
   if (state.settingsTab === "integrations") return renderIntegrationSettings();
   if (state.settingsTab === "statuses") return renderStatusSettings();
   if (state.settingsTab === "tags") return renderTagSettings();
   if (state.settingsTab === "logs") return renderLogSettings();
   if (state.settingsTab === "projects") return renderProjectSettings();
+  if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
   if (state.settingsTab === "knowledge") return renderKnowledgeSettings();
   return renderUserSettings();
 }
@@ -2961,6 +2984,176 @@ async function saveIntegrations(integrations) {
   renderSettings();
 }
 
+function money(value) {
+  return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function dateLabel(value) {
+  if (!value) return "";
+  const date = new Date(value.includes("/") ? value.replace(/(\d{2})\/(\d{2})\/(\d{2,4}).*/, "$2/$1/$3") : value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("pt-BR");
+}
+
+function renderLevFinanceSettings() {
+  const settings = state.levFinance?.settings || {};
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Financeiro Lev</h2>
+      </div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
+      <form id="levFinanceSettingsForm" class="form-grid editor">
+        <div class="field"><label>% comissão Lev</label><input name="commissionPercent" type="number" min="0" step="0.01" value="${escapeHtml(settings.commissionPercent || "")}" required></div>
+        <div class="field"><label>E-mails Para</label><input name="provisionTo" value="${escapeHtml(settings.provisionTo || "")}" placeholder="financeiro@empresa.com.br" required></div>
+        <div class="field full"><label>E-mails Cc</label><input name="provisionCc" value="${escapeHtml(settings.provisionCc || "")}" placeholder="email1@empresa.com.br, email2@empresa.com.br"></div>
+        <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar configurações</button></div></div>
+      </form>
+    </section>
+  `);
+  bindSettingsCommon();
+  document.querySelector("#levFinanceSettingsForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button[type='submit']");
+    const form = new FormData(event.currentTarget);
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const data = await api("/api/lev-finance/settings", {
+        method: "PUT",
+        body: JSON.stringify(Object.fromEntries(form.entries()))
+      });
+      state.levFinance = data.levFinance;
+      state.settingsNotice = "Configurações financeiras salvas.";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+}
+
+function renderLevFinanceView() {
+  const finance = state.levFinance || { settings: {}, sales: [], receipts: [], paidUnits: [] };
+  const sales = finance.sales || [];
+  const pendingSales = sales.filter((sale) => !sale.paid);
+  const totalContract = pendingSales.reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0);
+  const totalCommission = pendingSales.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0);
+  const rows = pendingSales.map((sale) => `
+    <tr>
+      <td>${escapeHtml(sale.unit)}</td>
+      <td>${escapeHtml(sale.client)}</td>
+      <td>${escapeHtml(sale.signedAt)}</td>
+      <td>${money(sale.contractValue)}</td>
+      <td>${escapeHtml(sale.realEstate)}</td>
+      <td>${money(sale.commissionValue)}</td>
+      <td>${sale.eligible ? `<span class="status-active">Confirmada</span><br><small>${escapeHtml(dateLabel(sale.provisionDate))}</small>` : '<span class="chip">Pendente</span>'}</td>
+      <td>${sale.eligible ? '<span class="chip">E-mail enviado</span>' : `<button class="primary compact-button" data-confirm-lev-sale="${escapeHtml(sale.id)}">Confirmar</button>`}</td>
+    </tr>
+  `).join("");
+  const receiptRows = (finance.receipts || []).slice(0, 80).map((receipt) => `
+    <tr>
+      <td>${escapeHtml(receipt.unit)}</td>
+      <td>${money(receipt.amount)}</td>
+      <td>${escapeHtml(dateLabel(receipt.receivedAt))}</td>
+      <td>${escapeHtml(receipt.note || "")}</td>
+    </tr>
+  `).join("");
+  renderShell(`
+    ${renderViewHead("Financeiro Lev", "Controle de vendas, recebimentos e comissão da Lev")}
+    <section class="metrics">
+      <div class="metric"><span>Vendas pendentes</span><strong>${pendingSales.length}</strong></div>
+      <div class="metric"><span>Valor contratos</span><strong>${money(totalContract)}</strong></div>
+      <div class="metric"><span>Comissão estimada</span><strong>${money(totalCommission)}</strong></div>
+      <div class="metric"><span>% comissão</span><strong>${escapeHtml(finance.settings?.commissionPercent || 0)}%</strong></div>
+    </section>
+    <section class="dashboard-grid finance-grid">
+      <section class="panel">
+        <div class="panel-head"><h2>Submissão da imagem</h2></div>
+        <form id="levImageForm" class="form-grid">
+          <div class="field full"><label>Imagem da planilha</label><input type="file" name="image" accept="image/*" required><small>O sistema extrai registros com assinatura preenchida e ignora unidades já pagas.</small></div>
+          <div class="field full"><button class="primary" type="submit">Extrair vendas da imagem</button></div>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>Recebimentos / conciliação</h2></div>
+        <form id="levReceiptForm" class="form-grid">
+          <div class="field full"><label>Unidades pagas</label><textarea name="units" rows="4" placeholder="Uma unidade por linha. Ex.: GCR060107" required></textarea></div>
+          <div class="field"><label>Valor recebido</label><input name="amount" placeholder="450.000,00"></div>
+          <div class="field"><label>Data do recebimento</label><input name="receivedAt" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
+          <div class="field full"><label>Observação</label><input name="note" placeholder="Ex.: histórico inicial ou conciliação"></div>
+          <div class="field full"><button class="primary" type="submit">Registrar recebimento</button></div>
+        </form>
+      </section>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Vendas extraídas pendentes</h2></div>
+      <div class="table-wrap"><table class="access-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Imobiliária</th><th>Comissão</th><th>Status</th><th>Ação</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhuma venda pendente.</td></tr>'}</tbody></table></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Histórico de recebimentos</h2></div>
+      <div class="table-wrap"><table><thead><tr><th>Unidade</th><th>Valor</th><th>Recebido em</th><th>Observação</th></tr></thead><tbody>${receiptRows || '<tr><td colspan="4" class="empty">Nenhum recebimento registrado.</td></tr>'}</tbody></table></div>
+    </section>
+  `);
+  bindLevFinanceControls();
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Não foi possível ler a imagem"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function bindLevFinanceControls() {
+  document.querySelector("#levImageForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button[type='submit']");
+    const file = event.currentTarget.querySelector("input[type='file']")?.files?.[0];
+    if (!file) return;
+    try {
+      setButtonBusy(button, true, "Extraindo...");
+      const imageDataUrl = await readFileAsDataUrl(file);
+      const data = await api("/api/lev-finance/extract", { method: "POST", body: JSON.stringify({ imageDataUrl }) });
+      state.levFinance = data.levFinance;
+      alert(`Extração concluída: ${data.summary.created} nova(s), ${data.summary.duplicates} já existente(s), ${data.summary.paidSkipped} já paga(s).`);
+      renderLevFinanceView();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+  document.querySelector("#levReceiptForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button[type='submit']");
+    const form = new FormData(event.currentTarget);
+    try {
+      setButtonBusy(button, true, "Registrando...");
+      const data = await api("/api/lev-finance/receipts", { method: "POST", body: JSON.stringify(Object.fromEntries(form.entries())) });
+      state.levFinance = data.levFinance;
+      renderLevFinanceView();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+  document.querySelectorAll("[data-confirm-lev-sale]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Confirmar venda, elegibilidade e enviar e-mail de aprovisionamento?")) return;
+      try {
+        setButtonBusy(button, true, "Enviando...");
+        const data = await api(`/api/lev-finance/sales/${button.dataset.confirmLevSale}/confirm`, { method: "POST" });
+        state.levFinance = data.levFinance;
+        if (!data.email?.sent) alert(`Venda confirmada, mas o e-mail não foi enviado: ${data.email?.reason || "falha desconhecida"}`);
+        renderLevFinanceView();
+      } catch (error) {
+        setButtonBusy(button, false);
+        alert(error.message);
+      }
+    });
+  });
+}
+
 function renderProjectSettings() {
   const isCreating = state.settingsEditing === "new-project";
   const editIndex = state.settingsEditing?.startsWith("project:") ? Number(state.settingsEditing.replace("project:", "")) : null;
@@ -3188,6 +3381,7 @@ function renderApp() {
   if (state.view === "sheet") return renderSheet();
   if (state.view === "odysseia") return renderLeadBases();
   if (state.view === "dashboard") return renderDashboard();
+  if (state.view === "finance") return renderLevFinanceView();
   if (state.view === "settings") return renderSettings();
   if (state.view === "knowledge") return renderKnowledgeView();
 }

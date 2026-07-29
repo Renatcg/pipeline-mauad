@@ -11,7 +11,7 @@ const SEED_PATH = path.join(DATA_DIR, "seed.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const SESSION_TTL_MS = 1000 * 60 * 5;
 const PASSWORD_SETUP_TTL_MS = 1000 * 60 * 60 * 24;
-const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor"];
+const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor", "Gerente Financeiro", "Auxiliar Financeiro"];
 const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
 const DEFAULT_TAG_DEFINITIONS = [
   { id: "tag-quente", name: "Quente", color: "#d92d20" },
@@ -303,6 +303,64 @@ function migrateDb(db) {
     db.knowledgeChatSessions = [];
     changed = true;
   }
+  if (!db.levFinance || typeof db.levFinance !== "object" || Array.isArray(db.levFinance)) {
+    db.levFinance = {};
+    changed = true;
+  }
+  if (!db.levFinance.settings || typeof db.levFinance.settings !== "object" || Array.isArray(db.levFinance.settings)) {
+    db.levFinance.settings = {};
+    changed = true;
+  }
+  db.levFinance.settings = {
+    commissionPercent: Number(db.levFinance.settings.commissionPercent || 0),
+    provisionTo: String(db.levFinance.settings.provisionTo || "").trim(),
+    provisionCc: String(db.levFinance.settings.provisionCc || "").trim()
+  };
+  if (!Array.isArray(db.levFinance.sales)) {
+    db.levFinance.sales = [];
+    changed = true;
+  }
+  if (!Array.isArray(db.levFinance.receipts)) {
+    db.levFinance.receipts = [];
+    changed = true;
+  }
+  if (!Array.isArray(db.levFinance.paidUnits)) {
+    db.levFinance.paidUnits = [];
+    changed = true;
+  }
+  db.levFinance.sales = db.levFinance.sales.map((sale) => ({
+    id: String(sale.id || `lev-sale-${crypto.randomUUID()}`),
+    sourceId: String(sale.sourceId || "").trim(),
+    unit: String(sale.unit || sale.produto || "").trim(),
+    client: String(sale.client || "").trim(),
+    contractValue: Number(sale.contractValue || 0),
+    signedAt: String(sale.signedAt || "").trim(),
+    status: String(sale.status || "Extraída").trim(),
+    table: String(sale.table || "").trim(),
+    realEstate: String(sale.realEstate || "").trim(),
+    eligible: Boolean(sale.eligible),
+    confirmedAt: sale.confirmedAt || "",
+    confirmedBy: sale.confirmedBy || "",
+    provisionDate: sale.provisionDate || "",
+    provisionEmailSentAt: sale.provisionEmailSentAt || "",
+    commissionPercent: Number(sale.commissionPercent || db.levFinance.settings.commissionPercent || 0),
+    commissionValue: Number(sale.commissionValue || 0),
+    createdAt: sale.createdAt || new Date().toISOString(),
+    updatedAt: sale.updatedAt || sale.createdAt || new Date().toISOString()
+  })).filter((sale, index, sales) => sale.unit && sales.findIndex((item) => item.unit === sale.unit) === index);
+  db.levFinance.receipts = db.levFinance.receipts.map((receipt) => ({
+    id: String(receipt.id || `lev-receipt-${crypto.randomUUID()}`),
+    unit: String(receipt.unit || "").trim(),
+    amount: Number(receipt.amount || 0),
+    receivedAt: String(receipt.receivedAt || "").trim(),
+    note: String(receipt.note || "").trim(),
+    createdAt: receipt.createdAt || new Date().toISOString(),
+    createdBy: String(receipt.createdBy || "").trim()
+  })).filter((receipt) => receipt.unit);
+  db.levFinance.paidUnits = [...new Set([
+    ...db.levFinance.paidUnits.map((unit) => String(unit || "").trim()).filter(Boolean),
+    ...db.levFinance.receipts.map((receipt) => receipt.unit)
+  ])];
   for (const defaultArticle of DEFAULT_KNOWLEDGE_ARTICLES) {
     if (!db.knowledgeArticles.some((article) => article.id === defaultArticle.id)) {
       db.knowledgeArticles.push({ ...defaultArticle });
@@ -544,6 +602,166 @@ async function sendEmail(to, subject, html) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return { sent: false, reason: data.message || "Falha no envio do Resend" };
   return { sent: true, id: data.id };
+}
+
+async function sendEmailWithCc(to, cc, subject, html) {
+  if (!RESEND_API_KEY) return { sent: false, reason: "RESEND_API_KEY ausente" };
+  const recipients = String(to || "").split(",").map((item) => item.trim()).filter(Boolean);
+  const ccRecipients = String(cc || "").split(",").map((item) => item.trim()).filter(Boolean);
+  if (!recipients.length) return { sent: false, reason: "E-mail Para não configurado" };
+  let response;
+  try {
+    response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ from: EMAIL_FROM, to: recipients, cc: ccRecipients.length ? ccRecipients : undefined, subject, html })
+    });
+  } catch (error) {
+    return { sent: false, reason: externalFetchFailureReason("Resend", error) };
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return { sent: false, reason: data.message || "Falha no envio do Resend" };
+  return { sent: true, id: data.id };
+}
+
+function parseMoney(value) {
+  if (typeof value === "number") return value;
+  const text = String(value || "").trim();
+  if (!text) return 0;
+  const normalized = text.replace(/[^\d,.-]/g, "").replace(/\./g, "").replace(",", ".");
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function formatCurrency(value) {
+  return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function parseBrazilDate(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (!match) {
+    const date = new Date(text);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  const year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
+  return new Date(year, Number(match[2]) - 1, Number(match[1]), Number(match[4] || 0), Number(match[5] || 0), Number(match[6] || 0));
+}
+
+function provisionFridayForRequest(sentAt = new Date()) {
+  const base = new Date(sentAt);
+  base.setHours(0, 0, 0, 0);
+  const day = base.getDay();
+  const cutoffTuesday = new Date(base);
+  if (day === 2) cutoffTuesday.setDate(base.getDate());
+  else if (day < 2) cutoffTuesday.setDate(base.getDate() + (2 - day));
+  else cutoffTuesday.setDate(base.getDate() + (9 - day));
+  const provision = new Date(cutoffTuesday);
+  provision.setDate(cutoffTuesday.getDate() + 24);
+  return provision.toISOString().slice(0, 10);
+}
+
+function publicLevFinance(db) {
+  const finance = db.levFinance || { settings: {}, sales: [], receipts: [], paidUnits: [] };
+  const paid = new Set(finance.paidUnits || []);
+  return {
+    settings: finance.settings || {},
+    sales: (finance.sales || []).map((sale) => ({
+      ...sale,
+      paid: paid.has(sale.unit)
+    })).sort((a, b) => (parseBrazilDate(b.signedAt)?.getTime() || new Date(b.createdAt).getTime()) - (parseBrazilDate(a.signedAt)?.getTime() || new Date(a.createdAt).getTime())),
+    receipts: finance.receipts || [],
+    paidUnits: finance.paidUnits || []
+  };
+}
+
+function normalizeLevSale(raw, settings = {}) {
+  const unit = String(raw.unit || raw.produto || raw["Produto"] || "").trim();
+  const contractValue = parseMoney(raw.contractValue ?? raw.valorContrato ?? raw["Valor contrato"]);
+  const commissionPercent = Number(settings.commissionPercent || 0);
+  return {
+    id: `lev-sale-${crypto.randomUUID()}`,
+    sourceId: String(raw.sourceId || raw.id || raw["ID"] || "").trim(),
+    unit,
+    client: String(raw.client || raw.cliente || raw["Cliente"] || "").trim(),
+    contractValue,
+    signedAt: String(raw.signedAt || raw.assinatura || raw["DtHr Assinatura"] || "").trim(),
+    status: String(raw.status || raw["Status"] || "Assinado").trim(),
+    table: String(raw.table || raw.tabela || raw["Tabela"] || "").trim(),
+    realEstate: String(raw.realEstate || raw.imobiliaria || raw["Imobiliária"] || "").trim(),
+    eligible: false,
+    confirmedAt: "",
+    confirmedBy: "",
+    provisionDate: "",
+    provisionEmailSentAt: "",
+    commissionPercent,
+    commissionValue: contractValue * (commissionPercent / 100),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+async function extractLevSalesFromImage(imageDataUrl) {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY ausente para extração da imagem");
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      instructions: [
+        "Extraia de uma imagem de planilha apenas registros de vendas imobiliárias com Status Assinado e DtHr Assinatura preenchida.",
+        "Responda somente JSON válido no formato {\"sales\":[...]} sem markdown.",
+        "Cada item deve ter: sourceId, unit, contractValue, signedAt, client, status, table, realEstate.",
+        "Preserve datas e valores como aparecem na imagem quando possível. Ignore linhas sem assinatura preenchida."
+      ].join(" "),
+      input: [{
+        role: "user",
+        content: [
+          { type: "input_text", text: "Extraia as vendas assinadas desta imagem." },
+          { type: "input_image", image_url: imageDataUrl }
+        ]
+      }],
+      text: { format: { type: "json_object" } },
+      max_output_tokens: 5000
+    })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error?.message || "Não foi possível extrair vendas da imagem");
+  const text = data.output_text || data.output?.flatMap((item) => item.content || []).map((content) => content.text || "").join("").trim();
+  const parsed = JSON.parse(text || "{\"sales\":[]}");
+  return Array.isArray(parsed.sales) ? parsed.sales : [];
+}
+
+async function sendLevProvisionEmail(db, sale) {
+  const settings = db.levFinance?.settings || {};
+  const provisionDate = sale.provisionDate ? parseBrazilDate(sale.provisionDate) || new Date(`${sale.provisionDate}T00:00:00`) : null;
+  const provisionLabel = provisionDate
+    ? provisionDate.toLocaleDateString("pt-BR")
+    : sale.provisionDate || "";
+  const html = `
+    <div style="font-family:Arial,sans-serif;color:#101828;line-height:1.5">
+      <h2>Solicitação de aprovisionamento - Comissão Lev</h2>
+      <p>Prezados,</p>
+      <p>Solicitamos o aprovisionamento da comissão Lev para a venda abaixo, com previsão de pagamento em <strong>${escapeHtml(provisionLabel)}</strong>.</p>
+      <table cellpadding="8" cellspacing="0" style="border-collapse:collapse;border:1px solid #d0d5dd">
+        <tr><td><strong>Unidade</strong></td><td>${escapeHtml(sale.unit)}</td></tr>
+        <tr><td><strong>Cliente</strong></td><td>${escapeHtml(sale.client)}</td></tr>
+        <tr><td><strong>Data de assinatura</strong></td><td>${escapeHtml(sale.signedAt)}</td></tr>
+        <tr><td><strong>Valor contrato</strong></td><td>${escapeHtml(formatCurrency(sale.contractValue))}</td></tr>
+        <tr><td><strong>% comissão</strong></td><td>${escapeHtml(String(sale.commissionPercent || 0))}%</td></tr>
+        <tr><td><strong>Comissão estimada</strong></td><td>${escapeHtml(formatCurrency(sale.commissionValue))}</td></tr>
+        <tr><td><strong>Imobiliária</strong></td><td>${escapeHtml(sale.realEstate)}</td></tr>
+      </table>
+      <p>Obrigado.</p>
+    </div>
+  `;
+  return sendEmailWithCc(settings.provisionTo, settings.provisionCc, `Aprovisionamento comissão Lev - ${sale.unit}`, html);
 }
 
 function leadUrl(lead) {
@@ -1223,6 +1441,11 @@ function manageableRoles(user) {
 
 function canManageLeads(user) {
   return ["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(user.role);
+}
+
+function canAccessLevFinance(user) {
+  return (user.role === "Admin TI" && String(user.username || "").toLowerCase() === "admin")
+    || ["Gerente Financeiro", "Auxiliar Financeiro"].includes(user.role);
 }
 
 function hasBaseHistory(lead) {
@@ -2077,7 +2300,8 @@ async function routeApi(req, res, db) {
       integrationLog: canManageSettings(user) ? db.integrationLog.slice(0, 50) : [],
       auditLog: canManageSettings(user) ? db.auditLog.slice(0, 25) : [],
       accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : [],
-      fupLeadLog: canManageSettings(user) ? (db.fupLeadLog || []).slice(0, 250) : []
+      fupLeadLog: canManageSettings(user) ? (db.fupLeadLog || []).slice(0, 250) : [],
+      levFinance: canAccessLevFinance(user) ? publicLevFinance(db) : null
     });
   }
 
@@ -2109,6 +2333,105 @@ async function routeApi(req, res, db) {
     audit(db, user, "CLEAR_FUP_LEAD_LOG", { cleared });
     await saveDb(db);
     return sendJson(res, 200, { ok: true, cleared });
+  }
+
+  if (method === "PUT" && url.pathname === "/api/lev-finance/settings") {
+    if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    db.levFinance.settings = {
+      commissionPercent: Math.max(0, Number(body.commissionPercent || 0)),
+      provisionTo: String(body.provisionTo || "").trim(),
+      provisionCc: String(body.provisionCc || "").trim()
+    };
+    audit(db, user, "UPDATE_LEV_FINANCE_SETTINGS", { commissionPercent: db.levFinance.settings.commissionPercent });
+    await saveDb(db);
+    return sendJson(res, 200, { levFinance: publicLevFinance(db) });
+  }
+
+  if (method === "POST" && url.pathname === "/api/lev-finance/extract") {
+    if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const imageDataUrl = String(body.imageDataUrl || "");
+    if (!imageDataUrl.startsWith("data:image/")) return sendJson(res, 400, { error: "Envie uma imagem válida" });
+    let rawSales;
+    try {
+      rawSales = await extractLevSalesFromImage(imageDataUrl);
+    } catch (error) {
+      integrationEvent(db, "LEV_FINANCE", "IMAGE_EXTRACTION_FAILED", { error: error.message });
+      await saveDb(db);
+      return sendJson(res, 400, { error: error.message });
+    }
+    const paid = new Set(db.levFinance.paidUnits || []);
+    let created = 0;
+    let duplicates = 0;
+    let paidSkipped = 0;
+    for (const raw of rawSales) {
+      const sale = normalizeLevSale(raw, db.levFinance.settings);
+      if (!sale.unit || !sale.signedAt || !String(sale.status || "").toLowerCase().includes("assinado")) continue;
+      if (paid.has(sale.unit)) {
+        paidSkipped += 1;
+        continue;
+      }
+      if (db.levFinance.sales.some((item) => item.unit === sale.unit)) {
+        duplicates += 1;
+        continue;
+      }
+      db.levFinance.sales.push(sale);
+      created += 1;
+    }
+    audit(db, user, "IMPORT_LEV_SALES_IMAGE", { extracted: rawSales.length, created, duplicates, paidSkipped });
+    await saveDb(db);
+    return sendJson(res, 200, { levFinance: publicLevFinance(db), summary: { extracted: rawSales.length, created, duplicates, paidSkipped } });
+  }
+
+  if (method === "POST" && url.pathname === "/api/lev-finance/receipts") {
+    if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const units = String(body.units || "")
+      .split(/[\n,;]+/)
+      .map((unit) => unit.trim())
+      .filter(Boolean);
+    if (!units.length) return sendJson(res, 400, { error: "Informe ao menos uma unidade paga" });
+    const amount = parseMoney(body.amount);
+    const receivedAt = String(body.receivedAt || new Date().toISOString().slice(0, 10)).trim();
+    for (const unit of units) {
+      if (!db.levFinance.paidUnits.includes(unit)) db.levFinance.paidUnits.push(unit);
+      db.levFinance.receipts.unshift({
+        id: `lev-receipt-${crypto.randomUUID()}`,
+        unit,
+        amount,
+        receivedAt,
+        note: String(body.note || "").trim(),
+        createdAt: new Date().toISOString(),
+        createdBy: user.username
+      });
+    }
+    audit(db, user, "REGISTER_LEV_RECEIPTS", { units: units.length, amount });
+    await saveDb(db);
+    return sendJson(res, 201, { levFinance: publicLevFinance(db) });
+  }
+
+  const levConfirmMatch = url.pathname.match(/^\/api\/lev-finance\/sales\/([^/]+)\/confirm$/);
+  if (levConfirmMatch && method === "POST") {
+    if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const sale = db.levFinance.sales.find((item) => item.id === levConfirmMatch[1]);
+    if (!sale) return notFound(res);
+    sale.eligible = true;
+    sale.confirmedAt = new Date().toISOString();
+    sale.confirmedBy = user.username;
+    sale.provisionDate = provisionFridayForRequest(new Date());
+    sale.commissionPercent = Number(db.levFinance.settings.commissionPercent || sale.commissionPercent || 0);
+    sale.commissionValue = Number(sale.contractValue || 0) * (sale.commissionPercent / 100);
+    const email = await sendLevProvisionEmail(db, sale);
+    if (email.sent) {
+      sale.provisionEmailSentAt = new Date().toISOString();
+    } else {
+      integrationEvent(db, "LEV_FINANCE", "PROVISION_EMAIL_FAILED", { saleId: sale.id, unit: sale.unit, reason: email.reason });
+    }
+    sale.updatedAt = new Date().toISOString();
+    audit(db, user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: sale.id, unit: sale.unit, provisionDate: sale.provisionDate, emailSent: email.sent });
+    await saveDb(db);
+    return sendJson(res, 200, { levFinance: publicLevFinance(db), email });
   }
 
   if (method === "POST" && url.pathname === "/api/leads/check-duplicate") {
