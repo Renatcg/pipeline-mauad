@@ -3671,7 +3671,8 @@ async function structuredLogsForState(db) {
   const fallback = {
     integrationLog: db.integrationLog.slice(0, 50),
     auditLog: db.auditLog.slice(0, 25),
-    fupLeadLog: (db.fupLeadLog || []).slice(0, 250)
+    fupLeadLog: (db.fupLeadLog || []).slice(0, 250),
+    source: "legacy"
   };
   try {
     const sql = await structuredSqlForMirror();
@@ -3684,7 +3685,8 @@ async function structuredLogsForState(db) {
     return {
       integrationLog: integrationRows.map((row) => row.payload || {}).filter((item) => item.at),
       auditLog: auditRows.map((row) => row.payload || {}).filter((item) => item.at),
-      fupLeadLog: fupRows.map((row) => row.payload || {}).filter((item) => item.at)
+      fupLeadLog: fupRows.map((row) => row.payload || {}).filter((item) => item.at),
+      source: "structured"
     };
   } catch (error) {
     mirrorStructuredError("logs-state", error);
@@ -4119,6 +4121,9 @@ async function routeApi(req, res, db) {
       auditLog: structuredLogs.auditLog,
       accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : [],
       fupLeadLog: structuredLogs.fupLeadLog,
+      dataSources: {
+        logs: structuredLogs.source
+      },
       levFinance: canAccessLevFinance(user) ? publicLevFinance(db) : null
     });
   }

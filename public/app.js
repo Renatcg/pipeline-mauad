@@ -26,6 +26,7 @@ const state = {
   integrationLog: [],
   levFinance: null,
   structuredDbDiagnostics: null,
+  dataSources: {},
   knowledgeCategories: [],
   knowledgeArticles: [],
   knowledgeChatSessions: [],
@@ -642,6 +643,7 @@ async function loadState() {
   state.accessLog = data.accessLog || [];
   state.fupLeadLog = data.fupLeadLog || [];
   state.levFinance = data.levFinance || null;
+  state.dataSources = data.dataSources || {};
   state.knowledgeCategories = data.knowledgeCategories || [];
   state.knowledgeArticles = data.knowledgeArticles || [];
   state.knowledgeChatSessions = data.knowledgeChatSessions || [];
@@ -3090,6 +3092,7 @@ function renderLogSettings() {
           <input id="settingsLogSearch" class="settings-search" placeholder="Pesquisar nos logs" value="${escapeHtml(state.settingsLogSearch)}">
         </div>
       </div>
+      ${state.dataSources?.logs === "legacy" ? '<div class="legacy-data-notice">Dados recuperados de base legada.</div>' : ""}
       <div class="tabs compact-tabs log-tabs">
         <button class="${state.settingsLogTab === "audit" ? "active" : ""}" data-log-tab="audit">Auditoria</button>
         <button class="${state.settingsLogTab === "fup" ? "active" : ""}" data-log-tab="fup">FUP Lead</button>
