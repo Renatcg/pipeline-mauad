@@ -4859,27 +4859,43 @@ async function routeApi(req, res, db) {
   }
 
   if (method === "POST" && url.pathname === "/api/webhooks/sam") {
-    const auth = verifySamJwt(req);
-    if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
-    let body;
     try {
-      body = await readBody(req);
-    } catch {
-      integrationEvent(db, "SAM", "INVALID_JSON", {});
+      const auth = verifySamJwt(req);
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      let body;
+      try {
+        body = await readBody(req);
+      } catch {
+        integrationEvent(db, "SAM", "INVALID_JSON", {});
+        await saveDb(db);
+        return sendJson(res, 400, { error: "Payload inválido" });
+      }
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        integrationEvent(db, "SAM", "INVALID_PAYLOAD_TYPE", { type: Array.isArray(body) ? "array" : typeof body });
+        await saveDb(db);
+        return sendJson(res, 400, { error: "Payload deve ser um objeto JSON" });
+      }
+      const forbiddenFields = ["cpf", "cnpj", "documento", "document", "nome", "name", "corretor", "broker", "imobiliaria", "imobiliária", "realEstate", "project", "projeto"];
+      const receivedForbidden = forbiddenFields.filter((field) => Object.prototype.hasOwnProperty.call(body, field));
+      if (receivedForbidden.length) {
+        integrationEvent(db, "SAM", "FORBIDDEN_FIELDS_REJECTED", { fields: receivedForbidden });
+        await saveDb(db);
+        return sendJson(res, 400, { error: "Payload contém campos não permitidos", fields: receivedForbidden });
+      }
+      const result = await processSamWebhook(db, body);
       await saveDb(db);
-      return sendJson(res, 400, { error: "Payload inválido" });
+      const { httpStatus = 200, ...responseBody } = result;
+      return sendJson(res, httpStatus, responseBody);
+    } catch (error) {
+      console.error("SAM_WEBHOOK_PROCESS_ERROR", error);
+      try {
+        integrationEvent(db, "SAM", "WEBHOOK_PROCESS_ERROR", { error: error.message });
+        await saveDb(db);
+      } catch (logError) {
+        console.error("SAM_WEBHOOK_LOG_ERROR", logError);
+      }
+      return sendJson(res, 500, { error: "Erro interno no webhook SAM", detail: error.message });
     }
-    const forbiddenFields = ["cpf", "cnpj", "documento", "document", "nome", "name", "corretor", "broker", "imobiliaria", "imobiliária", "realEstate", "project", "projeto"];
-    const receivedForbidden = forbiddenFields.filter((field) => Object.prototype.hasOwnProperty.call(body, field));
-    if (receivedForbidden.length) {
-      integrationEvent(db, "SAM", "FORBIDDEN_FIELDS_REJECTED", { fields: receivedForbidden });
-      await saveDb(db);
-      return sendJson(res, 400, { error: "Payload contém campos não permitidos", fields: receivedForbidden });
-    }
-    const result = await processSamWebhook(db, body);
-    await saveDb(db);
-    const { httpStatus = 200, ...responseBody } = result;
-    return sendJson(res, httpStatus, responseBody);
   }
 
   if (method === "POST" && url.pathname === "/api/login") {
@@ -6248,8 +6264,16 @@ async function handleRequest(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (await fastStructuredLeadsResponse(req, res, url)) return;
     if (await fastStructuredLeadAction(req, res, url)) return;
-    const db = await loadDb();
-    return routeApi(req, res, db);
+    try {
+      const db = await loadDb();
+      return routeApi(req, res, db);
+    } catch (error) {
+      if (url.pathname === "/api/webhooks/sam") {
+        console.error("SAM_WEBHOOK_LOAD_ERROR", error);
+        return sendJson(res, 500, { error: "Erro interno ao carregar dados para o webhook SAM", detail: error.message });
+      }
+      throw error;
+    }
   } else {
     routeStatic(req, res);
   }
