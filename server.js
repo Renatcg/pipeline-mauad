@@ -2491,6 +2491,7 @@ function parseCookies(req) {
 }
 
 function send(res, status, body, headers = {}) {
+  if (res.headersSent || res.writableEnded) return false;
   const payload = typeof body === "string" ? body : JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": typeof body === "string" ? "text/plain; charset=utf-8" : "application/json; charset=utf-8",
@@ -2499,11 +2500,11 @@ function send(res, status, body, headers = {}) {
     ...headers
   });
   res.end(payload);
+  return true;
 }
 
 function sendJson(res, status, body, headers = {}) {
-  send(res, status, body, { "Content-Type": "application/json; charset=utf-8", ...headers });
-  return true;
+  return send(res, status, body, { "Content-Type": "application/json; charset=utf-8", ...headers });
 }
 
 function notFound(res) {
@@ -3925,6 +3926,12 @@ function samEventFromRow(row) {
 
 async function saveStructuredSamEvent(sql, event) {
   if (!event?.id) return;
+  if (event.eventId) {
+    await sql`INSERT INTO crm_sam_events (id, event_id, event_type, event_datetime, email, phone, unit, next_status, status, lead_id, lead_name, created_at, resolved_at, resolved_by, payload)
+      VALUES (${event.id}, ${event.eventId || ""}, ${event.eventType || ""}, ${event.eventDatetime || ""}, ${event.email || ""}, ${event.phone || ""}, ${event.unit || ""}, ${event.nextStatus || ""}, ${event.status || ""}, ${event.leadId || ""}, ${event.leadName || ""}, ${dbDate(event.createdAt)}, ${dbDate(event.resolvedAt)}, ${event.resolvedBy || ""}, ${JSON.stringify(event)}::jsonb)
+      ON CONFLICT (event_id) WHERE event_id IS NOT NULL AND event_id <> '' DO UPDATE SET event_type = EXCLUDED.event_type, event_datetime = EXCLUDED.event_datetime, email = EXCLUDED.email, phone = EXCLUDED.phone, unit = EXCLUDED.unit, next_status = EXCLUDED.next_status, status = EXCLUDED.status, lead_id = EXCLUDED.lead_id, lead_name = EXCLUDED.lead_name, created_at = EXCLUDED.created_at, resolved_at = EXCLUDED.resolved_at, resolved_by = EXCLUDED.resolved_by, payload = EXCLUDED.payload`;
+    return;
+  }
   await sql`INSERT INTO crm_sam_events (id, event_id, event_type, event_datetime, email, phone, unit, next_status, status, lead_id, lead_name, created_at, resolved_at, resolved_by, payload)
     VALUES (${event.id}, ${event.eventId || ""}, ${event.eventType || ""}, ${event.eventDatetime || ""}, ${event.email || ""}, ${event.phone || ""}, ${event.unit || ""}, ${event.nextStatus || ""}, ${event.status || ""}, ${event.leadId || ""}, ${event.leadName || ""}, ${dbDate(event.createdAt)}, ${dbDate(event.resolvedAt)}, ${event.resolvedBy || ""}, ${JSON.stringify(event)}::jsonb)
     ON CONFLICT (id) DO UPDATE SET event_id = EXCLUDED.event_id, event_type = EXCLUDED.event_type, event_datetime = EXCLUDED.event_datetime, email = EXCLUDED.email, phone = EXCLUDED.phone, unit = EXCLUDED.unit, next_status = EXCLUDED.next_status, status = EXCLUDED.status, lead_id = EXCLUDED.lead_id, lead_name = EXCLUDED.lead_name, created_at = EXCLUDED.created_at, resolved_at = EXCLUDED.resolved_at, resolved_by = EXCLUDED.resolved_by, payload = EXCLUDED.payload`;
