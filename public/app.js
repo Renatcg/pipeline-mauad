@@ -14,6 +14,8 @@ const state = {
   leads: [],
   leadsLoaded: false,
   leadsScope: "",
+  leadsQueryKey: "",
+  leadsPage: { total: 0, pending: 0, rescued: 0, hasMore: false, limit: 150, offset: 0 },
   leadsLoading: false,
   leadsLoadError: "",
   integrations: null,
@@ -360,10 +362,9 @@ function isAvailableBaseLead(lead) {
 
 function baseSources() {
   const allowed = new Set(state.accessibleBaseSources || []);
-  let sources = [...new Set(state.leads
-    .filter((lead) => isAvailableBaseLead(lead) || lead.source === "META" || MANUAL_BASE_SOURCES.includes(lead.source))
-    .map((lead) => lead.source)
-    .filter((source) => source && (state.user?.role === "Admin TI" || allowed.has(source))))].sort();
+  let sources = (state.user?.role === "Admin TI" ? (state.baseAccessSources || state.accessibleBaseSources || []) : [...allowed])
+    .filter(Boolean)
+    .sort();
   for (const source of MANUAL_BASE_SOURCES) {
     if ((state.user?.role === "Admin TI" || allowed.has(source)) && !sources.includes(source)) sources.push(source);
   }
@@ -672,22 +673,55 @@ function leadScopeForView(view = state.view) {
   return "";
 }
 
-function hasLoadedLeadsForView(view = state.view) {
+function leadQueryKeyForView(view = state.view) {
   const scope = leadScopeForView(view);
-  return !scope || (state.leadsLoaded && state.leadsScope === scope);
+  if (scope !== "bases") return scope;
+  return JSON.stringify({
+    scope,
+    source: state.baseSource || "TODOS",
+    search: state.search || "",
+    favoritesOnly: Boolean(state.favoritesOnly),
+    sort: state.baseSort || { key: "name", direction: "asc" }
+  });
 }
 
-async function loadLeads(force = false) {
+function hasLoadedLeadsForView(view = state.view) {
+  const scope = leadScopeForView(view);
+  return !scope || (state.leadsLoaded && state.leadsScope === scope && state.leadsQueryKey === leadQueryKeyForView(view));
+}
+
+async function loadLeads(force = false, options = {}) {
   const scope = leadScopeForView();
   if (!scope) return;
+  const queryKey = leadQueryKeyForView();
+  const append = Boolean(options.append && scope === "bases");
   if (state.leadsLoading) return;
-  if (state.leadsLoaded && state.leadsScope === scope && !force) return;
+  if (!append && state.leadsLoaded && state.leadsScope === scope && state.leadsQueryKey === queryKey && !force) return;
   state.leadsLoading = true;
   state.leadsLoadError = "";
   try {
-    const data = await api(`/api/leads?scope=${encodeURIComponent(scope)}`);
-    state.leads = data.leads || [];
+    const params = new URLSearchParams({ scope });
+    if (scope === "bases") {
+      params.set("source", state.baseSource || "TODOS");
+      params.set("search", state.search || "");
+      params.set("favorite", state.favoritesOnly ? "1" : "0");
+      params.set("sort", state.baseSort?.key || "name");
+      params.set("direction", state.baseSort?.direction || "asc");
+      params.set("limit", String(state.leadsPage?.limit || 150));
+      params.set("offset", String(append ? state.leads.length : 0));
+    }
+    const data = await api(`/api/leads?${params.toString()}`);
+    state.leads = append ? [...state.leads, ...(data.leads || [])] : (data.leads || []);
     state.leadsScope = data.scope || scope;
+    state.leadsQueryKey = queryKey;
+    state.leadsPage = data.page || {
+      total: state.leads.length,
+      pending: 0,
+      rescued: 0,
+      hasMore: false,
+      limit: state.leadsPage?.limit || 150,
+      offset: state.leads.length
+    };
     state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
     state.leadsLoaded = true;
   } catch (error) {
@@ -700,6 +734,8 @@ async function loadLeads(force = false) {
 function invalidateLeads() {
   state.leadsLoaded = false;
   state.leadsScope = "";
+  state.leadsQueryKey = "";
+  state.leadsPage = { total: 0, pending: 0, rescued: 0, hasMore: false, limit: state.leadsPage?.limit || 150, offset: 0 };
 }
 
 function navButton(view, icon, label) {
@@ -1590,6 +1626,11 @@ function bindTableSortControls(renderFn) {
         direction: current.key === key && current.direction === "asc" ? "desc" : "asc"
       };
       saveTableSortPreference(scope);
+      if (scope === "base") {
+        invalidateLeads();
+        renderApp();
+        return;
+      }
       renderFn();
     });
   });
@@ -1649,9 +1690,15 @@ function renderLeadBases() {
   const sources = baseSources();
   const leads = baseLeads();
   const rows = leadRows(leads, { readOnlyStatus: true, withRescue: true, blankHistoricalBaseStatus: true });
-  const pending = leads.filter((lead) => !lead.inPipeline).length;
-  const rescued = leads.filter((lead) => lead.inPipeline).length;
-  const totalBase = baseLeadCount(state.baseSource);
+  const pending = Number(state.leadsPage?.pending ?? leads.filter((lead) => !lead.inPipeline).length);
+  const rescued = Number(state.leadsPage?.rescued ?? leads.filter((lead) => lead.inPipeline).length);
+  const totalBase = Number(state.leadsPage?.total ?? baseLeadCount(state.baseSource));
+  const shown = leads.length;
+  const loadMore = state.leadsPage?.hasMore ? `
+    <div class="load-more-row">
+      <button class="primary" data-load-more-bases ${state.leadsLoading ? "disabled" : ""}>${state.leadsLoading ? "Carregando..." : `Carregar mais (${shown}/${totalBase})`}</button>
+    </div>
+  ` : shown && totalBase > shown ? `<p class="muted-copy">Mostrando ${shown} de ${totalBase} registros.</p>` : "";
   renderShell(`
     ${renderViewHead("Bases de Leads", "Bases importadas separadas do pipeline comercial", { filters: true })}
     ${sources.length ? renderBaseSources(sources) : ""}
@@ -1662,14 +1709,25 @@ function renderLeadBases() {
       <div class="metric"><span>Origem</span><strong>${escapeHtml(baseSourceLabel(state.baseSource))}</strong></div>
     </section>
     ${renderLeadsTable(rows, { withRescue: true, sortable: true, sortScope: "base" })}
+    ${loadMore}
   `);
   bindLeadActions();
   bindTableSortControls(renderLeadBases);
   document.querySelectorAll("[data-base-source]").forEach((button) => {
     button.addEventListener("click", () => {
       state.baseSource = button.dataset.baseSource;
-      renderLeadBases();
+      invalidateLeads();
+      renderApp();
     });
+  });
+  document.querySelector("[data-load-more-bases]")?.addEventListener("click", async (event) => {
+    try {
+      setButtonBusy(event.currentTarget, true, "Carregando...");
+      await loadLeads(true, { append: true });
+      renderLeadBases();
+    } catch (error) {
+      alert(error.message);
+    }
   });
   document.querySelectorAll("[data-rescue]").forEach((button) => {
     button.addEventListener("click", async () => {

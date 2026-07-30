@@ -3830,6 +3830,13 @@ async function fastStructuredLeadsResponse(req, res, url) {
   if (!DATABASE_URL || req.method !== "GET" || url.pathname !== "/api/leads") return false;
   const requestedScope = String(url.searchParams.get("scope") || "all");
   const scope = ["pipeline", "bases", "all"].includes(requestedScope) ? requestedScope : "all";
+  const pageLimit = Math.min(300, Math.max(25, Number(url.searchParams.get("limit") || 150)));
+  const pageOffset = Math.max(0, Number(url.searchParams.get("offset") || 0));
+  const sourceFilter = String(url.searchParams.get("source") || "TODOS");
+  const searchFilter = String(url.searchParams.get("search") || "").trim().toLowerCase();
+  const favoriteOnly = url.searchParams.get("favorite") === "1";
+  const sortKey = ["name", "phone", "email", "status", "broker", "source"].includes(String(url.searchParams.get("sort") || "")) ? String(url.searchParams.get("sort")) : "name";
+  const sortDirection = url.searchParams.get("direction") === "desc" ? "desc" : "asc";
   try {
     const sql = await getSql();
     if (!sql) return false;
@@ -3865,6 +3872,26 @@ async function fastStructuredLeadsResponse(req, res, url) {
             .filter((source) => allSources.some((item) => item.name === source));
       if (user.role !== "Admin TI" && !allowedSources.length) return false;
       if (!allowedSources.length) return sendJson(res, 200, { leads: [], scope, dataSources: { leads: "structured" } });
+      const sourceIsAll = sourceFilter === "TODOS" || !sourceFilter;
+      const allowedIsAll = user.role === "Admin TI";
+      const searchLike = `%${searchFilter}%`;
+      const summaryRows = await sql`SELECT
+          COUNT(*)::int AS total,
+          COALESCE(SUM(CASE WHEN l.in_pipeline = false THEN 1 ELSE 0 END), 0)::int AS pending,
+          COALESCE(SUM(CASE WHEN l.in_pipeline = true THEN 1 ELSE 0 END), 0)::int AS rescued
+        FROM crm_leads l
+        LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
+        WHERE (
+            l.in_pipeline = false
+            OR l.source IN ('META', 'Stand', 'Lista RMeirelles')
+            OR l.payload->>'sourceStatus' IS NOT NULL
+            OR l.payload->>'odysseiaStatus' IS NOT NULL
+          )
+          AND (${sourceIsAll} OR l.source = ${sourceFilter} OR l.base_source_before_pipeline = ${sourceFilter} OR l.previous_pipeline_source = ${sourceFilter})
+          AND (${allowedIsAll} OR l.source = ANY(${allowedSources}) OR l.base_source_before_pipeline = ANY(${allowedSources}) OR l.previous_pipeline_source = ANY(${allowedSources}))
+          AND (${!favoriteOnly} OR COALESCE(f.favorite, false) = true)
+          AND (${!searchFilter} OR lower(concat_ws(' ', l.name, l.phone, l.email, l.assigned_name, l.source, l.status, l.payload->>'assistant', l.payload->>'externalId')) LIKE ${searchLike})`;
+      const page = summaryRows[0] || { total: 0, pending: 0, rescued: 0 };
       rows = await sql`SELECT l.*, COALESCE(f.favorite, false) AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
           FROM crm_leads l
           LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
@@ -3875,8 +3902,39 @@ async function fastStructuredLeadsResponse(req, res, url) {
               OR l.payload->>'sourceStatus' IS NOT NULL
               OR l.payload->>'odysseiaStatus' IS NOT NULL
             )
+            AND (${sourceIsAll} OR l.source = ${sourceFilter} OR l.base_source_before_pipeline = ${sourceFilter} OR l.previous_pipeline_source = ${sourceFilter})
+            AND (${allowedIsAll} OR l.source = ANY(${allowedSources}) OR l.base_source_before_pipeline = ANY(${allowedSources}) OR l.previous_pipeline_source = ANY(${allowedSources}))
+            AND (${!favoriteOnly} OR COALESCE(f.favorite, false) = true)
+            AND (${!searchFilter} OR lower(concat_ws(' ', l.name, l.phone, l.email, l.assigned_name, l.source, l.status, l.payload->>'assistant', l.payload->>'externalId')) LIKE ${searchLike})
           GROUP BY l.id, f.favorite
-          ORDER BY l.name ASC NULLS LAST, l.updated_at DESC NULLS LAST`;
+          ORDER BY
+            CASE WHEN ${sortKey} = 'name' AND ${sortDirection} = 'asc' THEN lower(l.name) END ASC NULLS LAST,
+            CASE WHEN ${sortKey} = 'name' AND ${sortDirection} = 'desc' THEN lower(l.name) END DESC NULLS LAST,
+            CASE WHEN ${sortKey} = 'phone' AND ${sortDirection} = 'asc' THEN lower(l.phone) END ASC NULLS LAST,
+            CASE WHEN ${sortKey} = 'phone' AND ${sortDirection} = 'desc' THEN lower(l.phone) END DESC NULLS LAST,
+            CASE WHEN ${sortKey} = 'email' AND ${sortDirection} = 'asc' THEN lower(COALESCE(l.email, l.payload->>'assistant')) END ASC NULLS LAST,
+            CASE WHEN ${sortKey} = 'email' AND ${sortDirection} = 'desc' THEN lower(COALESCE(l.email, l.payload->>'assistant')) END DESC NULLS LAST,
+            CASE WHEN ${sortKey} = 'status' AND ${sortDirection} = 'asc' THEN lower(l.status) END ASC NULLS LAST,
+            CASE WHEN ${sortKey} = 'status' AND ${sortDirection} = 'desc' THEN lower(l.status) END DESC NULLS LAST,
+            CASE WHEN ${sortKey} = 'broker' AND ${sortDirection} = 'asc' THEN lower(l.assigned_name) END ASC NULLS LAST,
+            CASE WHEN ${sortKey} = 'broker' AND ${sortDirection} = 'desc' THEN lower(l.assigned_name) END DESC NULLS LAST,
+            CASE WHEN ${sortKey} = 'source' AND ${sortDirection} = 'asc' THEN lower(l.source) END ASC NULLS LAST,
+            CASE WHEN ${sortKey} = 'source' AND ${sortDirection} = 'desc' THEN lower(l.source) END DESC NULLS LAST,
+            lower(l.name) ASC NULLS LAST
+          LIMIT ${pageLimit} OFFSET ${pageOffset}`;
+      return sendJson(res, 200, {
+        leads: rows.map((row) => publicStructuredLeadSummary(row, user)),
+        scope,
+        page: {
+          total: Number(page.total || 0),
+          pending: Number(page.pending || 0),
+          rescued: Number(page.rescued || 0),
+          limit: pageLimit,
+          offset: pageOffset + rows.length,
+          hasMore: pageOffset + rows.length < Number(page.total || 0)
+        },
+        dataSources: { leads: "structured" }
+      });
     } else {
       return false;
     }
