@@ -2542,6 +2542,7 @@ function verifySamJwt(req) {
     return { ok: false, status: 401, error: "JWT inválido" };
   }
   if (header.alg !== "HS256") return { ok: false, status: 401, error: "Algoritmo JWT inválido" };
+  if (payload.iss !== "sam-mauad" || payload.aud !== "pipeline-mauad") return { ok: false, status: 401, error: "JWT fora do escopo esperado" };
   const expected = crypto.createHmac("sha256", SAM_WEBHOOK_SECRET).update(`${parts[0]}.${parts[1]}`).digest("base64url");
   if (Buffer.byteLength(parts[2]) !== Buffer.byteLength(expected)) return { ok: false, status: 401, error: "Assinatura inválida" };
   if (!crypto.timingSafeEqual(Buffer.from(parts[2]), Buffer.from(expected))) return { ok: false, status: 401, error: "Assinatura inválida" };
@@ -2868,6 +2869,10 @@ function samStatusToPipelineStatus(db, status) {
   const raw = String(status || "").trim();
   const normalized = normalizeComparableText(raw).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   const aliases = {
+    reservation_created: "Reservado",
+    contract_issued: "Contrato Emitido",
+    contract_signed: "Contrato Assinado",
+    payment_received: "Boleto Pago",
     reserva: "Reservado",
     reservado: "Reservado",
     contrato_emitido: "Contrato Emitido",
@@ -2881,6 +2886,15 @@ function samStatusToPipelineStatus(db, status) {
   const desired = aliases[normalized] || raw;
   const desiredComparable = normalizeComparableText(desired);
   return (db.pipelineStatuses || []).find((item) => normalizeComparableText(item) === desiredComparable) || desired;
+}
+
+function isDuplicateSamEvent(db, eventId) {
+  if (!eventId) return false;
+  return (db.integrationLog || []).some((entry) => {
+    if (entry.provider !== "SAM") return false;
+    if (!["STATUS_UPDATED", "LEAD_NOT_FOUND", "UNIT_MISMATCH"].includes(entry.action)) return false;
+    return String(entry.details?.eventId || "") === eventId;
+  });
 }
 
 function leadUnitsForMatch(lead) {
@@ -2925,42 +2939,46 @@ async function notifySamMismatch(db, subject, details) {
 
 async function processSamWebhook(db, payload) {
   const eventId = String(payload.event_id || payload.eventId || payload.id || "").trim();
+  const eventType = String(payload.event_type || payload.eventType || payload.status || payload.event || payload.movimento || "").trim();
+  const eventDatetime = String(payload.event_datetime || payload.eventDatetime || "").trim();
   const email = String(payload.email || "").trim();
   const phone = String(payload.phone || payload.telefone || "").trim();
-  const unit = normalizeUnitForMatch(payload.unit || payload.unidade);
-  const status = String(payload.status || payload.event || payload.movimento || "").trim();
-  if (!status) return { ok: false, status: 400, error: "Status obrigatório" };
-  if (!email && !phone) return { ok: false, status: 400, error: "E-mail ou telefone obrigatório" };
-  if (!unit) return { ok: false, status: 400, error: "Unidade obrigatória" };
+  const unit = normalizeUnitForMatch(payload.unit_code || payload.unitCode || payload.unit || payload.unidade);
+  if (!eventId) return { ok: false, httpStatus: 400, error: "event_id obrigatório" };
+  if (isDuplicateSamEvent(db, eventId)) return { ok: true, status: "duplicate" };
+  if (!eventType) return { ok: false, httpStatus: 400, error: "event_type obrigatório" };
+  if (!email && !phone) return { ok: false, httpStatus: 400, error: "E-mail ou telefone obrigatório" };
+  if (!unit) return { ok: false, httpStatus: 400, error: "Unidade obrigatória" };
   const lead = findSamLeadCandidate(db, { email, phone });
   if (!lead) {
-    integrationEvent(db, "SAM", "LEAD_NOT_FOUND", { eventId, email, phone: normalizePhoneDigits(phone), unit, status });
-    const notification = await notifySamMismatch(db, "SAM: lead não encontrado no Pipeline", { eventId, email, phone, unidade: unit, status });
+    integrationEvent(db, "SAM", "LEAD_NOT_FOUND", { eventId, eventType, eventDatetime, email, phone: normalizePhoneDigits(phone), unit });
+    const notification = await notifySamMismatch(db, "SAM: lead não encontrado no Pipeline", { eventId, eventType, eventDatetime, email, phone, unidade: unit });
     integrationEvent(db, "SAM", notification.sent ? "LEAD_NOT_FOUND_EMAIL_SENT" : "LEAD_NOT_FOUND_EMAIL_FAILED", { eventId, reason: notification.reason || "" });
-    return { ok: true, action: "not_found" };
+    return { ok: true, status: "pending_review", reason: "Lead não encontrado no Pipeline." };
   }
   const leadUnits = leadUnitsForMatch(lead);
   if (!leadUnits.includes(unit)) {
-    integrationEvent(db, "SAM", "UNIT_MISMATCH", { eventId, leadId: lead.id, email, phone: normalizePhoneDigits(phone), unit, leadUnits, status });
-    const notification = await notifySamMismatch(db, "SAM: unidade não confere com o Pipeline", { eventId, leadId: lead.id, email, phone, unidadeRecebida: unit, unidadesNoPipeline: leadUnits.join(", "), status });
+    integrationEvent(db, "SAM", "UNIT_MISMATCH", { eventId, eventType, eventDatetime, leadId: lead.id, email, phone: normalizePhoneDigits(phone), unit, leadUnits });
+    const notification = await notifySamMismatch(db, "SAM: unidade não confere com o Pipeline", { eventId, eventType, eventDatetime, leadId: lead.id, email, phone, unidadeRecebida: unit, unidadesNoPipeline: leadUnits.join(", ") });
     integrationEvent(db, "SAM", notification.sent ? "UNIT_MISMATCH_EMAIL_SENT" : "UNIT_MISMATCH_EMAIL_FAILED", { eventId, leadId: lead.id, reason: notification.reason || "" });
-    return { ok: true, action: "unit_mismatch", leadId: lead.id };
+    return { ok: true, status: "pending_review", reason: "Lead encontrado, mas unidade divergente.", lead_id: lead.id };
   }
   const previousStatus = lead.status || "";
-  const nextStatus = samStatusToPipelineStatus(db, status);
+  const nextStatus = samStatusToPipelineStatus(db, eventType);
   lead.status = nextStatus;
   lead.inPipeline = true;
   lead.samLastEvent = {
     eventId,
-    status,
+    eventType,
+    eventDatetime,
     unit,
     receivedAt: new Date().toISOString()
   };
   lead.updatedAt = lead.samLastEvent.receivedAt;
-  integrationEvent(db, "SAM", "STATUS_UPDATED", { eventId, leadId: lead.id, unit, from: previousStatus, to: nextStatus });
+  integrationEvent(db, "SAM", "STATUS_UPDATED", { eventId, eventType, eventDatetime, leadId: lead.id, unit, from: previousStatus, to: nextStatus });
   fupLeadEvent(db, { id: "sam", username: "sam-webhook", name: "SAM" }, lead, "SAM_STATUS_UPDATED", { eventId, unit, from: previousStatus, to: nextStatus });
   await mirrorStructuredLead(lead);
-  return { ok: true, action: "updated", leadId: lead.id, from: previousStatus, to: nextStatus };
+  return { ok: true, status: "updated", lead_id: lead.id, from: previousStatus, to: nextStatus };
 }
 
 function normalizeKnowledgePayload(body, current = {}) {
@@ -4806,7 +4824,8 @@ async function routeApi(req, res, db) {
     }
     const result = await processSamWebhook(db, body);
     await saveDb(db);
-    return sendJson(res, result.status || 200, result);
+    const { httpStatus = 200, ...responseBody } = result;
+    return sendJson(res, httpStatus, responseBody);
   }
 
   if (method === "POST" && url.pathname === "/api/login") {
