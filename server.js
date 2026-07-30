@@ -4114,6 +4114,41 @@ async function firstStructuredPipelineStatus(sql) {
   return rows[0]?.status || "";
 }
 
+async function structuredPipelineStatuses(sql) {
+  const rows = await sql`SELECT status FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`;
+  return rows.map((row) => row.status).filter(Boolean);
+}
+
+async function structuredProjectNames(sql) {
+  const rows = await sql`SELECT name FROM crm_projects ORDER BY position ASC, name ASC`;
+  return rows.map((row) => row.name).filter(Boolean);
+}
+
+async function normalizeStructuredManualLeadPayload(sql, body) {
+  const projects = await structuredProjectNames(sql);
+  return normalizeManualLeadPayload({ projects: projects.length ? projects : DEFAULT_PROJECTS }, body);
+}
+
+async function findStructuredManualLeadDuplicate(sql, payload) {
+  const email = normalizeEmail(payload.email);
+  const phone = normalizePhoneDigits(payload.phone);
+  if (!email && phone.length < 8) return null;
+  const phoneSuffix = phone.length >= 8 ? phone.slice(-8) : "";
+  const rows = await sql`SELECT l.*, false AS favorite, '{}'::text[] AS tags
+    FROM crm_leads l
+    WHERE l.in_pipeline = false
+      AND (
+        (${Boolean(email)} AND (lower(l.email) = ${email} OR lower(COALESCE(l.payload->>'assistant', '')) = ${email}))
+        OR (${Boolean(phoneSuffix)} AND (
+          regexp_replace(COALESCE(l.phone, ''), '\\D', '', 'g') = ${phone}
+          OR regexp_replace(COALESCE(l.phone, ''), '\\D', '', 'g') LIKE ${`%${phoneSuffix}`}
+        ))
+      )
+    ORDER BY l.updated_at DESC NULLS LAST, l.created_at DESC NULLS LAST
+    LIMIT 1`;
+  return rows.length ? structuredLeadFromRow(rows[0], false, []) : null;
+}
+
 async function structuredPermissionForUser(sql, user, resourceId) {
   if (user.role === "Admin TI") return permissionCell(true, true);
   const userRows = await sql`SELECT can_access, can_act FROM crm_permissions WHERE owner_type = 'user' AND owner_id = ${user.id} AND resource_id = ${resourceId} LIMIT 1`;
@@ -4266,6 +4301,134 @@ async function fastStructuredLeadsResponse(req, res, url) {
   } catch (error) {
     mirrorStructuredError("fast-leads", error);
     return false;
+  }
+}
+
+async function fastStructuredManualLeadRoutes(req, res, url) {
+  if (!DATABASE_URL || req.method !== "POST") return false;
+  if (!["/api/leads", "/api/leads/check-duplicate", "/api/leads/resolve-manual-duplicate"].includes(url.pathname)) return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+    if (!canManageLeads(user) && user.role !== "Corretor") return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+
+    if (url.pathname === "/api/leads/check-duplicate") {
+      const normalized = await normalizeStructuredManualLeadPayload(sql, body);
+      if (normalized.error) return sendJson(res, 400, { error: normalized.error });
+      const duplicate = await findStructuredManualLeadDuplicate(sql, normalized.lead);
+      return sendJson(res, 200, {
+        duplicate: duplicate ? publicLead(duplicate, user) : null,
+        baseName: duplicate ? baseNameForLead(duplicate) : "",
+        dataSources: { action: "structured" }
+      });
+    }
+
+    const statuses = await structuredPipelineStatuses(sql);
+    if (!statuses.length) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de adicionar leads" });
+
+    if (url.pathname === "/api/leads/resolve-manual-duplicate") {
+      const duplicateId = String(body.duplicateId || "");
+      const duplicate = await structuredLeadById(sql, duplicateId, user);
+      if (!duplicate) return notFound(res);
+      if (duplicate.inPipeline) return sendJson(res, 400, { error: "Este lead já está no pipeline" });
+      const mode = String(body.mode || "");
+      if (!["overwrite", "rescue"].includes(mode)) return sendJson(res, 400, { error: "Escolha inválida" });
+      const normalized = await normalizeStructuredManualLeadPayload(sql, body.lead || {});
+      if (normalized.error) return sendJson(res, 400, { error: normalized.error });
+      const payload = normalized.lead;
+      const requestedStatus = String(body.lead?.status || "").trim();
+      const status = statuses.includes(requestedStatus) ? requestedStatus : statuses[0];
+      const assignedUser = user.role === "Corretor"
+        ? user
+        : body.lead?.assignedTo
+          ? await activeStructuredBroker(sql, body.lead.assignedTo)
+          : null;
+      if (body.lead?.assignedTo && user.role !== "Corretor" && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
+      if (mode === "overwrite") {
+        duplicate.name = payload.name;
+        duplicate.phone = payload.phone;
+        duplicate.email = payload.email;
+        duplicate.desiredProject = payload.desiredProject;
+        duplicate.desiredUnit = payload.desiredUnit;
+        duplicate.unitValue = payload.unitValue;
+        duplicate.notes = payload.notes;
+        duplicate.impactedBySocial = payload.impactedBySocial;
+      }
+      rememberLeadBaseOrigin(duplicate);
+      duplicate.manualLeadSource = payload.source;
+      duplicate.inPipeline = true;
+      duplicate.status = status;
+      duplicate.assignedTo = assignedUser?.id || null;
+      duplicate.assignedName = assignedUser?.name || "";
+      duplicate.order = Date.now();
+      duplicate.rescuedAt = new Date().toISOString();
+      duplicate.updatedAt = duplicate.rescuedAt;
+      duplicate.manualDuplicateResolution = mode;
+      await saveStructuredLead(sql, duplicate);
+      await structuredAudit(user, "RESOLVE_MANUAL_DUPLICATE_LEAD", { leadId: duplicate.id, mode, source: duplicate.source });
+      await structuredFup(user, duplicate, "RESCUE_BASE_LEAD", { source: duplicate.source, mode, assignedTo: duplicate.assignedName || "" });
+      if (assignedUser) await notifyLeadAssignment(await loadDb(), duplicate, assignedUser, false);
+      return sendJson(res, 200, { lead: publicLead(duplicate, user), dataSources: { action: "structured" } });
+    }
+
+    const normalized = await normalizeStructuredManualLeadPayload(sql, body);
+    if (normalized.error) return sendJson(res, 400, { error: normalized.error });
+    const payload = normalized.lead;
+    const duplicate = await findStructuredManualLeadDuplicate(sql, payload);
+    if (duplicate) {
+      return sendJson(res, 409, {
+        error: `Lead já existente na base ${baseNameForLead(duplicate)}`,
+        duplicate: publicLead(duplicate, user),
+        baseName: baseNameForLead(duplicate)
+      });
+    }
+    const requestedStatus = String(body.status || "").trim();
+    const status = statuses.includes(requestedStatus) ? requestedStatus : statuses[0];
+    const assignedUser = user.role === "Corretor"
+      ? user
+      : body.assignedTo
+        ? await activeStructuredBroker(sql, body.assignedTo)
+        : null;
+    if (body.assignedTo && user.role !== "Corretor" && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
+    const now = new Date().toISOString();
+    const lead = {
+      id: `lead-${crypto.randomUUID()}`,
+      externalId: `MANUAL-${Date.now()}`,
+      name: payload.name,
+      phone: payload.phone,
+      email: payload.email,
+      assistant: "",
+      source: payload.source,
+      status,
+      inPipeline: true,
+      favorite: false,
+      favoritesByUser: {},
+      assignedTo: assignedUser?.id || null,
+      assignedName: assignedUser?.name || "",
+      desiredProject: payload.desiredProject,
+      desiredUnit: payload.desiredUnit,
+      unitValue: payload.unitValue,
+      notes: payload.notes,
+      impactedBySocial: payload.impactedBySocial,
+      tags: [],
+      comments: [],
+      order: Date.now(),
+      createdAt: now,
+      updatedAt: now
+    };
+    await saveStructuredLead(sql, lead);
+    await sql`INSERT INTO crm_base_sources (name) VALUES (${lead.source}) ON CONFLICT DO NOTHING`;
+    await structuredAudit(user, "CREATE_LEAD", { leadId: lead.id, source: lead.source });
+    await structuredFup(user, lead, "CREATE_LEAD", { source: lead.source, assignedTo: lead.assignedName || "" });
+    if (assignedUser) await notifyLeadAssignment(await loadDb(), lead, assignedUser, false);
+    return sendJson(res, 201, { lead: publicLead(lead, user), dataSources: { action: "structured" } });
+  } catch (error) {
+    mirrorStructuredError("manual-lead", error);
+    sendJson(res, 500, { error: "Erro interno no cadastro manual estruturado", detail: error.message });
+    return true;
   }
 }
 
@@ -6271,6 +6434,7 @@ async function handleRequest(req, res) {
   if (req.url.startsWith("/api/")) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (await fastStructuredLeadsResponse(req, res, url)) return;
+    if (await fastStructuredManualLeadRoutes(req, res, url)) return;
     if (await fastStructuredLeadAction(req, res, url)) return;
     try {
       const db = await loadDb();
