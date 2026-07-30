@@ -321,6 +321,71 @@ textarea {
   background: #fff;
 }
 
+.permission-matrix-wrap {
+  max-height: 68vh;
+}
+
+.permission-matrix {
+  min-width: 1120px;
+}
+
+.permission-matrix th {
+  vertical-align: top;
+}
+
+.permission-matrix thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+}
+
+.permission-matrix thead th:first-child,
+.permission-row-head {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: #f8fafc;
+}
+
+.permission-matrix thead th small,
+.permission-row-head small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.permission-matrix td,
+.permission-matrix th {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.permission-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 88px;
+}
+
+.permission-cell label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.permission-cell input {
+  width: 14px;
+  height: 14px;
+}
+
 .settings-search {
   max-width: 360px;
 }

@@ -13,6 +13,15 @@ const SESSION_TTL_MS = 1000 * 60 * 5;
 const PASSWORD_SETUP_TTL_MS = 1000 * 60 * 60 * 24;
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor", "Gerente Financeiro", "Auxiliar Financeiro"];
 const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
+const PERMISSION_SCREENS = [
+  { id: "screen:kanban", label: "Kanban", view: "kanban" },
+  { id: "screen:sheet", label: "Planilha", view: "sheet" },
+  { id: "screen:bases", label: "Bases", view: "odysseia" },
+  { id: "screen:dashboard", label: "Dashboard", view: "dashboard" },
+  { id: "screen:finance", label: "Financeiro Lev", view: "finance" },
+  { id: "screen:settings", label: "Configurações", view: "settings" },
+  { id: "screen:knowledge", label: "Ajuda", view: "knowledge" }
+];
 const DEFAULT_TAG_DEFINITIONS = [
   { id: "tag-quente", name: "Quente", color: "#d92d20" },
   { id: "tag-morno", name: "Morno", color: "#f79009" },
@@ -29,6 +38,51 @@ const DEFAULT_BASE_ACCESS = {
   }])),
   users: {}
 };
+
+function permissionCell(access = false, action = false) {
+  return { access: Boolean(access || action), action: Boolean(action) };
+}
+
+function basePermissionId(source) {
+  return `base:${source}`;
+}
+
+function defaultScreenPermission(role, screen) {
+  const viewAccess = {
+    "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "finance", "settings", "knowledge"],
+    "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "settings", "knowledge"],
+    "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"],
+    Diretoria: ["dashboard", "sheet", "odysseia", "kanban", "knowledge"],
+    Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
+    "Gerente Financeiro": ["finance", "settings", "knowledge"],
+    "Auxiliar Financeiro": ["finance", "settings", "knowledge"]
+  };
+  const actionAccess = {
+    "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "finance", "settings", "knowledge"],
+    "Head Comercial": ["kanban", "sheet", "odysseia", "settings", "knowledge"],
+    "Supervisor Comercial": ["kanban", "sheet", "odysseia", "knowledge"],
+    Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
+    "Gerente Financeiro": ["finance", "settings", "knowledge"],
+    "Auxiliar Financeiro": ["finance", "knowledge"]
+  };
+  const canAccess = (viewAccess[role] || []).includes(screen.view);
+  return permissionCell(canAccess, canAccess && (actionAccess[role] || []).includes(screen.view));
+}
+
+function defaultPermissionsForSources(sources = []) {
+  const roles = {};
+  for (const role of ROLES) {
+    roles[role] = {};
+    for (const screen of PERMISSION_SCREENS) {
+      roles[role][screen.id] = defaultScreenPermission(role, screen);
+    }
+    const baseRule = DEFAULT_BASE_ACCESS.roles[role] || { enabled: false, sources: [] };
+    for (const source of sources) {
+      roles[role][basePermissionId(source)] = permissionCell(baseRule.enabled, baseRule.enabled && role !== "Diretoria");
+    }
+  }
+  return { roles, users: {} };
+}
 const DEFAULT_KNOWLEDGE_ARTICLES = [
   {
     id: "kb-primeiros-passos",
@@ -769,7 +823,7 @@ const META_APP_SECRET = process.env.META_APP_SECRET || "";
 const META_PAGE_ACCESS_TOKEN = process.env.META_PAGE_ACCESS_TOKEN || "";
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 const META_DEFAULT_ASSIGNED_TO = process.env.META_DEFAULT_ASSIGNED_TO || "";
-const APP_SCHEMA_VERSION = 2026072901;
+const APP_SCHEMA_VERSION = 2026072903;
 const DB_CACHE_TTL_MS = 3000;
 let sqlClientPromise = null;
 let postgresInitialized = false;
@@ -839,7 +893,7 @@ function buildDefaultDb() {
   const now = new Date().toISOString();
   const db = {
     schemaVersion: APP_SCHEMA_VERSION,
-    roles: seed.roles || ROLES,
+    roles: [...new Set([...(seed.roles || []), ...ROLES])],
     projects: seed.projects || DEFAULT_PROJECTS,
     pipelineStatuses: [],
     tagDefinitions: DEFAULT_TAG_DEFINITIONS,
@@ -968,6 +1022,16 @@ async function saveAccessLog(db) {
 function migrateDb(db) {
   if (db?.schemaVersion === APP_SCHEMA_VERSION) return db;
   let changed = db?.schemaVersion !== APP_SCHEMA_VERSION;
+  if (!Array.isArray(db.roles)) {
+    db.roles = [...ROLES];
+    changed = true;
+  } else {
+    const mergedRoles = [...new Set([...db.roles, ...ROLES])];
+    if (mergedRoles.length !== db.roles.length) {
+      db.roles = mergedRoles;
+      changed = true;
+    }
+  }
   if (!Array.isArray(db.auditLog)) {
     db.auditLog = [];
     changed = true;
@@ -1015,6 +1079,7 @@ function migrateDb(db) {
       sources: Array.isArray(rule.sources) ? rule.sources.map((source) => String(source || "").trim()).filter(Boolean) : []
     };
   }
+  ensurePermissions(db);
   if (!Array.isArray(db.knowledgeArticles)) {
     db.knowledgeArticles = DEFAULT_KNOWLEDGE_ARTICLES.map((article) => ({ ...article }));
     changed = true;
@@ -2558,7 +2623,81 @@ function allBaseSources(db) {
     .sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
 }
 
+function permissionResources(db) {
+  return [
+    ...PERMISSION_SCREENS,
+    ...allBaseSources(db).map((source) => ({ id: basePermissionId(source), label: source, source }))
+  ];
+}
+
+function normalizePermissionCell(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return permissionCell(false, false);
+  return permissionCell(value.access, value.action);
+}
+
+function ensurePermissions(db) {
+  const resources = permissionResources(db);
+  if (!db.permissions || typeof db.permissions !== "object" || Array.isArray(db.permissions)) {
+    db.permissions = defaultPermissionsForSources(allBaseSources(db));
+  }
+  if (!db.permissions.roles || typeof db.permissions.roles !== "object" || Array.isArray(db.permissions.roles)) db.permissions.roles = {};
+  if (!db.permissions.users || typeof db.permissions.users !== "object" || Array.isArray(db.permissions.users)) db.permissions.users = {};
+
+  for (const role of ROLES) {
+    if (!db.permissions.roles[role] || typeof db.permissions.roles[role] !== "object" || Array.isArray(db.permissions.roles[role])) {
+      db.permissions.roles[role] = {};
+    }
+    for (const resource of resources) {
+      if (db.permissions.roles[role][resource.id]) {
+        db.permissions.roles[role][resource.id] = normalizePermissionCell(db.permissions.roles[role][resource.id]);
+      } else if (resource.source) {
+        const rule = db.baseAccess?.roles?.[role] || DEFAULT_BASE_ACCESS.roles[role] || { enabled: false, sources: [] };
+        const selected = Array.isArray(rule.sources) ? rule.sources.filter(Boolean) : [];
+        const hasSource = rule.enabled && (!selected.length || selected.includes(resource.source));
+        db.permissions.roles[role][resource.id] = permissionCell(hasSource, hasSource && role !== "Diretoria");
+      } else {
+        db.permissions.roles[role][resource.id] = defaultScreenPermission(role, resource);
+      }
+    }
+  }
+
+  const validUserIds = new Set((db.users || []).map((item) => item.id));
+  for (const [userId, rules] of Object.entries(db.permissions.users)) {
+    if (!validUserIds.has(userId) || !rules || typeof rules !== "object" || Array.isArray(rules)) {
+      delete db.permissions.users[userId];
+      continue;
+    }
+    const user = db.users.find((item) => item.id === userId);
+    for (const resource of resources) {
+      const roleCell = db.permissions.roles[user.role]?.[resource.id] || permissionCell(false, false);
+      db.permissions.users[userId][resource.id] = rules[resource.id]
+        ? normalizePermissionCell(rules[resource.id])
+        : { ...roleCell };
+    }
+  }
+  for (const user of db.users || []) {
+    if (!db.permissions.users[user.id]) db.permissions.users[user.id] = {};
+    for (const resource of resources) {
+      const roleCell = db.permissions.roles[user.role]?.[resource.id] || permissionCell(false, false);
+      db.permissions.users[user.id][resource.id] = db.permissions.users[user.id][resource.id]
+        ? normalizePermissionCell(db.permissions.users[user.id][resource.id])
+        : { ...roleCell };
+    }
+  }
+  return db.permissions;
+}
+
+function permissionForUser(db, user, resourceId) {
+  if (user.role === "Admin TI") return permissionCell(true, true);
+  ensurePermissions(db);
+  return normalizePermissionCell(db.permissions.users?.[user.id]?.[resourceId] || db.permissions.roles?.[user.role]?.[resourceId]);
+}
+
 function baseAccessRuleForUser(db, user) {
+  if (db.permissions) {
+    const sources = allBaseSources(db).filter((source) => permissionForUser(db, user, basePermissionId(source)).access);
+    return { enabled: sources.length > 0, sources };
+  }
   if (user.role === "Admin TI") return { enabled: true, sources: [] };
   const userRule = db.baseAccess?.users?.[user.id];
   if (userRule?.override) return userRule;
@@ -2582,6 +2721,11 @@ function canAccessBaseLead(db, user, lead) {
   const allowed = accessibleBaseSources(db, user);
   if (!allowed.length) return false;
   return baseSourcesForLead(lead).some((source) => allowed.includes(source));
+}
+
+function canActBaseLead(db, user, lead) {
+  if (!canAccessBaseLead(db, user, lead)) return false;
+  return baseSourcesForLead(lead).some((source) => permissionForUser(db, user, basePermissionId(source)).action);
 }
 
 function visibleLeads(db, user) {
@@ -3467,8 +3611,12 @@ async function routeApi(req, res, db) {
       leads: visibleLeads(db, user).map((lead) => publicLeadSummary(lead, user)),
       integrations: canManageSettings(user) ? db.integrations : null,
       baseAccess: canManagePipelineSettings(user) ? db.baseAccess : null,
+      permissions: canManagePipelineSettings(user) ? ensurePermissions(db) : null,
+      currentPermissions: ensurePermissions(db).users?.[user.id] || {},
+      permissionResources: canManagePipelineSettings(user) ? permissionResources(db) : [],
       baseAccessSources: allBaseSources(db),
       accessibleBaseSources: accessibleBaseSources(db, user),
+      actionableBaseSources: allBaseSources(db).filter((source) => permissionForUser(db, user, basePermissionId(source)).action),
       knowledgeCategories: KNOWLEDGE_CATEGORIES,
       knowledgeArticles: visibleKnowledgeArticles(db, user),
       knowledgeChatSessions: userKnowledgeChatSessions(db, user),
@@ -3991,7 +4139,7 @@ async function routeApi(req, res, db) {
     if (!canManageLeads(user) && user.role !== "Corretor") return sendJson(res, 403, { error: "Sem permissão" });
     const lead = db.leads.find((item) => item.id === rescueMatch[1]);
     if (!lead) return notFound(res);
-    if (!canAccessBaseLead(db, user, lead)) return sendJson(res, 403, { error: "Sem permissão para acessar esta base" });
+    if (!canActBaseLead(db, user, lead)) return sendJson(res, 403, { error: "Sem permissão para resgatar este lead" });
     if (lead.inPipeline) return sendJson(res, 400, { error: "Este lead já está no pipeline" });
     if (!db.pipelineStatuses.length) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de resgatar leads" });
     rememberLeadBaseOrigin(lead);
@@ -4570,6 +4718,64 @@ async function routeApi(req, res, db) {
       baseAccessSources: allBaseSources(db),
       accessibleBaseSources: accessibleBaseSources(db, user),
       leads: visibleLeads(db, user).map((lead) => publicLead(lead, user))
+    });
+  }
+
+  if (url.pathname === "/api/permissions" && method === "PUT") {
+    if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const body = await readBody(req);
+    const resources = permissionResources(db);
+    const resourceIds = new Set(resources.map((resource) => resource.id));
+    const next = ensurePermissions(db);
+
+    if (body.roles && typeof body.roles === "object" && !Array.isArray(body.roles)) {
+      for (const role of ROLES) {
+        const roleRules = body.roles[role];
+        if (!roleRules || typeof roleRules !== "object" || Array.isArray(roleRules)) continue;
+        next.roles[role] = next.roles[role] || {};
+        for (const [resourceId, cell] of Object.entries(roleRules)) {
+          if (!resourceIds.has(resourceId)) continue;
+          next.roles[role][resourceId] = role === "Admin TI" ? permissionCell(true, true) : normalizePermissionCell(cell);
+        }
+      }
+    }
+
+    const applyToUsers = Boolean(body.applyToUsers);
+    if (applyToUsers && body.roles) {
+      for (const target of db.users || []) {
+        next.users[target.id] = next.users[target.id] || {};
+        for (const resource of resources) {
+          next.users[target.id][resource.id] = { ...(next.roles[target.role]?.[resource.id] || permissionCell(false, false)) };
+        }
+      }
+    }
+
+    if (body.users && typeof body.users === "object" && !Array.isArray(body.users)) {
+      const validUserIds = new Set((db.users || []).map((item) => item.id));
+      for (const [userId, userRules] of Object.entries(body.users)) {
+        if (!validUserIds.has(userId) || !userRules || typeof userRules !== "object" || Array.isArray(userRules)) continue;
+        next.users[userId] = next.users[userId] || {};
+        for (const [resourceId, cell] of Object.entries(userRules)) {
+          if (!resourceIds.has(resourceId)) continue;
+          const targetUser = db.users.find((item) => item.id === userId);
+          next.users[userId][resourceId] = targetUser?.role === "Admin TI" ? permissionCell(true, true) : normalizePermissionCell(cell);
+        }
+      }
+    }
+
+    ensurePermissions(db);
+    audit(db, user, "UPDATE_PERMISSIONS", {
+      scope: body.users ? "users" : "roles",
+      applyToUsers
+    });
+    await saveDb(db);
+    return sendJson(res, 200, {
+      permissions: db.permissions,
+      currentPermissions: db.permissions.users?.[user.id] || {},
+      permissionResources: resources,
+      accessibleBaseSources: accessibleBaseSources(db, user),
+      actionableBaseSources: allBaseSources(db).filter((source) => permissionForUser(db, user, basePermissionId(source)).action),
+      leads: visibleLeads(db, user).map((lead) => publicLeadSummary(lead, user))
     });
   }
 

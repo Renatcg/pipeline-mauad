@@ -14,8 +14,12 @@ const state = {
   leads: [],
   integrations: null,
   baseAccess: null,
+  permissions: null,
+  currentPermissions: {},
+  permissionResources: [],
   baseAccessSources: [],
   accessibleBaseSources: [],
+  actionableBaseSources: [],
   auditLog: [],
   accessLog: [],
   fupLeadLog: [],
@@ -32,6 +36,7 @@ const state = {
   previousView: "kanban",
   settingsTab: "users",
   settingsEditing: null,
+  permissionsTab: "roles",
   settingsNotice: "",
   settingsLogSearch: "",
   settingsLogTab: "audit",
@@ -124,7 +129,22 @@ async function api(path, options = {}) {
 }
 
 function allowedViews() {
-  const views = profileAccess[state.user?.role] || [];
+  const screenByView = {
+    kanban: "screen:kanban",
+    sheet: "screen:sheet",
+    odysseia: "screen:bases",
+    dashboard: "screen:dashboard",
+    finance: "screen:finance",
+    settings: "screen:settings",
+    knowledge: "screen:knowledge"
+  };
+  const roleViews = profileAccess[state.user?.role] || [];
+  const userRules = state.currentPermissions && Object.keys(state.currentPermissions).length
+    ? state.currentPermissions
+    : state.permissions?.users?.[state.user?.id];
+  const views = userRules
+    ? Object.entries(screenByView).filter(([, resourceId]) => userRules[resourceId]?.access).map(([view]) => view)
+    : roleViews;
   return views.filter((view) => {
     if (view === "finance") return canAccessLevFinance();
     if (view === "odysseia") return canAccessBases();
@@ -164,6 +184,16 @@ function canManageLeads() {
 
 function canAccessBases() {
   return state.user?.role === "Admin TI" || (state.accessibleBaseSources || []).length > 0;
+}
+
+function leadBaseSourcesForPermission(lead) {
+  return [lead.source, lead.baseSourceBeforePipeline, lead.previousPipelineSource].filter(Boolean);
+}
+
+function canActOnBaseLead(lead) {
+  if (state.user?.role === "Admin TI") return true;
+  const actionable = state.actionableBaseSources || [];
+  return leadBaseSourcesForPermission(lead).some((source) => actionable.includes(source));
 }
 
 function canEditUserEmail() {
@@ -600,8 +630,12 @@ async function loadState() {
   state.leads = data.leads;
   state.integrations = data.integrations;
   state.baseAccess = data.baseAccess || null;
+  state.permissions = data.permissions || null;
+  state.currentPermissions = data.currentPermissions || {};
+  state.permissionResources = data.permissionResources || [];
   state.baseAccessSources = data.baseAccessSources || [];
   state.accessibleBaseSources = data.accessibleBaseSources || [];
+  state.actionableBaseSources = data.actionableBaseSources || [];
   state.integrationLog = data.integrationLog || [];
   state.auditLog = data.auditLog;
   state.accessLog = data.accessLog || [];
@@ -1429,7 +1463,7 @@ function leadRows(leads, options = {}) {
         options.withRollback && lead.inPipeline && canRollbackLead(lead)
           ? `<button data-rollback="${escapeHtml(lead.id)}">Rollback</button>`
           : options.withRescue
-            ? (lead.inPipeline ? (canRollbackLead(lead) ? `<button data-rollback="${escapeHtml(lead.id)}">Rollback</button>` : '<span class="chip">No pipeline</span>') : `<button class="primary" data-rescue="${escapeHtml(lead.id)}">Resgatar</button>`)
+            ? (lead.inPipeline ? (canRollbackLead(lead) ? `<button data-rollback="${escapeHtml(lead.id)}">Rollback</button>` : '<span class="chip">No pipeline</span>') : (canActOnBaseLead(lead) ? `<button class="primary" data-rescue="${escapeHtml(lead.id)}">Resgatar</button>` : '<span class="chip">Acessar</span>'))
             : ""
       }</td>
     </tr>
@@ -1964,7 +1998,7 @@ function settingsLayout(content) {
         ${canManageSystemSettings() ? settingsTabButton("integrations", "Integrações") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("statuses", "Status do pipeline") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("tags", "Etiquetas") : ""}
-        ${canManagePipelineSettings() ? settingsTabButton("baseAccess", "Permissões de Bases") : ""}
+        ${canManagePipelineSettings() ? settingsTabButton("permissions", "Permissões") : ""}
         ${canManageSystemSettings() ? settingsTabButton("logs", "Logs") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("projects", "Empreendimentos") : ""}
         ${canManageLevFinanceSettings() ? settingsTabButton("levFinance", "Financeiro Lev") : ""}
@@ -1985,13 +2019,13 @@ function settingsLayout(content) {
 
 function renderSettings() {
   if (["integrations", "logs", "knowledge", "backup"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
-  if (["statuses", "tags", "projects", "baseAccess"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
+  if (["statuses", "tags", "projects", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) state.settingsTab = canManageLevFinanceSettings() ? "levFinance" : "knowledge";
   if (state.settingsTab === "integrations") return renderIntegrationSettings();
   if (state.settingsTab === "statuses") return renderStatusSettings();
   if (state.settingsTab === "tags") return renderTagSettings();
-  if (state.settingsTab === "baseAccess") return renderBaseAccessSettings();
+  if (state.settingsTab === "permissions") return renderPermissionSettings();
   if (state.settingsTab === "logs") return renderLogSettings();
   if (state.settingsTab === "projects") return renderProjectSettings();
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
@@ -2040,6 +2074,154 @@ function bindSettingsActionMenus() {
   });
   document.querySelectorAll(".action-menu-list").forEach((menu) => {
     menu.addEventListener("click", (event) => event.stopPropagation());
+  });
+}
+
+function permissionResources() {
+  const resources = Array.isArray(state.permissionResources) ? state.permissionResources : [];
+  if (resources.length) {
+    return resources.map((resource) => ({
+      id: resource.id,
+      label: resource.source ? baseSourceLabel(resource.source) : resource.label,
+      type: resource.source ? "base" : "screen"
+    }));
+  }
+  return [
+    { id: "screen:kanban", label: "Kanban", type: "screen" },
+    { id: "screen:sheet", label: "Planilha", type: "screen" },
+    { id: "screen:bases", label: "Bases", type: "screen" },
+    { id: "screen:dashboard", label: "Dashboard", type: "screen" },
+    { id: "screen:finance", label: "Financeiro Lev", type: "screen" },
+    { id: "screen:settings", label: "Configurações", type: "screen" },
+    { id: "screen:knowledge", label: "Ajuda", type: "screen" },
+    ...(state.baseAccessSources || []).map((source) => ({ id: `base:${source}`, label: baseSourceLabel(source), type: "base" }))
+  ];
+}
+
+function permissionCellValue(scope, ownerId, resourceId) {
+  const permissions = state.permissions || { roles: {}, users: {} };
+  const ownerRules = permissions[scope]?.[ownerId] || {};
+  const user = scope === "users" ? state.users.find((item) => item.id === ownerId) : null;
+  const fallback = user ? permissions.roles?.[user.role]?.[resourceId] : null;
+  const cell = ownerRules[resourceId] || fallback || {};
+  const action = Boolean(cell.action);
+  return { access: Boolean(cell.access || action), action };
+}
+
+function permissionCell(scope, ownerId, resourceId, locked = false) {
+  const cell = permissionCellValue(scope, ownerId, resourceId);
+  const key = `${scope}:${ownerId}:${resourceId}`;
+  return `
+    <div class="permission-cell" data-permission-cell="${escapeHtml(key)}">
+      <label><input type="checkbox" data-permission-access="${escapeHtml(key)}" ${cell.access ? "checked" : ""} ${locked ? "disabled" : ""}> Acessar</label>
+      <label><input type="checkbox" data-permission-action="${escapeHtml(key)}" ${cell.action ? "checked" : ""} ${locked ? "disabled" : ""}> Agir</label>
+    </div>
+  `;
+}
+
+function permissionOwners(scope) {
+  if (scope === "roles") return state.roles.map((role) => ({ id: role, label: role, locked: role === "Admin TI" }));
+  return state.users
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
+    .map((user) => ({ id: user.id, label: user.name, sublabel: user.role, locked: user.role === "Admin TI" }));
+}
+
+function renderPermissionSettings() {
+  const scope = state.permissionsTab === "users" ? "users" : "roles";
+  const owners = permissionOwners(scope);
+  const resources = permissionResources();
+  const rows = resources.map((resource) => `
+    <tr>
+      <th class="permission-row-head">
+        <span>${escapeHtml(resource.label)}</span>
+        <small>${resource.type === "base" ? "Base" : "Tela"}</small>
+      </th>
+      ${owners.map((owner) => `<td>${permissionCell(scope, owner.id, resource.id, owner.locked)}</td>`).join("")}
+    </tr>
+  `).join("");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Permissões</h2>
+        <button class="primary" type="button" id="savePermissions">Salvar permissões</button>
+      </div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
+      <div class="tabs compact-tabs">
+        <button class="${scope === "roles" ? "active" : ""}" data-permissions-tab="roles">Perfil</button>
+        <button class="${scope === "users" ? "active" : ""}" data-permissions-tab="users">Usuários</button>
+      </div>
+      <p class="muted-copy">Em cada cruzamento, marque Acessar para permitir visualização e Agir para liberar ações da tela ou base. Agir sempre inclui Acessar.</p>
+      <div class="table-wrap permission-matrix-wrap">
+        <table class="permission-matrix">
+          <thead>
+            <tr>
+              <th>Tela / Base</th>
+              ${owners.map((owner) => `<th>${escapeHtml(owner.label)}${owner.sublabel ? `<small>${escapeHtml(owner.sublabel)}</small>` : ""}</th>`).join("")}
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </section>
+  `);
+  bindSettingsCommon();
+  bindPermissionControls(scope, owners, resources);
+}
+
+function bindPermissionControls(scope, owners, resources) {
+  document.querySelectorAll("[data-permissions-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.permissionsTab = button.dataset.permissionsTab;
+      state.settingsNotice = "";
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-permission-action]").forEach((input) => {
+    input.addEventListener("change", () => {
+      if (!input.checked) return;
+      const access = document.querySelector(`[data-permission-access="${CSS.escape(input.dataset.permissionAction)}"]`);
+      if (access) access.checked = true;
+    });
+  });
+  document.querySelectorAll("[data-permission-access]").forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.checked) return;
+      const action = document.querySelector(`[data-permission-action="${CSS.escape(input.dataset.permissionAccess)}"]`);
+      if (action) action.checked = false;
+    });
+  });
+  document.querySelector("#savePermissions")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const payload = {};
+    payload[scope] = {};
+    owners.forEach((owner) => {
+      payload[scope][owner.id] = {};
+      resources.forEach((resource) => {
+        const key = `${scope}:${owner.id}:${resource.id}`;
+        const action = Boolean(document.querySelector(`[data-permission-action="${CSS.escape(key)}"]`)?.checked);
+        const access = Boolean(document.querySelector(`[data-permission-access="${CSS.escape(key)}"]`)?.checked) || action;
+        payload[scope][owner.id][resource.id] = { access, action };
+      });
+    });
+    if (scope === "roles") {
+      payload.applyToUsers = confirm("Aplicar essas permissões também aos usuários já cadastrados desses perfis?");
+    }
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const data = await api("/api/permissions", { method: "PUT", body: JSON.stringify(payload) });
+      state.permissions = data.permissions || state.permissions;
+      state.currentPermissions = data.currentPermissions || state.currentPermissions;
+      state.permissionResources = data.permissionResources || state.permissionResources;
+      state.accessibleBaseSources = data.accessibleBaseSources || state.accessibleBaseSources;
+      state.actionableBaseSources = data.actionableBaseSources || state.actionableBaseSources;
+      state.leads = data.leads || state.leads;
+      state.settingsNotice = "Permissões salvas.";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
   });
 }
 
