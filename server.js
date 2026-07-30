@@ -3517,6 +3517,7 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_lead_favorites (lead_id text NOT NULL, user_id text NOT NULL, favorite boolean NOT NULL DEFAULT true, PRIMARY KEY (lead_id, user_id))`;
   await sql`CREATE TABLE IF NOT EXISTS crm_pipeline_statuses (status text PRIMARY KEY, position integer NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_projects (name text PRIMARY KEY, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
+  await sql`ALTER TABLE crm_projects ADD COLUMN IF NOT EXISTS position integer NOT NULL DEFAULT 0`;
   await sql`CREATE TABLE IF NOT EXISTS crm_base_sources (name text PRIMARY KEY)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_meta_forms (id text PRIMARY KEY, name text, project text, archived boolean NOT NULL DEFAULT false, ad_url text, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_permissions (owner_type text NOT NULL, owner_id text NOT NULL, resource_id text NOT NULL, can_access boolean NOT NULL DEFAULT false, can_act boolean NOT NULL DEFAULT false, PRIMARY KEY (owner_type, owner_id, resource_id))`;
@@ -3694,6 +3695,86 @@ async function structuredLogsForState(db) {
   }
 }
 
+async function structuredConfigForState(db) {
+  const fallback = {
+    users: db.users.map(publicUser),
+    projects: db.projects || DEFAULT_PROJECTS,
+    pipelineStatuses: db.pipelineStatuses,
+    source: "legacy"
+  };
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return fallback;
+    const [userRows, projectRows, statusRows] = await Promise.all([
+      sql`SELECT payload FROM crm_users ORDER BY name ASC, username ASC`,
+      sql`SELECT name FROM crm_projects ORDER BY position ASC, name ASC`,
+      sql`SELECT status FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`
+    ]);
+    const users = userRows.map((row) => row.payload || {}).filter((item) => item.id);
+    const projects = projectRows.map((row) => row.name).filter(Boolean);
+    const pipelineStatuses = statusRows.map((row) => row.status).filter(Boolean);
+    if (!users.length || !projects.length || !pipelineStatuses.length) return fallback;
+    return {
+      users,
+      projects,
+      pipelineStatuses,
+      source: "structured"
+    };
+  } catch (error) {
+    mirrorStructuredError("config-state", error);
+    return fallback;
+  }
+}
+
+async function mirrorStructuredUser(user) {
+  if (!user?.id) return;
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return;
+    await sql`INSERT INTO crm_users (id, username, name, role, active, operates_as_broker, notifications, created_at, updated_at, payload)
+      VALUES (${user.id}, ${user.username || ""}, ${user.name || ""}, ${user.role || ""}, ${user.active !== false}, ${Boolean(user.operatesAsBroker)}, ${JSON.stringify(user.notifications || {})}::jsonb, ${dbDate(user.createdAt)}, ${dbDate(user.updatedAt)}, ${JSON.stringify(publicUser(user))}::jsonb)
+      ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, name = EXCLUDED.name, role = EXCLUDED.role, active = EXCLUDED.active, operates_as_broker = EXCLUDED.operates_as_broker, notifications = EXCLUDED.notifications, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
+  } catch (error) {
+    mirrorStructuredError("user", error);
+  }
+}
+
+async function deleteStructuredUser(userId) {
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return;
+    await sql`DELETE FROM crm_users WHERE id = ${userId}`;
+  } catch (error) {
+    mirrorStructuredError("delete-user", error);
+  }
+}
+
+async function mirrorStructuredProjects(db) {
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return;
+    await clearStructuredTable(sql, "crm_projects");
+    for (const [position, project] of (db.projects || []).entries()) {
+      await sql`INSERT INTO crm_projects (name, position, payload) VALUES (${project}, ${position}, ${JSON.stringify({ name: project, position })}::jsonb)`;
+    }
+  } catch (error) {
+    mirrorStructuredError("projects", error);
+  }
+}
+
+async function mirrorStructuredStatuses(db) {
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return;
+    await clearStructuredTable(sql, "crm_pipeline_statuses");
+    for (const [position, status] of (db.pipelineStatuses || []).entries()) {
+      await sql`INSERT INTO crm_pipeline_statuses (status, position) VALUES (${status}, ${position})`;
+    }
+  } catch (error) {
+    mirrorStructuredError("statuses", error);
+  }
+}
+
 async function insertStructuredDataset(sql, db, key) {
   const summary = { [key]: 0 };
   ensurePermissions(db);
@@ -3741,8 +3822,8 @@ async function insertStructuredDataset(sql, db, key) {
       summary.statuses += 1;
     }
   } else if (key === "projects") {
-    for (const project of db.projects || []) {
-      await sql`INSERT INTO crm_projects (name, payload) VALUES (${project}, ${JSON.stringify({ name: project })}::jsonb)`;
+    for (const [position, project] of (db.projects || []).entries()) {
+      await sql`INSERT INTO crm_projects (name, position, payload) VALUES (${project}, ${position}, ${JSON.stringify({ name: project, position })}::jsonb)`;
       summary.projects += 1;
     }
   } else if (key === "baseSources") {
@@ -3870,8 +3951,8 @@ async function syncStructuredDb(db, actor) {
       await sql`INSERT INTO crm_pipeline_statuses (status, position) VALUES (${status}, ${position})`;
       summary.statuses += 1;
     }
-    for (const project of db.projects || []) {
-      await sql`INSERT INTO crm_projects (name, payload) VALUES (${project}, ${JSON.stringify({ name: project })}::jsonb)`;
+    for (const [position, project] of (db.projects || []).entries()) {
+      await sql`INSERT INTO crm_projects (name, position, payload) VALUES (${project}, ${position}, ${JSON.stringify({ name: project, position })}::jsonb)`;
       summary.projects += 1;
     }
     for (const source of allBaseSources(db)) {
@@ -4096,13 +4177,14 @@ async function routeApi(req, res, db) {
 
   if (method === "GET" && url.pathname === "/api/state") {
     const structuredLogs = canManageSettings(user) ? await structuredLogsForState(db) : { integrationLog: [], auditLog: [], fupLeadLog: [] };
+    const structuredConfig = await structuredConfigForState(db);
     return sendJson(res, 200, {
       user: publicUser(user),
       roles: db.roles,
-      projects: db.projects || DEFAULT_PROJECTS,
-      pipelineStatuses: db.pipelineStatuses,
+      projects: structuredConfig.projects,
+      pipelineStatuses: structuredConfig.pipelineStatuses,
       tagDefinitions: db.tagDefinitions || [],
-      users: db.users.map(publicUser),
+      users: structuredConfig.users,
       leads: visibleLeads(db, user).map((lead) => publicLeadSummary(lead, user)),
       integrations: canManageSettings(user) ? db.integrations : null,
       baseAccess: canManagePipelineSettings(user) ? db.baseAccess : null,
@@ -4122,7 +4204,8 @@ async function routeApi(req, res, db) {
       accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : [],
       fupLeadLog: structuredLogs.fupLeadLog,
       dataSources: {
-        logs: structuredLogs.source
+        logs: structuredLogs.source,
+        config: structuredConfig.source
       },
       levFinance: canAccessLevFinance(user) ? publicLevFinance(db) : null
     });
@@ -4709,6 +4792,7 @@ async function routeApi(req, res, db) {
     };
     const token = createPasswordSetup(newUser);
     db.users.push(newUser);
+    await mirrorStructuredUser(newUser);
     const invitation = await sendPasswordSetupEmail(req, newUser, token);
     audit(db, user, "CREATE_USER", { userId: newUser.id, role: newUser.role, invitationSent: invitation.sent });
     await saveDb(db);
@@ -4766,6 +4850,7 @@ async function routeApi(req, res, db) {
       target.notifications = normalizeNotificationPreferences(body.notifications);
     }
     target.updatedAt = new Date().toISOString();
+    await mirrorStructuredUser(target);
     audit(db, user, "UPDATE_USER", { userId: target.id, changes: body, reassignedLeads: assignedLeads.length });
     await saveDb(db);
     return sendJson(res, 200, { user: publicUser(target) });
@@ -4781,6 +4866,7 @@ async function routeApi(req, res, db) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target.username)) return sendJson(res, 400, { error: "Usuário sem e-mail válido" });
     const token = createPasswordSetup(target);
     target.updatedAt = new Date().toISOString();
+    await mirrorStructuredUser(target);
     const invitation = await sendPasswordSetupEmail(req, target, token);
     audit(db, user, "SEND_PASSWORD_INVITE", { userId: target.id, invitationSent: invitation.sent });
     await saveDb(db);
@@ -4825,6 +4911,7 @@ async function routeApi(req, res, db) {
         lead.assignedName = "";
       }
     }
+    await deleteStructuredUser(deleted.id);
     audit(db, user, "DELETE_USER", { userId: deleted.id });
     await saveDb(db);
     return sendJson(res, 200, { ok: true });
@@ -4996,6 +5083,7 @@ async function routeApi(req, res, db) {
     if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
     if ((db.projects || []).includes(name)) return sendJson(res, 400, { error: "Empreendimento já existe" });
     db.projects = [...(db.projects || DEFAULT_PROJECTS), name];
+    await mirrorStructuredProjects(db);
     audit(db, user, "CREATE_PROJECT", { name });
     await saveDb(db);
     return sendJson(res, 201, { projects: db.projects });
@@ -5020,6 +5108,7 @@ async function routeApi(req, res, db) {
     for (const form of db.integrations?.metaForms?.forms || []) {
       if (form.project === oldName) form.project = name;
     }
+    await mirrorStructuredProjects(db);
     audit(db, user, "UPDATE_PROJECT", { oldName, name });
     await saveDb(db);
     return sendJson(res, 200, { projects: db.projects });
@@ -5033,6 +5122,7 @@ async function routeApi(req, res, db) {
     for (const form of db.integrations?.metaForms?.forms || []) {
       if (form.project === deleted) form.project = "";
     }
+    await mirrorStructuredProjects(db);
     audit(db, user, "DELETE_PROJECT", { name: deleted });
     await saveDb(db);
     return sendJson(res, 200, { projects: db.projects });
@@ -5045,6 +5135,7 @@ async function routeApi(req, res, db) {
     if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
     if (db.pipelineStatuses.includes(name)) return sendJson(res, 400, { error: "Status já existe" });
     db.pipelineStatuses.push(name);
+    await mirrorStructuredStatuses(db);
     audit(db, user, "CREATE_STATUS", { name });
     await saveDb(db);
     return sendJson(res, 201, { pipelineStatuses: db.pipelineStatuses });
@@ -5061,6 +5152,7 @@ async function routeApi(req, res, db) {
       if (!statuses.includes(status)) return sendJson(res, 400, { error: "Sequência inválida" });
     }
     db.pipelineStatuses = statuses;
+    await mirrorStructuredStatuses(db);
     audit(db, user, "REORDER_STATUS", { statuses });
     await saveDb(db);
     return sendJson(res, 200, { pipelineStatuses: db.pipelineStatuses });
@@ -5082,6 +5174,7 @@ async function routeApi(req, res, db) {
     for (const lead of db.leads) {
       if (lead.inPipeline && lead.status === oldName) lead.status = name;
     }
+    await mirrorStructuredStatuses(db);
     audit(db, user, "UPDATE_STATUS", { oldName, name });
     await saveDb(db);
     return sendJson(res, 200, { pipelineStatuses: db.pipelineStatuses });
@@ -5096,6 +5189,7 @@ async function routeApi(req, res, db) {
       return sendJson(res, 400, { error: "Não é possível excluir status usado por leads" });
     }
     db.pipelineStatuses.splice(index, 1);
+    await mirrorStructuredStatuses(db);
     audit(db, user, "DELETE_STATUS", { status });
     await saveDb(db);
     return sendJson(res, 200, { pipelineStatuses: db.pipelineStatuses });

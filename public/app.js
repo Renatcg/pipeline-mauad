@@ -658,6 +658,7 @@ function navButton(view, icon, label) {
 }
 
 function renderShell(content) {
+  const usesLegacyData = Object.values(state.dataSources || {}).includes("legacy");
   app.innerHTML = `
     <section class="shell">
       <aside class="side">
@@ -686,7 +687,10 @@ function renderShell(content) {
             <button id="logout">Sair</button>
           </div>
         </header>
-        <div class="content">${content}</div>
+        <div class="content">
+          ${usesLegacyData ? '<div class="legacy-data-notice">Dados recuperados de base legada.</div>' : ""}
+          ${content}
+        </div>
       </section>
     </section>
     ${state.creatingLead ? renderCreateLeadModal() : ""}
@@ -3092,7 +3096,6 @@ function renderLogSettings() {
           <input id="settingsLogSearch" class="settings-search" placeholder="Pesquisar nos logs" value="${escapeHtml(state.settingsLogSearch)}">
         </div>
       </div>
-      ${state.dataSources?.logs === "legacy" ? '<div class="legacy-data-notice">Dados recuperados de base legada.</div>' : ""}
       <div class="tabs compact-tabs log-tabs">
         <button class="${state.settingsLogTab === "audit" ? "active" : ""}" data-log-tab="audit">Auditoria</button>
         <button class="${state.settingsLogTab === "fup" ? "active" : ""}" data-log-tab="fup">FUP Lead</button>
