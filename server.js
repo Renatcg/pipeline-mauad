@@ -3667,6 +3667,31 @@ async function mirrorStructuredFupLeadLog(entry) {
   }
 }
 
+async function structuredLogsForState(db) {
+  const fallback = {
+    integrationLog: db.integrationLog.slice(0, 50),
+    auditLog: db.auditLog.slice(0, 25),
+    fupLeadLog: (db.fupLeadLog || []).slice(0, 250)
+  };
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return fallback;
+    const [integrationRows, auditRows, fupRows] = await Promise.all([
+      sql`SELECT payload FROM crm_integration_logs ORDER BY at DESC NULLS LAST LIMIT 50`,
+      sql`SELECT payload FROM crm_audit_logs ORDER BY at DESC NULLS LAST LIMIT 25`,
+      sql`SELECT payload FROM crm_fup_lead_logs ORDER BY at DESC NULLS LAST LIMIT 250`
+    ]);
+    return {
+      integrationLog: integrationRows.map((row) => row.payload || {}).filter((item) => item.at),
+      auditLog: auditRows.map((row) => row.payload || {}).filter((item) => item.at),
+      fupLeadLog: fupRows.map((row) => row.payload || {}).filter((item) => item.at)
+    };
+  } catch (error) {
+    mirrorStructuredError("logs-state", error);
+    return fallback;
+  }
+}
+
 async function insertStructuredDataset(sql, db, key) {
   const summary = { [key]: 0 };
   ensurePermissions(db);
@@ -4068,6 +4093,7 @@ async function routeApi(req, res, db) {
   }
 
   if (method === "GET" && url.pathname === "/api/state") {
+    const structuredLogs = canManageSettings(user) ? await structuredLogsForState(db) : { integrationLog: [], auditLog: [], fupLeadLog: [] };
     return sendJson(res, 200, {
       user: publicUser(user),
       roles: db.roles,
@@ -4089,10 +4115,10 @@ async function routeApi(req, res, db) {
       knowledgeChatSessions: userKnowledgeChatSessions(db, user),
       canManageKnowledge: canManageKnowledge(user),
       canCreateKnowledge: canCreateKnowledge(user),
-      integrationLog: canManageSettings(user) ? db.integrationLog.slice(0, 50) : [],
-      auditLog: canManageSettings(user) ? db.auditLog.slice(0, 25) : [],
+      integrationLog: structuredLogs.integrationLog,
+      auditLog: structuredLogs.auditLog,
       accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : [],
-      fupLeadLog: canManageSettings(user) ? (db.fupLeadLog || []).slice(0, 250) : [],
+      fupLeadLog: structuredLogs.fupLeadLog,
       levFinance: canAccessLevFinance(user) ? publicLevFinance(db) : null
     });
   }
@@ -4122,6 +4148,12 @@ async function routeApi(req, res, db) {
     if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const cleared = Array.isArray(db.fupLeadLog) ? db.fupLeadLog.length : 0;
     db.fupLeadLog = [];
+    try {
+      const sql = await structuredSqlForMirror();
+      if (sql) await clearStructuredTable(sql, "crm_fup_lead_logs");
+    } catch (error) {
+      mirrorStructuredError("clear-fup", error);
+    }
     audit(db, user, "CLEAR_FUP_LEAD_LOG", { cleared });
     await saveDb(db);
     return sendJson(res, 200, { ok: true, cleared });
