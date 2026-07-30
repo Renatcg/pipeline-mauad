@@ -3784,6 +3784,116 @@ async function structuredLeadsForState(db, user, scope = "all") {
   }
 }
 
+async function structuredUserFromSession(req, res, sql) {
+  const session = readSession(req);
+  if (!session) {
+    sendJson(res, 401, { error: "Login necessário" });
+    return null;
+  }
+  const rows = await sql`SELECT payload FROM crm_users WHERE id = ${session.userId} AND active = true LIMIT 1`;
+  const user = rows[0]?.payload;
+  if (!user?.id) {
+    sendJson(res, 401, { error: "Usuário inativo" });
+    return null;
+  }
+  res.setHeader("Set-Cookie", sessionCookie(user.id));
+  return user;
+}
+
+function publicStructuredLeadSummary(row, user) {
+  const payload = row.payload || {};
+  const lead = {
+    ...payload,
+    id: row.id || payload.id,
+    name: row.name || payload.name || "",
+    email: row.email || payload.email || "",
+    phone: row.phone || payload.phone || "",
+    source: row.source || payload.source || "",
+    status: row.status || payload.status || "",
+    inPipeline: Boolean(row.in_pipeline ?? payload.inPipeline),
+    assignedTo: row.assigned_to || payload.assignedTo || "",
+    assignedName: row.assigned_name || payload.assignedName || "",
+    project: row.project || payload.project || payload.empreendimento || payload.desiredProject || "",
+    unit: row.unit || payload.unit || payload.unidade || payload.desiredUnit || "",
+    unitValue: row.unit_value || payload.unitValue || payload.valorUnidade || "",
+    baseSourceBeforePipeline: row.base_source_before_pipeline || payload.baseSourceBeforePipeline || "",
+    previousPipelineSource: row.previous_pipeline_source || payload.previousPipelineSource || "",
+    createdAt: row.created_at || payload.createdAt || payload.meta?.createdTime || "",
+    updatedAt: row.updated_at || payload.updatedAt || "",
+    tags: Array.isArray(row.tags) ? row.tags.filter(Boolean) : (payload.tags || payload.tagIds || []),
+    favorite: Boolean(row.favorite)
+  };
+  return publicLeadSummary(lead, user);
+}
+
+async function fastStructuredLeadsResponse(req, res, url) {
+  if (!DATABASE_URL || req.method !== "GET" || url.pathname !== "/api/leads") return false;
+  const requestedScope = String(url.searchParams.get("scope") || "all");
+  const scope = ["pipeline", "bases", "all"].includes(requestedScope) ? requestedScope : "all";
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+    let rows = [];
+    let allowedSources = [];
+    if (scope === "pipeline") {
+      rows = user.role === "Corretor"
+        ? await sql`SELECT l.*, COALESCE(f.favorite, false) AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
+            FROM crm_leads l
+            LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
+            LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
+            WHERE l.in_pipeline = true AND l.assigned_to = ${user.id}
+            GROUP BY l.id, f.favorite
+            ORDER BY l.updated_at DESC NULLS LAST, l.created_at DESC NULLS LAST`
+        : await sql`SELECT l.*, COALESCE(f.favorite, false) AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
+            FROM crm_leads l
+            LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
+            LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
+            WHERE l.in_pipeline = true
+            GROUP BY l.id, f.favorite
+            ORDER BY l.updated_at DESC NULLS LAST, l.created_at DESC NULLS LAST`;
+    } else if (scope === "bases") {
+      const allSources = await sql`SELECT name FROM crm_base_sources ORDER BY name ASC`;
+      if (!allSources.length) return false;
+      allowedSources = user.role === "Admin TI"
+        ? allSources.map((row) => row.name)
+        : (await sql`SELECT resource_id FROM crm_permissions WHERE owner_type = 'user' AND owner_id = ${user.id} AND can_access = true
+            UNION
+            SELECT resource_id FROM crm_permissions WHERE owner_type = 'role' AND owner_id = ${user.role} AND can_access = true`)
+            .map((row) => String(row.resource_id || "").replace(/^base:/, ""))
+            .filter((source) => allSources.some((item) => item.name === source));
+      if (user.role !== "Admin TI" && !allowedSources.length) return false;
+      if (!allowedSources.length) return sendJson(res, 200, { leads: [], scope, dataSources: { leads: "structured" } });
+      rows = await sql`SELECT l.*, COALESCE(f.favorite, false) AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
+          FROM crm_leads l
+          LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
+          LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
+          WHERE (
+              l.in_pipeline = false
+              OR l.source IN ('META', 'Stand', 'Lista RMeirelles')
+              OR l.payload->>'sourceStatus' IS NOT NULL
+              OR l.payload->>'odysseiaStatus' IS NOT NULL
+            )
+          GROUP BY l.id, f.favorite
+          ORDER BY l.name ASC NULLS LAST, l.updated_at DESC NULLS LAST`;
+    } else {
+      return false;
+    }
+    if (scope === "bases" && user.role !== "Admin TI") {
+      rows = rows.filter((row) => baseSourcesForLead(row.payload || {}).some((source) => allowedSources.includes(source)));
+    }
+    return sendJson(res, 200, {
+      leads: rows.map((row) => publicStructuredLeadSummary(row, user)),
+      scope,
+      dataSources: { leads: "structured" }
+    });
+  } catch (error) {
+    mirrorStructuredError("fast-leads", error);
+    return false;
+  }
+}
+
 async function mirrorStructuredUser(user) {
   if (!user?.id) return;
   try {
@@ -5518,6 +5628,8 @@ async function routeApi(req, res, db) {
 
 async function handleRequest(req, res) {
   if (req.url.startsWith("/api/")) {
+    const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    if (await fastStructuredLeadsResponse(req, res, url)) return;
     const db = await loadDb();
     return routeApi(req, res, db);
   } else {
