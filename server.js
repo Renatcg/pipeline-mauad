@@ -826,6 +826,7 @@ const META_DEFAULT_ASSIGNED_TO = process.env.META_DEFAULT_ASSIGNED_TO || "";
 const APP_SCHEMA_VERSION = 2026072903;
 const DB_CACHE_TTL_MS = 3000;
 let sqlClientPromise = null;
+let structuredSchemaReady = false;
 let postgresInitialized = false;
 let dbCache = null;
 let dbCacheAt = 0;
@@ -2930,28 +2931,32 @@ async function readBody(req) {
 }
 
 function audit(db, actor, action, details) {
-  db.auditLog.unshift({
+  const entry = {
     at: new Date().toISOString(),
     actor: actor.username,
     action,
     details
-  });
+  };
+  db.auditLog.unshift(entry);
   db.auditLog = db.auditLog.slice(0, 200);
+  void mirrorStructuredAuditLog(entry);
 }
 
 function integrationEvent(db, provider, action, details = {}) {
-  db.integrationLog.unshift({
+  const entry = {
     at: new Date().toISOString(),
     provider,
     action,
     details
-  });
+  };
+  db.integrationLog.unshift(entry);
   db.integrationLog = db.integrationLog.slice(0, 200);
+  void mirrorStructuredIntegrationLog(entry);
 }
 
 function fupLeadEvent(db, actor, lead, action, details = {}) {
   if (!lead) return;
-  db.fupLeadLog.unshift({
+  const entry = {
     at: new Date().toISOString(),
     actor: actor.username,
     actorName: actor.name,
@@ -2960,8 +2965,10 @@ function fupLeadEvent(db, actor, lead, action, details = {}) {
     leadName: lead.name || "",
     action,
     details
-  });
+  };
+  db.fupLeadLog.unshift(entry);
   db.fupLeadLog = db.fupLeadLog.slice(0, 500);
+  void mirrorStructuredFupLeadLog(entry);
 }
 
 function clientIp(req) {
@@ -3301,11 +3308,13 @@ async function importMetaLeadById(db, actor, leadgenId, webhookValue = {}) {
   const existing = db.leads.find((lead) => lead.externalId === `META-${id}` || lead.metaLeadId === id || lead.id === localId);
   if (existing) {
     integrationEvent(db, "META", "DUPLICATE_LEAD", { leadgenId: id });
+    await mirrorStructuredLead(existing);
     return { status: "duplicate", lead: existing };
   }
   const metaLead = await fetchMetaLead(id);
   const created = createMetaLead(db, id, metaLead, webhookValue);
   if (created.status === "created") {
+    await mirrorStructuredLead(created.lead);
     audit(db, actor, "CREATE_META_LEAD", { leadId: created.lead.id, leadgenId: id });
     integrationEvent(db, "META", "LEAD_IMPORTED", {
       leadId: created.lead.id,
@@ -3599,6 +3608,63 @@ async function countStructuredTable(sql, table) {
   if (table === "crm_lev_receipts") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_receipts`)[0]?.count || 0;
   if (table === "crm_knowledge_articles") return (await sql`SELECT COUNT(*)::int AS count FROM crm_knowledge_articles`)[0]?.count || 0;
   throw new Error(`Tabela estruturada inválida: ${table}`);
+}
+
+async function structuredSqlForMirror() {
+  const sql = await getSql();
+  if (!sql) return null;
+  if (!structuredSchemaReady) {
+    await ensureStructuredSchema(sql);
+    structuredSchemaReady = true;
+  }
+  return sql;
+}
+
+function mirrorStructuredError(scope, error) {
+  console.warn(`[structured-db:${scope}] ${error.message || error}`);
+}
+
+async function mirrorStructuredLead(lead) {
+  if (!lead?.id) return;
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return;
+    await sql`INSERT INTO crm_leads (id, name, email, phone, source, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload)
+      VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${lead.source || ""}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${lead.project || lead.empreendimento || lead.desiredProject || ""}, ${lead.unit || lead.unidade || lead.desiredUnit || ""}, ${lead.unitValue || lead.valorUnidade || ""}, ${lead.baseSourceBeforePipeline || ""}, ${lead.previousPipelineSource || ""}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)
+      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, source = EXCLUDED.source, status = EXCLUDED.status, in_pipeline = EXCLUDED.in_pipeline, assigned_to = EXCLUDED.assigned_to, assigned_name = EXCLUDED.assigned_name, project = EXCLUDED.project, unit = EXCLUDED.unit, unit_value = EXCLUDED.unit_value, base_source_before_pipeline = EXCLUDED.base_source_before_pipeline, previous_pipeline_source = EXCLUDED.previous_pipeline_source, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
+  } catch (error) {
+    mirrorStructuredError("lead", error);
+  }
+}
+
+async function mirrorStructuredAuditLog(entry) {
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return;
+    await sql`INSERT INTO crm_audit_logs (id, at, actor, actor_name, action, details, payload) VALUES (${logRowId("audit", entry, 0)}, ${dbDate(entry.at)}, ${entry.actor || ""}, ${entry.actorName || ""}, ${entry.action || ""}, ${JSON.stringify(entry.details || {})}::jsonb, ${JSON.stringify(entry)}::jsonb) ON CONFLICT (id) DO NOTHING`;
+  } catch (error) {
+    mirrorStructuredError("audit", error);
+  }
+}
+
+async function mirrorStructuredIntegrationLog(entry) {
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return;
+    await sql`INSERT INTO crm_integration_logs (id, at, provider, action, details, payload) VALUES (${logRowId("integration", entry, 0)}, ${dbDate(entry.at)}, ${entry.provider || ""}, ${entry.action || ""}, ${JSON.stringify(entry.details || {})}::jsonb, ${JSON.stringify(entry)}::jsonb) ON CONFLICT (id) DO NOTHING`;
+  } catch (error) {
+    mirrorStructuredError("integration", error);
+  }
+}
+
+async function mirrorStructuredFupLeadLog(entry) {
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return;
+    await sql`INSERT INTO crm_fup_lead_logs (id, at, lead_id, lead_name, actor, actor_name, action, details, payload) VALUES (${logRowId("fup", entry, 0)}, ${dbDate(entry.at)}, ${entry.leadId || ""}, ${entry.leadName || ""}, ${entry.actor || ""}, ${entry.actorName || ""}, ${entry.action || ""}, ${JSON.stringify(entry.details || {})}::jsonb, ${JSON.stringify(entry)}::jsonb) ON CONFLICT (id) DO NOTHING`;
+  } catch (error) {
+    mirrorStructuredError("fup", error);
+  }
 }
 
 async function insertStructuredDataset(sql, db, key) {
