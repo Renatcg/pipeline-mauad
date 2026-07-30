@@ -3474,6 +3474,218 @@ function mergeImportedLeads(db, importedLeads, pipelineStatuses = []) {
   return { created, updated, total: created + updated };
 }
 
+function dbDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function logRowId(prefix, item, index) {
+  return item.id || `${prefix}-${index}-${crypto.createHash("sha1").update(JSON.stringify(item)).digest("hex").slice(0, 16)}`;
+}
+
+async function ensureStructuredSchema(sql) {
+  await sql`CREATE TABLE IF NOT EXISTS crm_structured_sync_runs (id text PRIMARY KEY, started_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz, status text NOT NULL, summary jsonb NOT NULL DEFAULT '{}'::jsonb, error text)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_users (id text PRIMARY KEY, username text, name text, role text, active boolean NOT NULL DEFAULT true, operates_as_broker boolean NOT NULL DEFAULT false, notifications jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz, updated_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_leads (id text PRIMARY KEY, name text, email text, phone text, source text, status text, in_pipeline boolean NOT NULL DEFAULT false, assigned_to text, assigned_name text, project text, unit text, unit_value text, base_source_before_pipeline text, previous_pipeline_source text, created_at timestamptz, updated_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_leads_source_idx ON crm_leads (source)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_leads_pipeline_idx ON crm_leads (in_pipeline)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_leads_status_idx ON crm_leads (status)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_leads_assigned_idx ON crm_leads (assigned_to)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_leads_email_idx ON crm_leads (email)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_leads_phone_idx ON crm_leads (phone)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_lead_comments (id text PRIMARY KEY, lead_id text NOT NULL, author_user_id text, author_name text, comment_text text, from_user boolean NOT NULL DEFAULT false, deleted boolean NOT NULL DEFAULT false, created_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_lead_comments_lead_idx ON crm_lead_comments (lead_id)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_lead_tags (lead_id text NOT NULL, tag_id text NOT NULL, PRIMARY KEY (lead_id, tag_id))`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_lead_favorites (lead_id text NOT NULL, user_id text NOT NULL, favorite boolean NOT NULL DEFAULT true, PRIMARY KEY (lead_id, user_id))`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_pipeline_statuses (status text PRIMARY KEY, position integer NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_projects (name text PRIMARY KEY, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_base_sources (name text PRIMARY KEY)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_meta_forms (id text PRIMARY KEY, name text, project text, archived boolean NOT NULL DEFAULT false, ad_url text, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_permissions (owner_type text NOT NULL, owner_id text NOT NULL, resource_id text NOT NULL, can_access boolean NOT NULL DEFAULT false, can_act boolean NOT NULL DEFAULT false, PRIMARY KEY (owner_type, owner_id, resource_id))`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_audit_logs (id text PRIMARY KEY, at timestamptz, actor text, actor_name text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_integration_logs (id text PRIMARY KEY, at timestamptz, provider text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_fup_lead_logs (id text PRIMARY KEY, at timestamptz, lead_id text, lead_name text, actor text, actor_name text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_lev_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_lev_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_knowledge_articles (id text PRIMARY KEY, title text, category text, published boolean NOT NULL DEFAULT false, updated_at timestamptz, payload jsonb NOT NULL)`;
+}
+
+const STRUCTURED_TABLES = [
+  "crm_lead_comments", "crm_lead_tags", "crm_lead_favorites", "crm_permissions", "crm_meta_forms",
+  "crm_pipeline_statuses", "crm_projects", "crm_base_sources", "crm_audit_logs", "crm_integration_logs",
+  "crm_fup_lead_logs", "crm_lev_sales", "crm_lev_receipts", "crm_knowledge_articles", "crm_leads", "crm_users"
+];
+
+async function clearStructuredTable(sql, table) {
+  if (table === "crm_lead_comments") return sql`DELETE FROM crm_lead_comments`;
+  if (table === "crm_lead_tags") return sql`DELETE FROM crm_lead_tags`;
+  if (table === "crm_lead_favorites") return sql`DELETE FROM crm_lead_favorites`;
+  if (table === "crm_permissions") return sql`DELETE FROM crm_permissions`;
+  if (table === "crm_meta_forms") return sql`DELETE FROM crm_meta_forms`;
+  if (table === "crm_pipeline_statuses") return sql`DELETE FROM crm_pipeline_statuses`;
+  if (table === "crm_projects") return sql`DELETE FROM crm_projects`;
+  if (table === "crm_base_sources") return sql`DELETE FROM crm_base_sources`;
+  if (table === "crm_audit_logs") return sql`DELETE FROM crm_audit_logs`;
+  if (table === "crm_integration_logs") return sql`DELETE FROM crm_integration_logs`;
+  if (table === "crm_fup_lead_logs") return sql`DELETE FROM crm_fup_lead_logs`;
+  if (table === "crm_lev_sales") return sql`DELETE FROM crm_lev_sales`;
+  if (table === "crm_lev_receipts") return sql`DELETE FROM crm_lev_receipts`;
+  if (table === "crm_knowledge_articles") return sql`DELETE FROM crm_knowledge_articles`;
+  if (table === "crm_leads") return sql`DELETE FROM crm_leads`;
+  if (table === "crm_users") return sql`DELETE FROM crm_users`;
+  throw new Error(`Tabela estruturada inválida: ${table}`);
+}
+
+async function clearStructuredTables(sql) {
+  for (const table of STRUCTURED_TABLES) await clearStructuredTable(sql, table);
+}
+
+async function countStructuredTable(sql, table) {
+  if (table === "crm_users") return (await sql`SELECT COUNT(*)::int AS count FROM crm_users`)[0]?.count || 0;
+  if (table === "crm_leads") return (await sql`SELECT COUNT(*)::int AS count FROM crm_leads`)[0]?.count || 0;
+  if (table === "crm_lead_comments") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lead_comments`)[0]?.count || 0;
+  if (table === "crm_lead_tags") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lead_tags`)[0]?.count || 0;
+  if (table === "crm_lead_favorites") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lead_favorites`)[0]?.count || 0;
+  if (table === "crm_pipeline_statuses") return (await sql`SELECT COUNT(*)::int AS count FROM crm_pipeline_statuses`)[0]?.count || 0;
+  if (table === "crm_projects") return (await sql`SELECT COUNT(*)::int AS count FROM crm_projects`)[0]?.count || 0;
+  if (table === "crm_base_sources") return (await sql`SELECT COUNT(*)::int AS count FROM crm_base_sources`)[0]?.count || 0;
+  if (table === "crm_meta_forms") return (await sql`SELECT COUNT(*)::int AS count FROM crm_meta_forms`)[0]?.count || 0;
+  if (table === "crm_permissions") return (await sql`SELECT COUNT(*)::int AS count FROM crm_permissions`)[0]?.count || 0;
+  if (table === "crm_audit_logs") return (await sql`SELECT COUNT(*)::int AS count FROM crm_audit_logs`)[0]?.count || 0;
+  if (table === "crm_integration_logs") return (await sql`SELECT COUNT(*)::int AS count FROM crm_integration_logs`)[0]?.count || 0;
+  if (table === "crm_fup_lead_logs") return (await sql`SELECT COUNT(*)::int AS count FROM crm_fup_lead_logs`)[0]?.count || 0;
+  if (table === "crm_lev_sales") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_sales`)[0]?.count || 0;
+  if (table === "crm_lev_receipts") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_receipts`)[0]?.count || 0;
+  if (table === "crm_knowledge_articles") return (await sql`SELECT COUNT(*)::int AS count FROM crm_knowledge_articles`)[0]?.count || 0;
+  throw new Error(`Tabela estruturada inválida: ${table}`);
+}
+
+async function syncStructuredDb(db, actor) {
+  const sql = await getSql();
+  if (!sql) throw new Error("Postgres não está configurado neste ambiente.");
+  await ensureStructuredSchema(sql);
+  const runId = crypto.randomUUID();
+  await sql`INSERT INTO crm_structured_sync_runs (id, status, summary) VALUES (${runId}, 'running', '{}'::jsonb)`;
+  const summary = { users: 0, leads: 0, comments: 0, tags: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, permissions: 0, auditLogs: 0, integrationLogs: 0, fupLeadLogs: 0, levSales: 0, levReceipts: 0, knowledgeArticles: 0 };
+  try {
+    ensurePermissions(db);
+    await clearStructuredTables(sql);
+    for (const user of db.users || []) {
+      await sql`INSERT INTO crm_users (id, username, name, role, active, operates_as_broker, notifications, created_at, updated_at, payload) VALUES (${user.id}, ${user.username || ""}, ${user.name || ""}, ${user.role || ""}, ${user.active !== false}, ${Boolean(user.operatesAsBroker)}, ${JSON.stringify(user.notifications || {})}::jsonb, ${dbDate(user.createdAt)}, ${dbDate(user.updatedAt)}, ${JSON.stringify(publicUser(user))}::jsonb)`;
+      summary.users += 1;
+    }
+    for (const lead of db.leads || []) {
+      await sql`INSERT INTO crm_leads (id, name, email, phone, source, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload) VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${lead.source || ""}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${lead.project || lead.empreendimento || ""}, ${lead.unit || lead.unidade || ""}, ${lead.unitValue || lead.valorUnidade || ""}, ${lead.baseSourceBeforePipeline || ""}, ${lead.previousPipelineSource || ""}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)`;
+      summary.leads += 1;
+      for (const comment of lead.comments || []) {
+        await sql`INSERT INTO crm_lead_comments (id, lead_id, author_user_id, author_name, comment_text, from_user, deleted, created_at, payload) VALUES (${comment.id || crypto.randomUUID()}, ${lead.id}, ${comment.userId || comment.authorId || ""}, ${comment.userName || comment.authorName || comment.author || ""}, ${comment.text || ""}, ${Boolean(comment.fromUser)}, ${Boolean(comment.deletedAt || comment.deleted)}, ${dbDate(comment.at || comment.createdAt)}, ${JSON.stringify(comment)}::jsonb)`;
+        summary.comments += 1;
+      }
+      for (const tagId of lead.tags || lead.tagIds || []) {
+        await sql`INSERT INTO crm_lead_tags (lead_id, tag_id) VALUES (${lead.id}, ${String(tagId)}) ON CONFLICT DO NOTHING`;
+        summary.tags += 1;
+      }
+      for (const [userId, favorite] of Object.entries(lead.favoritesByUser || {})) {
+        await sql`INSERT INTO crm_lead_favorites (lead_id, user_id, favorite) VALUES (${lead.id}, ${userId}, ${Boolean(favorite)}) ON CONFLICT DO NOTHING`;
+        summary.favorites += 1;
+      }
+    }
+    for (const [position, status] of (db.pipelineStatuses || []).entries()) {
+      await sql`INSERT INTO crm_pipeline_statuses (status, position) VALUES (${status}, ${position})`;
+      summary.statuses += 1;
+    }
+    for (const project of db.projects || []) {
+      await sql`INSERT INTO crm_projects (name, payload) VALUES (${project}, ${JSON.stringify({ name: project })}::jsonb)`;
+      summary.projects += 1;
+    }
+    for (const source of allBaseSources(db)) {
+      await sql`INSERT INTO crm_base_sources (name) VALUES (${source})`;
+      summary.baseSources += 1;
+    }
+    for (const form of db.integrations?.metaForms?.forms || []) {
+      await sql`INSERT INTO crm_meta_forms (id, name, project, archived, ad_url, payload) VALUES (${form.id}, ${form.name || ""}, ${form.project || ""}, ${Boolean(form.archived)}, ${form.adUrl || form.adURL || ""}, ${JSON.stringify(form)}::jsonb)`;
+      summary.metaForms += 1;
+    }
+    for (const [ownerType, owners] of Object.entries(db.permissions || {})) {
+      if (!["roles", "users"].includes(ownerType) || !owners || typeof owners !== "object") continue;
+      for (const [ownerId, rules] of Object.entries(owners)) {
+        for (const [resourceId, cell] of Object.entries(rules || {})) {
+          await sql`INSERT INTO crm_permissions (owner_type, owner_id, resource_id, can_access, can_act) VALUES (${ownerType === "roles" ? "role" : "user"}, ${ownerId}, ${resourceId}, ${Boolean(cell.access || cell.action)}, ${Boolean(cell.action)})`;
+          summary.permissions += 1;
+        }
+      }
+    }
+    for (const [index, item] of (db.auditLog || []).entries()) {
+      await sql`INSERT INTO crm_audit_logs (id, at, actor, actor_name, action, details, payload) VALUES (${logRowId("audit", item, index)}, ${dbDate(item.at)}, ${item.actor || ""}, ${item.actorName || ""}, ${item.action || ""}, ${JSON.stringify(item.details || {})}::jsonb, ${JSON.stringify(item)}::jsonb)`;
+      summary.auditLogs += 1;
+    }
+    for (const [index, item] of (db.integrationLog || []).entries()) {
+      await sql`INSERT INTO crm_integration_logs (id, at, provider, action, details, payload) VALUES (${logRowId("integration", item, index)}, ${dbDate(item.at)}, ${item.provider || ""}, ${item.action || ""}, ${JSON.stringify(item.details || {})}::jsonb, ${JSON.stringify(item)}::jsonb)`;
+      summary.integrationLogs += 1;
+    }
+    for (const [index, item] of (db.fupLeadLog || []).entries()) {
+      await sql`INSERT INTO crm_fup_lead_logs (id, at, lead_id, lead_name, actor, actor_name, action, details, payload) VALUES (${logRowId("fup", item, index)}, ${dbDate(item.at)}, ${item.leadId || ""}, ${item.leadName || ""}, ${item.actor || ""}, ${item.actorName || ""}, ${item.action || ""}, ${JSON.stringify(item.details || {})}::jsonb, ${JSON.stringify(item)}::jsonb)`;
+      summary.fupLeadLogs += 1;
+    }
+    for (const sale of db.levFinance?.sales || []) {
+      await sql`INSERT INTO crm_lev_sales (id, unit, client, signed_at, contract_value, commission_value, realtor_company, status, nf_number, paid_at, payload) VALUES (${sale.id || sale.unit || crypto.randomUUID()}, ${sale.unit || ""}, ${sale.client || ""}, ${dbDate(sale.signedAt)}, ${Number(sale.contractValue || 0)}, ${Number(sale.commissionValue || 0)}, ${sale.realtorCompany || sale.realEstate || ""}, ${sale.status || ""}, ${sale.nfNumber || ""}, ${dbDate(sale.paidAt)}, ${JSON.stringify(sale)}::jsonb)`;
+      summary.levSales += 1;
+    }
+    for (const [index, receipt] of (db.levFinance?.receipts || []).entries()) {
+      await sql`INSERT INTO crm_lev_receipts (id, unit, amount, paid_at, payload) VALUES (${receipt.id || `receipt-${index}`}, ${receipt.unit || ""}, ${Number(receipt.amount || 0)}, ${dbDate(receipt.paidAt || receipt.date)}, ${JSON.stringify(receipt)}::jsonb)`;
+      summary.levReceipts += 1;
+    }
+    for (const article of db.knowledgeArticles || []) {
+      await sql`INSERT INTO crm_knowledge_articles (id, title, category, published, updated_at, payload) VALUES (${article.id}, ${article.title || ""}, ${article.category || ""}, ${article.published !== false}, ${dbDate(article.updatedAt)}, ${JSON.stringify(article)}::jsonb)`;
+      summary.knowledgeArticles += 1;
+    }
+    await sql`UPDATE crm_structured_sync_runs SET status = 'success', finished_at = now(), summary = ${JSON.stringify(summary)}::jsonb WHERE id = ${runId}`;
+    audit(db, actor, "SYNC_STRUCTURED_DATABASE", summary);
+    return { runId, summary };
+  } catch (error) {
+    await sql`UPDATE crm_structured_sync_runs SET status = 'error', finished_at = now(), summary = ${JSON.stringify(summary)}::jsonb, error = ${error.message} WHERE id = ${runId}`;
+    throw error;
+  }
+}
+
+async function structuredDbDiagnostics(db) {
+  const sql = await getSql();
+  if (!sql) throw new Error("Postgres não está configurado neste ambiente.");
+  await ensureStructuredSchema(sql);
+  const count = (table) => countStructuredTable(sql, table);
+  const structured = {
+    users: await count("crm_users"), leads: await count("crm_leads"), comments: await count("crm_lead_comments"),
+    tags: await count("crm_lead_tags"), favorites: await count("crm_lead_favorites"), statuses: await count("crm_pipeline_statuses"),
+    projects: await count("crm_projects"), baseSources: await count("crm_base_sources"), metaForms: await count("crm_meta_forms"),
+    permissions: await count("crm_permissions"), auditLogs: await count("crm_audit_logs"), integrationLogs: await count("crm_integration_logs"),
+    fupLeadLogs: await count("crm_fup_lead_logs"), levSales: await count("crm_lev_sales"), levReceipts: await count("crm_lev_receipts"),
+    knowledgeArticles: await count("crm_knowledge_articles")
+  };
+  const permissions = ensurePermissions(db);
+  const json = {
+    users: (db.users || []).length,
+    leads: (db.leads || []).length,
+    comments: (db.leads || []).reduce((total, lead) => total + (lead.comments || []).length, 0),
+    tags: (db.leads || []).reduce((total, lead) => total + (lead.tags || lead.tagIds || []).length, 0),
+    favorites: (db.leads || []).reduce((total, lead) => total + Object.keys(lead.favoritesByUser || {}).length, 0),
+    statuses: (db.pipelineStatuses || []).length,
+    projects: (db.projects || []).length,
+    baseSources: allBaseSources(db).length,
+    metaForms: (db.integrations?.metaForms?.forms || []).length,
+    permissions: Object.values(permissions.roles || {}).reduce((total, rules) => total + Object.keys(rules || {}).length, 0) + Object.values(permissions.users || {}).reduce((total, rules) => total + Object.keys(rules || {}).length, 0),
+    auditLogs: (db.auditLog || []).length,
+    integrationLogs: (db.integrationLog || []).length,
+    fupLeadLogs: (db.fupLeadLog || []).length,
+    levSales: (db.levFinance?.sales || []).length,
+    levReceipts: (db.levFinance?.receipts || []).length,
+    knowledgeArticles: (db.knowledgeArticles || []).length
+  };
+  const latestRun = await sql`SELECT id, started_at, finished_at, status, summary, error FROM crm_structured_sync_runs ORDER BY started_at DESC LIMIT 1`;
+  const comparisons = Object.keys(json).map((key) => ({ key, json: json[key] || 0, structured: structured[key] || 0, ok: (json[key] || 0) === (structured[key] || 0) }));
+  return { json, structured, comparisons, latestRun: latestRun[0] || null };
+}
+
 function routeStatic(req, res) {
   const requested = req.url === "/" ? "/index.html" : decodeURIComponent(req.url.split("?")[0]);
   const routedRequest = path.extname(requested) ? requested : "/index.html";
@@ -4680,6 +4892,28 @@ async function routeApi(req, res, db) {
     }, {
       "Content-Disposition": `attachment; filename="pipeline-mauad-backup-${new Date().toISOString().slice(0, 10)}.json"`
     });
+  }
+
+  if (url.pathname === "/api/structured-db/diagnostics" && method === "GET") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    try {
+      const diagnostics = await structuredDbDiagnostics(db);
+      return sendJson(res, 200, { diagnostics });
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message });
+    }
+  }
+
+  if (url.pathname === "/api/structured-db/sync" && method === "POST") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    try {
+      const result = await syncStructuredDb(db, user);
+      await saveDb(db);
+      const diagnostics = await structuredDbDiagnostics(db);
+      return sendJson(res, 200, { ...result, diagnostics });
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message });
+    }
   }
 
   if (url.pathname === "/api/base-access" && method === "PUT") {

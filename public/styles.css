@@ -292,6 +292,32 @@ textarea {
   font-weight: 700;
 }
 
+.info-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.info-card strong {
+  font-size: 13px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.info-card span {
+  font-weight: 800;
+}
+
+.info-card small {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .settings-subhead {
   margin: 18px 0 8px;
   font-size: 15px;

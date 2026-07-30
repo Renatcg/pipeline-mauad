@@ -25,6 +25,7 @@ const state = {
   fupLeadLog: [],
   integrationLog: [],
   levFinance: null,
+  structuredDbDiagnostics: null,
   knowledgeCategories: [],
   knowledgeArticles: [],
   knowledgeChatSessions: [],
@@ -2003,6 +2004,7 @@ function settingsLayout(content) {
         ${canManagePipelineSettings() ? settingsTabButton("projects", "Empreendimentos") : ""}
         ${canManageLevFinanceSettings() ? settingsTabButton("levFinance", "Financeiro Lev") : ""}
         ${canManageSystemSettings() ? settingsTabButton("backup", "Backup") : ""}
+        ${canManageSystemSettings() ? settingsTabButton("structuredDb", "Banco estruturado") : ""}
         ${canManageSystemSettings() ? settingsTabButton("knowledge", "Base de conhecimento") : ""}
     </div>
     ${content}
@@ -2018,7 +2020,7 @@ function settingsLayout(content) {
 }
 
 function renderSettings() {
-  if (["integrations", "logs", "knowledge", "backup"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
+  if (["integrations", "logs", "knowledge", "backup", "structuredDb"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
   if (["statuses", "tags", "projects", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) state.settingsTab = canManageLevFinanceSettings() ? "levFinance" : "knowledge";
@@ -2030,6 +2032,7 @@ function renderSettings() {
   if (state.settingsTab === "projects") return renderProjectSettings();
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
   if (state.settingsTab === "backup") return renderBackupSettings();
+  if (state.settingsTab === "structuredDb") return renderStructuredDbSettings();
   if (state.settingsTab === "knowledge") return renderKnowledgeSettings();
   return renderUserSettings();
 }
@@ -3756,6 +3759,92 @@ function renderBackupSettings() {
       state.settingsNotice = `Backup importado com sucesso: ${data.leads} lead(s), ${data.users} usuário(s).`;
       await loadState();
       state.settingsTab = "backup";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+}
+
+function structuredDbLabel(key) {
+  return {
+    users: "Usuários",
+    leads: "Leads",
+    comments: "Comentários",
+    tags: "Etiquetas em leads",
+    favorites: "Favoritos",
+    statuses: "Status do pipeline",
+    projects: "Empreendimentos",
+    baseSources: "Origens de base",
+    metaForms: "Forms Meta",
+    permissions: "Permissões",
+    auditLogs: "Logs de auditoria",
+    integrationLogs: "Eventos de integração",
+    fupLeadLogs: "FUP Lead",
+    levSales: "Vendas Lev",
+    levReceipts: "Recebimentos Lev",
+    knowledgeArticles: "Tutoriais"
+  }[key] || key;
+}
+
+function renderStructuredDbSettings() {
+  const diagnostics = state.structuredDbDiagnostics;
+  const latest = diagnostics?.latestRun;
+  const rows = (diagnostics?.comparisons || []).map((item) => `
+    <tr>
+      <td>${escapeHtml(structuredDbLabel(item.key))}</td>
+      <td>${Number(item.json || 0).toLocaleString("pt-BR")}</td>
+      <td>${Number(item.structured || 0).toLocaleString("pt-BR")}</td>
+      <td><span class="chip ${item.ok ? "status-active" : "chip-warning"}">${item.ok ? "OK" : "Divergente"}</span></td>
+    </tr>
+  `).join("");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Banco estruturado</h2>
+        <div class="row-actions">
+          <button type="button" id="diagnoseStructuredDb">Diagnosticar</button>
+          <button class="primary" type="button" id="syncStructuredDb">Sincronizar agora</button>
+        </div>
+      </div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
+      <p class="muted-copy">Fase 1 da migração: cria e popula tabelas Postgres paralelas sem alterar o JSON atual, que continua sendo a fonte oficial do sistema.</p>
+      <div class="info-card">
+        <strong>Última sincronização</strong>
+        <span>${latest ? `${escapeHtml(latest.status)} · ${escapeHtml(new Date(latest.started_at || latest.startedAt).toLocaleString("pt-BR"))}` : "Ainda não executada"}</span>
+        ${latest?.error ? `<small>${escapeHtml(latest.error)}</small>` : ""}
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Dados</th><th>JSON atual</th><th>Banco estruturado</th><th>Status</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4" class="empty">Clique em Diagnosticar para comparar os dados.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>
+  `);
+  bindSettingsCommon();
+  document.querySelector("#diagnoseStructuredDb")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Diagnosticando...");
+      const data = await api("/api/structured-db/diagnostics");
+      state.structuredDbDiagnostics = data.diagnostics;
+      state.settingsNotice = "Diagnóstico atualizado.";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+  document.querySelector("#syncStructuredDb")?.addEventListener("click", async (event) => {
+    if (!confirm("Sincronizar o banco estruturado agora? O JSON atual continuará funcionando normalmente.")) return;
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Sincronizando...");
+      const data = await api("/api/structured-db/sync", { method: "POST" });
+      state.structuredDbDiagnostics = data.diagnostics;
+      state.settingsNotice = "Banco estruturado sincronizado.";
       renderSettings();
     } catch (error) {
       setButtonBusy(button, false);
