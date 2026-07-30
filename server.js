@@ -2729,17 +2729,21 @@ function canActBaseLead(db, user, lead) {
   return baseSourcesForLead(lead).some((source) => permissionForUser(db, user, basePermissionId(source)).action);
 }
 
-function visibleLeads(db, user) {
+function visibleLeadsFromList(db, user, leads) {
   if (user.role === "Corretor") {
-    return db.leads.filter((lead) => {
+    return leads.filter((lead) => {
       if (lead.inPipeline && lead.assignedTo) return lead.assignedTo === user.id;
       return canAccessBaseLead(db, user, lead);
     });
   }
-  return db.leads.filter((lead) => {
+  return leads.filter((lead) => {
     if (lead.inPipeline) return true;
     return canAccessBaseLead(db, user, lead);
   });
+}
+
+function visibleLeads(db, user) {
+  return visibleLeadsFromList(db, user, db.leads || []);
 }
 
 function canEditLead(user, lead) {
@@ -3638,6 +3642,19 @@ async function mirrorStructuredLead(lead) {
   }
 }
 
+async function deleteStructuredLead(leadId) {
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return;
+    await sql`DELETE FROM crm_leads WHERE id = ${leadId}`;
+    await sql`DELETE FROM crm_lead_comments WHERE lead_id = ${leadId}`;
+    await sql`DELETE FROM crm_lead_tags WHERE lead_id = ${leadId}`;
+    await sql`DELETE FROM crm_lead_favorites WHERE lead_id = ${leadId}`;
+  } catch (error) {
+    mirrorStructuredError("delete-lead", error);
+  }
+}
+
 async function mirrorStructuredAuditLog(entry) {
   try {
     const sql = await structuredSqlForMirror();
@@ -3722,6 +3739,28 @@ async function structuredConfigForState(db) {
     };
   } catch (error) {
     mirrorStructuredError("config-state", error);
+    return fallback;
+  }
+}
+
+async function structuredLeadsForState(db, user) {
+  const fallback = {
+    leads: visibleLeads(db, user).map((lead) => publicLeadSummary(lead, user)),
+    source: "legacy"
+  };
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return fallback;
+    const rows = await sql`SELECT payload FROM crm_leads ORDER BY in_pipeline DESC, updated_at DESC NULLS LAST, created_at DESC NULLS LAST`;
+    const leads = rows.map((row) => row.payload || {}).filter((item) => item.id);
+    const legacyCount = (db.leads || []).length;
+    if (legacyCount && leads.length < Math.floor(legacyCount * 0.95)) return fallback;
+    return {
+      leads: visibleLeadsFromList(db, user, leads).map((lead) => publicLeadSummary(lead, user)),
+      source: "structured"
+    };
+  } catch (error) {
+    mirrorStructuredError("leads-state", error);
     return fallback;
   }
 }
@@ -4185,7 +4224,7 @@ async function routeApi(req, res, db) {
       pipelineStatuses: structuredConfig.pipelineStatuses,
       tagDefinitions: db.tagDefinitions || [],
       users: structuredConfig.users,
-      leads: visibleLeads(db, user).map((lead) => publicLeadSummary(lead, user)),
+      leads: [],
       integrations: canManageSettings(user) ? db.integrations : null,
       baseAccess: canManagePipelineSettings(user) ? db.baseAccess : null,
       permissions: canManagePipelineSettings(user) ? ensurePermissions(db) : null,
@@ -4208,6 +4247,14 @@ async function routeApi(req, res, db) {
         config: structuredConfig.source
       },
       levFinance: canAccessLevFinance(user) ? publicLevFinance(db) : null
+    });
+  }
+
+  if (method === "GET" && url.pathname === "/api/leads") {
+    const structuredLeads = await structuredLeadsForState(db, user);
+    return sendJson(res, 200, {
+      leads: structuredLeads.leads,
+      dataSources: { leads: structuredLeads.source }
     });
   }
 
@@ -4517,6 +4564,7 @@ async function routeApi(req, res, db) {
     duplicate.rescuedAt = new Date().toISOString();
     duplicate.updatedAt = duplicate.rescuedAt;
     duplicate.manualDuplicateResolution = mode;
+    await mirrorStructuredLead(duplicate);
     audit(db, user, "RESOLVE_MANUAL_DUPLICATE_LEAD", { leadId: duplicate.id, mode, source: duplicate.source });
     fupLeadEvent(db, user, duplicate, "RESCUE_BASE_LEAD", { source: duplicate.source, mode, assignedTo: duplicate.assignedName || "" });
     await saveDb(db);
@@ -4577,6 +4625,7 @@ async function routeApi(req, res, db) {
       updatedAt: now
     };
     db.leads.push(lead);
+    await mirrorStructuredLead(lead);
     audit(db, user, "CREATE_LEAD", { leadId: lead.id, source: lead.source });
     fupLeadEvent(db, user, lead, "CREATE_LEAD", { source: lead.source, assignedTo: lead.assignedName || "" });
     await saveDb(db);
@@ -4653,6 +4702,7 @@ async function routeApi(req, res, db) {
         fupLeadEvent(db, user, lead, nextFavorite ? "FAVORITE_LEAD" : "UNFAVORITE_LEAD", {});
       }
     }
+    await mirrorStructuredLead(lead);
     await saveDb(db);
     return sendJson(res, 200, { lead: publicLead(lead, user) });
   }
@@ -4664,6 +4714,7 @@ async function routeApi(req, res, db) {
     const [deleted] = db.leads.splice(index, 1);
     audit(db, user, "DELETE_LEAD", { leadId: deleted.id, source: deleted.source });
     fupLeadEvent(db, user, deleted, "DELETE_LEAD", { source: deleted.source });
+    await deleteStructuredLead(deleted.id);
     await saveDb(db);
     return sendJson(res, 200, { ok: true });
   }
@@ -4689,6 +4740,7 @@ async function routeApi(req, res, db) {
     lead.updatedAt = comment.createdAt;
     audit(db, user, "COMMENT_LEAD", { leadId: lead.id });
     fupLeadEvent(db, user, lead, "COMMENT_LEAD", { commentId: comment.id, fromUser: comment.fromUser });
+    await mirrorStructuredLead(lead);
     await saveDb(db);
     return sendJson(res, 201, { lead: publicLead(lead, user), comment });
   }
@@ -4717,6 +4769,7 @@ async function routeApi(req, res, db) {
     }
     lead.comments = comments;
     lead.updatedAt = new Date().toISOString();
+    await mirrorStructuredLead(lead);
     await saveDb(db);
     return sendJson(res, 200, { lead: publicLead(lead, user) });
   }
@@ -4742,6 +4795,7 @@ async function routeApi(req, res, db) {
     lead.updatedAt = lead.rescuedAt;
     audit(db, user, "RESCUE_BASE_LEAD", { leadId: lead.id, source: lead.source });
     fupLeadEvent(db, user, lead, "RESCUE_BASE_LEAD", { source: lead.source, assignedTo: lead.assignedName || "" });
+    await mirrorStructuredLead(lead);
     await saveDb(db);
     return sendJson(res, 200, { lead: publicLead(lead, user) });
   }
@@ -4765,6 +4819,7 @@ async function routeApi(req, res, db) {
     lead.rolledBackAt = new Date().toISOString();
     lead.updatedAt = lead.rolledBackAt;
     audit(db, user, "ROLLBACK_BASE_LEAD", { leadId: lead.id, source: lead.source, previousSource });
+    await mirrorStructuredLead(lead);
     await saveDb(db);
     return sendJson(res, 200, { lead: publicLead(lead, user) });
   }

@@ -12,6 +12,9 @@ const state = {
   tagDefinitions: [],
   users: [],
   leads: [],
+  leadsLoaded: false,
+  leadsLoading: false,
+  leadsLoadError: "",
   integrations: null,
   baseAccess: null,
   permissions: null,
@@ -529,6 +532,9 @@ function renderLogin(error = "", message = "") {
         })
       });
       state.user = result.user;
+      state.leads = [];
+      state.leadsLoaded = false;
+      state.leadsLoadError = "";
       resetInactivityTimer();
       await loadState();
       const returnTo = new URLSearchParams(window.location.search).get("returnTo");
@@ -629,7 +635,10 @@ async function loadState() {
   state.projects = data.projects || ["Reserva Guinle", "Golf Club Resort"];
   state.tagDefinitions = data.tagDefinitions || [];
   state.users = data.users;
-  state.leads = data.leads;
+  if (Array.isArray(data.leads) && data.leads.length) {
+    state.leads = data.leads;
+    state.leadsLoaded = true;
+  }
   state.integrations = data.integrations;
   state.baseAccess = data.baseAccess || null;
   state.permissions = data.permissions || null;
@@ -643,13 +652,38 @@ async function loadState() {
   state.accessLog = data.accessLog || [];
   state.fupLeadLog = data.fupLeadLog || [];
   state.levFinance = data.levFinance || null;
-  state.dataSources = data.dataSources || {};
+  state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
   state.knowledgeCategories = data.knowledgeCategories || [];
   state.knowledgeArticles = data.knowledgeArticles || [];
   state.knowledgeChatSessions = data.knowledgeChatSessions || [];
   state.canManageKnowledge = Boolean(data.canManageKnowledge);
   state.canCreateKnowledge = Boolean(data.canCreateKnowledge);
   if (state.view !== "lead" && !allowedViews().includes(state.view)) state.view = allowedViews()[0];
+}
+
+function viewNeedsLeads(view = state.view) {
+  return ["kanban", "sheet", "odysseia", "dashboard", "lead"].includes(view);
+}
+
+async function loadLeads(force = false) {
+  if (state.leadsLoading) return;
+  if (state.leadsLoaded && !force) return;
+  state.leadsLoading = true;
+  state.leadsLoadError = "";
+  try {
+    const data = await api("/api/leads");
+    state.leads = data.leads || [];
+    state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
+    state.leadsLoaded = true;
+  } catch (error) {
+    state.leadsLoadError = error.message || "Erro ao carregar leads.";
+  } finally {
+    state.leadsLoading = false;
+  }
+}
+
+function invalidateLeads() {
+  state.leadsLoaded = false;
 }
 
 function navButton(view, icon, label) {
@@ -2938,6 +2972,7 @@ function renderIntegrationSettings() {
         body: JSON.stringify({ days: 7 })
       });
       state.settingsNotice = `Sincronização concluída: ${data.created} novo(s), ${data.duplicates} já existente(s), ${data.errors.length} erro(s).`;
+      if (data.created) invalidateLeads();
       await loadState();
       state.settingsTab = "integrations";
       renderSettings();
@@ -2959,6 +2994,7 @@ function renderIntegrationSettings() {
           body: JSON.stringify({ days: 7, formId: formConfig.id })
         });
         state.settingsNotice = `${formConfig.name || formConfig.id}: ${data.created} novo(s), ${data.duplicates} já existente(s), ${data.errors.length} erro(s).`;
+        if (data.created) invalidateLeads();
         await loadState();
         state.settingsTab = "integrations";
         renderSettings();
@@ -3005,6 +3041,7 @@ function renderIntegrationSettings() {
       state.settingsNotice = data.status === "duplicate"
         ? "Lead Meta já existia no CRM."
         : "Lead Meta importado com sucesso.";
+      if (data.status !== "duplicate") invalidateLeads();
       await loadState();
       state.settingsTab = "integrations";
       renderSettings();
@@ -3880,6 +3917,7 @@ function renderStructuredDbSettings() {
       setButtonBusy(button, true, "Sincronizando...");
       const data = await api("/api/structured-db/sync", { method: "POST", body: JSON.stringify({ dataset }) });
       state.structuredDbDiagnostics = data.diagnostics;
+      if (dataset === "leads") invalidateLeads();
       const remaining = Number(data.summary?.remaining || 0);
       state.settingsNotice = remaining > 0
         ? `${structuredDbLabel(dataset)} sincronizado parcialmente. Ainda faltam ${remaining.toLocaleString("pt-BR")} registro(s); clique em Sincronizar novamente para continuar.`
@@ -3898,6 +3936,7 @@ function renderStructuredDbSettings() {
       setButtonBusy(button, true, "Reiniciando...");
       const data = await api("/api/structured-db/reset", { method: "POST", body: JSON.stringify({ dataset }) });
       state.structuredDbDiagnostics = data.diagnostics;
+      if (dataset === "leads") invalidateLeads();
       state.settingsNotice = `${structuredDbLabel(dataset)} reiniciado.`;
       renderSettings();
     } catch (error) {
@@ -4538,6 +4577,27 @@ function bindSettingsCommon() {
 
 function renderApp() {
   if (state.view === "password-setup") return renderPasswordSetup();
+  if (viewNeedsLeads() && !state.leadsLoaded) {
+    const retry = state.leadsLoadError ? `<button class="primary" data-retry-leads>Carregar novamente</button>` : "";
+    renderShell(`
+      <section class="panel">
+        <h2>${state.leadsLoadError ? "Não foi possível carregar os leads" : "Carregando leads"}</h2>
+        <p class="muted-copy">${escapeHtml(state.leadsLoadError || "Preparando os dados desta tela.")}</p>
+        ${retry}
+      </section>
+    `);
+    document.querySelector("[data-retry-leads]")?.addEventListener("click", () => {
+      state.leadsLoadError = "";
+      invalidateLeads();
+      renderApp();
+    });
+    if (!state.leadsLoading && !state.leadsLoadError) {
+      loadLeads().then(() => {
+        if (viewNeedsLeads()) renderApp();
+      });
+    }
+    return;
+  }
   if (state.view === "lead") return renderLeadDetail();
   if (state.view === "kanban") return renderKanban();
   if (state.view === "sheet") return renderSheet();
