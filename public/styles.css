@@ -70,6 +70,22 @@ button.primary:hover {
   background: #fee4e2;
 }
 
+.link-button {
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  font-weight: 800;
+  text-align: left;
+}
+
+.link-button:hover {
+  background: transparent;
+  text-decoration: underline;
+}
+
 button.icon {
   width: 36px;
   padding: 0;

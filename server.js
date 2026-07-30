@@ -889,6 +889,7 @@ function buildDefaultDb() {
           email: { enabled: false, sender: "", smtpHost: "" },
           proprietaryEndpoints: []
         },
+        samEvents: [],
         importSummary: { origin: "EMPTY", leadCount: 0, inactiveBrokerCount: 0 }
       };
   const adminPassword = process.env.INITIAL_ADMIN_PASSWORD || "Admin@12345";
@@ -924,6 +925,7 @@ function buildDefaultDb() {
     })),
     integrations: seed.integrations,
         integrationLog: [],
+        samEvents: [],
         accessLog: [],
         knowledgeArticles: DEFAULT_KNOWLEDGE_ARTICLES,
         auditLog: [
@@ -1048,6 +1050,10 @@ function migrateDb(db) {
   }
   if (!Array.isArray(db.integrationLog)) {
     db.integrationLog = [];
+    changed = true;
+  }
+  if (!Array.isArray(db.samEvents)) {
+    db.samEvents = [];
     changed = true;
   }
   if (!db.baseAccess || typeof db.baseAccess !== "object" || Array.isArray(db.baseAccess)) {
@@ -2890,6 +2896,7 @@ function samStatusToPipelineStatus(db, status) {
 
 function isDuplicateSamEvent(db, eventId) {
   if (!eventId) return false;
+  if ((db.samEvents || []).some((event) => String(event.eventId || "") === eventId)) return true;
   return (db.integrationLog || []).some((entry) => {
     if (entry.provider !== "SAM") return false;
     if (!["STATUS_UPDATED", "LEAD_NOT_FOUND", "UNIT_MISMATCH"].includes(entry.action)) return false;
@@ -2913,6 +2920,44 @@ function findSamLeadCandidate(db, { email, phone }) {
     }
     return false;
   }) || null;
+}
+
+function findLeadForSamManualLink(db, search) {
+  const query = String(search || "").trim();
+  if (!query) return null;
+  const normalizedQuery = normalizeComparableText(query);
+  const email = normalizeEmail(query);
+  const phone = normalizePhoneDigits(query);
+  return (db.leads || []).find((lead) => {
+    if (lead.id === query) return true;
+    if (email && leadEmailsForMatch(lead).includes(email)) return true;
+    if (phone.length >= 8 && leadPhonesForMatch(lead).some((leadPhone) => leadPhone === phone || leadPhone.endsWith(phone) || phone.endsWith(leadPhone))) return true;
+    return normalizeComparableText(lead.name).includes(normalizedQuery);
+  }) || null;
+}
+
+async function applySamEventToLead(db, user, event, lead) {
+  const previousStatus = lead.status || "";
+  lead.status = event.nextStatus || samStatusToPipelineStatus(db, event.eventType);
+  lead.inPipeline = true;
+  lead.samLastEvent = {
+    eventId: event.eventId,
+    eventType: event.eventType,
+    eventDatetime: event.eventDatetime,
+    unit: event.unit,
+    appliedAt: new Date().toISOString()
+  };
+  lead.updatedAt = lead.samLastEvent.appliedAt;
+  event.status = "linked";
+  event.leadId = lead.id;
+  event.leadName = lead.name || "";
+  event.resolution = "linked";
+  event.resolvedAt = lead.updatedAt;
+  event.resolvedBy = user.username;
+  integrationEvent(db, "SAM", "LINKED_TO_LEAD", { eventId: event.eventId, samEventId: event.id, leadId: lead.id, from: previousStatus, to: lead.status });
+  fupLeadEvent(db, user, lead, "SAM_STATUS_LINKED", { eventId: event.eventId, from: previousStatus, to: lead.status });
+  await mirrorStructuredLead(lead);
+  return { previousStatus, nextStatus: lead.status };
 }
 
 async function notifySamMismatch(db, subject, details) {
@@ -2950,35 +2995,44 @@ async function processSamWebhook(db, payload) {
   if (!email && !phone) return { ok: false, httpStatus: 400, error: "E-mail ou telefone obrigatório" };
   if (!unit) return { ok: false, httpStatus: 400, error: "Unidade obrigatória" };
   const lead = findSamLeadCandidate(db, { email, phone });
-  if (!lead) {
-    integrationEvent(db, "SAM", "LEAD_NOT_FOUND", { eventId, eventType, eventDatetime, email, phone: normalizePhoneDigits(phone), unit });
-    const notification = await notifySamMismatch(db, "SAM: lead não encontrado no Pipeline", { eventId, eventType, eventDatetime, email, phone, unidade: unit });
-    integrationEvent(db, "SAM", notification.sent ? "LEAD_NOT_FOUND_EMAIL_SENT" : "LEAD_NOT_FOUND_EMAIL_FAILED", { eventId, reason: notification.reason || "" });
-    return { ok: true, status: "pending_review", reason: "Lead não encontrado no Pipeline." };
-  }
-  const leadUnits = leadUnitsForMatch(lead);
-  if (!leadUnits.includes(unit)) {
-    integrationEvent(db, "SAM", "UNIT_MISMATCH", { eventId, eventType, eventDatetime, leadId: lead.id, email, phone: normalizePhoneDigits(phone), unit, leadUnits });
-    const notification = await notifySamMismatch(db, "SAM: unidade não confere com o Pipeline", { eventId, eventType, eventDatetime, leadId: lead.id, email, phone, unidadeRecebida: unit, unidadesNoPipeline: leadUnits.join(", ") });
-    integrationEvent(db, "SAM", notification.sent ? "UNIT_MISMATCH_EMAIL_SENT" : "UNIT_MISMATCH_EMAIL_FAILED", { eventId, leadId: lead.id, reason: notification.reason || "" });
-    return { ok: true, status: "pending_review", reason: "Lead encontrado, mas unidade divergente.", lead_id: lead.id };
-  }
-  const previousStatus = lead.status || "";
   const nextStatus = samStatusToPipelineStatus(db, eventType);
-  lead.status = nextStatus;
-  lead.inPipeline = true;
-  lead.samLastEvent = {
+  const leadUnits = lead ? leadUnitsForMatch(lead) : [];
+  const unitMatches = Boolean(lead && leadUnits.includes(unit));
+  const event = {
+    id: `sam-${crypto.randomUUID()}`,
     eventId,
     eventType,
     eventDatetime,
+    email,
+    phone,
     unit,
-    receivedAt: new Date().toISOString()
+    nextStatus,
+    status: unitMatches ? "matched" : lead ? "unit_mismatch" : "not_found",
+    leadId: lead?.id || "",
+    leadName: lead?.name || "",
+    leadUnits,
+    createdAt: new Date().toISOString(),
+    resolvedAt: "",
+    resolvedBy: "",
+    resolution: ""
   };
-  lead.updatedAt = lead.samLastEvent.receivedAt;
-  integrationEvent(db, "SAM", "STATUS_UPDATED", { eventId, eventType, eventDatetime, leadId: lead.id, unit, from: previousStatus, to: nextStatus });
-  fupLeadEvent(db, { id: "sam", username: "sam-webhook", name: "SAM" }, lead, "SAM_STATUS_UPDATED", { eventId, unit, from: previousStatus, to: nextStatus });
-  await mirrorStructuredLead(lead);
-  return { ok: true, status: "updated", lead_id: lead.id, from: previousStatus, to: nextStatus };
+  db.samEvents.unshift(event);
+  db.samEvents = db.samEvents.slice(0, 500);
+  integrationEvent(db, "SAM", unitMatches ? "RECEIVED_MATCHED" : lead ? "RECEIVED_UNIT_MISMATCH" : "RECEIVED_NOT_FOUND", {
+    eventId,
+    eventType,
+    eventDatetime,
+    leadId: event.leadId,
+    unit,
+    nextStatus
+  });
+  return {
+    ok: true,
+    status: "pending_review",
+    reason: unitMatches ? "Lead encontrado. Aguardando confirmação no Pipeline." : lead ? "Lead encontrado, mas unidade divergente." : "Lead não encontrado no Pipeline.",
+    sam_event_id: event.id,
+    lead_id: event.leadId || undefined
+  };
 }
 
 function normalizeKnowledgePayload(body, current = {}) {
@@ -4904,6 +4958,7 @@ async function routeApi(req, res, db) {
       canCreateKnowledge: canCreateKnowledge(user),
       integrationLog: structuredLogs.integrationLog,
       auditLog: structuredLogs.auditLog,
+      samEvents: canManageSettings(user) ? (db.samEvents || []).slice(0, 500) : [],
       accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : [],
       fupLeadLog: structuredLogs.fupLeadLog,
       dataSources: {
@@ -4912,6 +4967,33 @@ async function routeApi(req, res, db) {
       },
       levFinance: canAccessLevFinance(user) ? publicLevFinance(db) : null
     });
+  }
+
+  const samEventActionMatch = url.pathname.match(/^\/api\/sam-events\/([^/]+)\/(link|ignore)$/);
+  if (samEventActionMatch && method === "POST") {
+    if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const event = (db.samEvents || []).find((item) => item.id === samEventActionMatch[1]);
+    if (!event) return notFound(res);
+    if (event.status === "linked" || event.status === "ignored") return sendJson(res, 400, { error: "Evento já tratado" });
+    if (samEventActionMatch[2] === "ignore") {
+      const body = await readBody(req);
+      event.status = "ignored";
+      event.resolution = "ignored";
+      event.resolvedAt = new Date().toISOString();
+      event.resolvedBy = user.username;
+      event.ignoreReason = String(body.reason || "").trim();
+      integrationEvent(db, "SAM", "IGNORED", { eventId: event.eventId, samEventId: event.id, reason: event.ignoreReason });
+      audit(db, user, "IGNORE_SAM_EVENT", { samEventId: event.id, eventId: event.eventId });
+      await saveDb(db);
+      return sendJson(res, 200, { samEvent: event });
+    }
+    const body = await readBody(req);
+    const lead = body.search ? findLeadForSamManualLink(db, body.search) : (db.leads || []).find((item) => item.id === (body.leadId || event.leadId));
+    if (!lead) return sendJson(res, 404, { error: "Lead não encontrado" });
+    const result = await applySamEventToLead(db, user, event, lead);
+    audit(db, user, "LINK_SAM_EVENT", { samEventId: event.id, eventId: event.eventId, leadId: lead.id, from: result.previousStatus, to: result.nextStatus });
+    await saveDb(db);
+    return sendJson(res, 200, { samEvent: event, lead: publicLead(lead, user) });
   }
 
   if (method === "GET" && url.pathname === "/api/leads") {

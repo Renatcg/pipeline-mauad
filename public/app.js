@@ -30,6 +30,7 @@ const state = {
   accessLog: [],
   fupLeadLog: [],
   integrationLog: [],
+  samEvents: [],
   levFinance: null,
   structuredDbDiagnostics: null,
   dataSources: {},
@@ -650,6 +651,7 @@ async function loadState() {
   state.accessibleBaseSources = data.accessibleBaseSources || [];
   state.actionableBaseSources = data.actionableBaseSources || [];
   state.integrationLog = data.integrationLog || [];
+  state.samEvents = data.samEvents || [];
   state.auditLog = data.auditLog;
   state.accessLog = data.accessLog || [];
   state.fupLeadLog = data.fupLeadLog || [];
@@ -3137,7 +3139,8 @@ function fupActionLabel(action) {
     FAVORITE_LEAD: "Favoritou",
     UNFAVORITE_LEAD: "Desfavoritou",
     DELETE_LEAD: "Excluiu lead",
-    RESCUE_BASE_LEAD: "Resgatou da base"
+    RESCUE_BASE_LEAD: "Resgatou da base",
+    SAM_STATUS_LINKED: "Vinculou evento SAM"
   };
   return labels[action] || action || "";
 }
@@ -3152,6 +3155,26 @@ function fupDetailsLabel(item) {
   if (item.action === "COMMENT_LEAD") return details.fromUser ? "Mensagem do usuário" : "Comentário interno";
   if (item.action === "DELETE_LEAD") return details.source ? `Origem: ${details.source}` : "";
   return JSON.stringify(details || {});
+}
+
+function samEventStatusLabel(status) {
+  const labels = {
+    matched: "Lead encontrado",
+    unit_mismatch: "Unidade divergente",
+    not_found: "Lead não encontrado",
+    linked: "Vinculado",
+    ignored: "Ignorado"
+  };
+  return labels[status] || status || "Pendente";
+}
+
+function samEventDetailLabel(event) {
+  if (event.status === "matched") return `Pronto para vincular: ${event.nextStatus || "-"}`;
+  if (event.status === "unit_mismatch") return `Unidade no lead: ${(event.leadUnits || []).join(", ") || "-"}`;
+  if (event.status === "not_found") return "Procure manualmente antes de vincular";
+  if (event.status === "linked") return `Tratado por ${event.resolvedBy || "-"} em ${event.resolvedAt ? new Date(event.resolvedAt).toLocaleString("pt-BR") : "-"}`;
+  if (event.status === "ignored") return `Ignorado por ${event.resolvedBy || "-"}`;
+  return "";
 }
 
 function renderLogSettings() {
@@ -3198,6 +3221,34 @@ function renderLogSettings() {
         <td>${escapeHtml(fupDetailsLabel(item))}</td>
       </tr>
     `).join("");
+  const samRows = (state.samEvents || [])
+    .filter((event) => {
+      return [event.eventId, event.eventType, event.email, event.phone, event.unit, event.nextStatus, event.status, event.leadName, samEventStatusLabel(event.status), samEventDetailLabel(event)].some(matches);
+    })
+    .map((event) => {
+      const canAct = !["linked", "ignored"].includes(event.status);
+      const leadCell = event.leadId
+        ? `<button type="button" class="link-button" data-open-sam-lead="${escapeHtml(event.leadId)}">${escapeHtml(event.leadName || event.leadId)}</button>`
+        : '<span class="muted-cell">Sem lead sugerido</span>';
+      const actions = canAct ? [
+        event.leadId ? `<button type="button" data-sam-link="${escapeHtml(event.id)}">Vincular ao lead encontrado</button>` : "",
+        `<button type="button" data-sam-find="${escapeHtml(event.id)}">Encontrar lead manualmente</button>`,
+        `<button type="button" class="danger-menu-item" data-sam-ignore="${escapeHtml(event.id)}">Ignorar</button>`
+      ] : [];
+      return `
+        <tr>
+          <td>${escapeHtml(new Date(event.createdAt).toLocaleString("pt-BR"))}</td>
+          <td>${escapeHtml(event.eventType || "")}</td>
+          <td>${escapeHtml(event.unit || "")}</td>
+          <td>${escapeHtml(event.email || "")}</td>
+          <td>${escapeHtml(event.phone || "")}</td>
+          <td><span class="chip">${escapeHtml(samEventStatusLabel(event.status))}</span></td>
+          <td>${leadCell}</td>
+          <td>${escapeHtml(samEventDetailLabel(event))}</td>
+          <td>${actions.length ? renderSettingsActionMenu(`sam-${event.id}`, actions) : '<span class="muted-cell">Tratado</span>'}</td>
+        </tr>
+      `;
+    }).join("");
   settingsLayout(`
     <section class="panel">
       <div class="panel-head">
@@ -3210,11 +3261,14 @@ function renderLogSettings() {
       <div class="tabs compact-tabs log-tabs">
         <button class="${state.settingsLogTab === "audit" ? "active" : ""}" data-log-tab="audit">Auditoria</button>
         <button class="${state.settingsLogTab === "fup" ? "active" : ""}" data-log-tab="fup">FUP Lead</button>
+        <button class="${state.settingsLogTab === "sam" ? "active" : ""}" data-log-tab="sam">SAM</button>
         <button class="${state.settingsLogTab === "integration" ? "active" : ""}" data-log-tab="integration">Eventos de integração</button>
       </div>
       <div class="table-wrap log-table-wrap">
         ${state.settingsLogTab === "integration"
           ? `<table><thead><tr><th>Data</th><th>Origem</th><th>Evento</th><th>ID</th><th>Detalhe</th></tr></thead><tbody>${integrationRows || '<tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`
+          : state.settingsLogTab === "sam"
+            ? `<table><thead><tr><th>Recebido em</th><th>Evento</th><th>Unidade</th><th>E-mail</th><th>Telefone</th><th>Status</th><th>Lead</th><th>Detalhe</th><th>Ações</th></tr></thead><tbody>${samRows || '<tr><td colspan="9" class="empty">Nenhum evento SAM encontrado.</td></tr>'}</tbody></table>`
           : state.settingsLogTab === "fup"
             ? `<table><thead><tr><th>Data</th><th>Lead</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr></thead><tbody>${fupRows || '<tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`
           : `<table><thead><tr><th>Data</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr></thead><tbody>${auditRows || '<tr><td colspan="4" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`}
@@ -3248,6 +3302,48 @@ function renderLogSettings() {
       setButtonBusy(button, false);
       alert(error.message);
     }
+  });
+  bindSettingsActionMenus();
+  document.querySelectorAll("[data-open-sam-lead]").forEach((button) => {
+    button.addEventListener("click", () => routeTo("lead", button.dataset.openSamLead));
+  });
+  document.querySelectorAll("[data-sam-link]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Vincular este evento ao lead encontrado e aplicar a atualização de status?")) return;
+      try {
+        await api(`/api/sam-events/${encodeURIComponent(button.dataset.samLink)}/link`, { method: "POST", body: JSON.stringify({}) });
+        await loadState();
+        renderLogSettings();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+  });
+  document.querySelectorAll("[data-sam-find]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const search = prompt("Digite ID, nome, e-mail ou telefone do lead para vincular:");
+      if (!search) return;
+      try {
+        await api(`/api/sam-events/${encodeURIComponent(button.dataset.samFind)}/link`, { method: "POST", body: JSON.stringify({ search }) });
+        await loadState();
+        renderLogSettings();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+  });
+  document.querySelectorAll("[data-sam-ignore]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const reason = prompt("Motivo para ignorar este evento:", "");
+      if (reason === null) return;
+      try {
+        await api(`/api/sam-events/${encodeURIComponent(button.dataset.samIgnore)}/ignore`, { method: "POST", body: JSON.stringify({ reason }) });
+        await loadState();
+        renderLogSettings();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
   });
 }
 
