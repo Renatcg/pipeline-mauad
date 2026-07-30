@@ -3995,6 +3995,7 @@ function structuredDbLabel(key) {
     auditLogs: "Logs de auditoria",
     integrationLogs: "Eventos de integração",
     fupLeadLogs: "FUP Lead",
+    samEvents: "Eventos SAM",
     levSales: "Vendas Lev",
     levReceipts: "Recebimentos Lev",
     knowledgeArticles: "Tutoriais"

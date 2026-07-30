@@ -2503,10 +2503,11 @@ function send(res, status, body, headers = {}) {
 
 function sendJson(res, status, body, headers = {}) {
   send(res, status, body, { "Content-Type": "application/json; charset=utf-8", ...headers });
+  return true;
 }
 
 function notFound(res) {
-  sendJson(res, 404, { error: "Não encontrado" });
+  return sendJson(res, 404, { error: "Não encontrado" });
 }
 
 function signSession(payload) {
@@ -2872,6 +2873,10 @@ function normalizeManualLeadPayload(db, body) {
 }
 
 function samStatusToPipelineStatus(db, status) {
+  return samStatusToPipelineStatusFromList(db.pipelineStatuses || [], status);
+}
+
+function samStatusToPipelineStatusFromList(pipelineStatuses, status) {
   const raw = String(status || "").trim();
   const normalized = normalizeComparableText(raw).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   const aliases = {
@@ -2891,7 +2896,7 @@ function samStatusToPipelineStatus(db, status) {
   };
   const desired = aliases[normalized] || raw;
   const desiredComparable = normalizeComparableText(desired);
-  return (db.pipelineStatuses || []).find((item) => normalizeComparableText(item) === desiredComparable) || desired;
+  return (pipelineStatuses || []).find((item) => normalizeComparableText(item) === desiredComparable) || desired;
 }
 
 function isDuplicateSamEvent(db, eventId) {
@@ -3733,6 +3738,10 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_audit_logs (id text PRIMARY KEY, at timestamptz, actor text, actor_name text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_integration_logs (id text PRIMARY KEY, at timestamptz, provider text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_fup_lead_logs (id text PRIMARY KEY, at timestamptz, lead_id text, lead_name text, actor text, actor_name text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_sam_events (id text PRIMARY KEY, event_id text, event_type text, event_datetime text, email text, phone text, unit text, next_status text, status text, lead_id text, lead_name text, created_at timestamptz, resolved_at timestamptz, resolved_by text, payload jsonb NOT NULL)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS crm_sam_events_event_id_idx ON crm_sam_events (event_id) WHERE event_id IS NOT NULL AND event_id <> ''`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_sam_events_status_idx ON crm_sam_events (status)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_sam_events_created_idx ON crm_sam_events (created_at DESC)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_knowledge_articles (id text PRIMARY KEY, title text, category text, published boolean NOT NULL DEFAULT false, updated_at timestamptz, payload jsonb NOT NULL)`;
@@ -3741,7 +3750,7 @@ async function ensureStructuredSchema(sql) {
 const STRUCTURED_TABLES = [
   "crm_lead_comments", "crm_lead_tags", "crm_lead_favorites", "crm_permissions", "crm_meta_forms",
   "crm_pipeline_statuses", "crm_projects", "crm_base_sources", "crm_audit_logs", "crm_integration_logs",
-  "crm_fup_lead_logs", "crm_lev_sales", "crm_lev_receipts", "crm_knowledge_articles", "crm_leads", "crm_users"
+  "crm_fup_lead_logs", "crm_sam_events", "crm_lev_sales", "crm_lev_receipts", "crm_knowledge_articles", "crm_leads", "crm_users"
 ];
 
 const STRUCTURED_DATASETS = [
@@ -3758,6 +3767,7 @@ const STRUCTURED_DATASETS = [
   { key: "auditLogs", tables: ["crm_audit_logs"] },
   { key: "integrationLogs", tables: ["crm_integration_logs"] },
   { key: "fupLeadLogs", tables: ["crm_fup_lead_logs"] },
+  { key: "samEvents", tables: ["crm_sam_events"] },
   { key: "levSales", tables: ["crm_lev_sales"] },
   { key: "levReceipts", tables: ["crm_lev_receipts"] },
   { key: "knowledgeArticles", tables: ["crm_knowledge_articles"] }
@@ -3783,6 +3793,7 @@ async function clearStructuredTable(sql, table) {
   if (table === "crm_audit_logs") return sql`DELETE FROM crm_audit_logs`;
   if (table === "crm_integration_logs") return sql`DELETE FROM crm_integration_logs`;
   if (table === "crm_fup_lead_logs") return sql`DELETE FROM crm_fup_lead_logs`;
+  if (table === "crm_sam_events") return sql`DELETE FROM crm_sam_events`;
   if (table === "crm_lev_sales") return sql`DELETE FROM crm_lev_sales`;
   if (table === "crm_lev_receipts") return sql`DELETE FROM crm_lev_receipts`;
   if (table === "crm_knowledge_articles") return sql`DELETE FROM crm_knowledge_articles`;
@@ -3814,6 +3825,7 @@ async function countStructuredTable(sql, table) {
   if (table === "crm_audit_logs") return (await sql`SELECT COUNT(*)::int AS count FROM crm_audit_logs`)[0]?.count || 0;
   if (table === "crm_integration_logs") return (await sql`SELECT COUNT(*)::int AS count FROM crm_integration_logs`)[0]?.count || 0;
   if (table === "crm_fup_lead_logs") return (await sql`SELECT COUNT(*)::int AS count FROM crm_fup_lead_logs`)[0]?.count || 0;
+  if (table === "crm_sam_events") return (await sql`SELECT COUNT(*)::int AS count FROM crm_sam_events`)[0]?.count || 0;
   if (table === "crm_lev_sales") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_sales`)[0]?.count || 0;
   if (table === "crm_lev_receipts") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_receipts`)[0]?.count || 0;
   if (table === "crm_knowledge_articles") return (await sql`SELECT COUNT(*)::int AS count FROM crm_knowledge_articles`)[0]?.count || 0;
@@ -3888,6 +3900,192 @@ async function mirrorStructuredFupLeadLog(entry) {
   } catch (error) {
     mirrorStructuredError("fup", error);
   }
+}
+
+function samEventFromRow(row) {
+  const payload = row?.payload || {};
+  return {
+    ...payload,
+    id: row.id || payload.id,
+    eventId: row.event_id || payload.eventId || "",
+    eventType: row.event_type || payload.eventType || "",
+    eventDatetime: row.event_datetime || payload.eventDatetime || "",
+    email: row.email || payload.email || "",
+    phone: row.phone || payload.phone || "",
+    unit: row.unit || payload.unit || "",
+    nextStatus: row.next_status || payload.nextStatus || "",
+    status: row.status || payload.status || "",
+    leadId: row.lead_id || payload.leadId || "",
+    leadName: row.lead_name || payload.leadName || "",
+    createdAt: row.created_at || payload.createdAt || "",
+    resolvedAt: row.resolved_at || payload.resolvedAt || "",
+    resolvedBy: row.resolved_by || payload.resolvedBy || ""
+  };
+}
+
+async function saveStructuredSamEvent(sql, event) {
+  if (!event?.id) return;
+  await sql`INSERT INTO crm_sam_events (id, event_id, event_type, event_datetime, email, phone, unit, next_status, status, lead_id, lead_name, created_at, resolved_at, resolved_by, payload)
+    VALUES (${event.id}, ${event.eventId || ""}, ${event.eventType || ""}, ${event.eventDatetime || ""}, ${event.email || ""}, ${event.phone || ""}, ${event.unit || ""}, ${event.nextStatus || ""}, ${event.status || ""}, ${event.leadId || ""}, ${event.leadName || ""}, ${dbDate(event.createdAt)}, ${dbDate(event.resolvedAt)}, ${event.resolvedBy || ""}, ${JSON.stringify(event)}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET event_id = EXCLUDED.event_id, event_type = EXCLUDED.event_type, event_datetime = EXCLUDED.event_datetime, email = EXCLUDED.email, phone = EXCLUDED.phone, unit = EXCLUDED.unit, next_status = EXCLUDED.next_status, status = EXCLUDED.status, lead_id = EXCLUDED.lead_id, lead_name = EXCLUDED.lead_name, created_at = EXCLUDED.created_at, resolved_at = EXCLUDED.resolved_at, resolved_by = EXCLUDED.resolved_by, payload = EXCLUDED.payload`;
+}
+
+async function structuredSamEventsForState(db) {
+  const fallback = (db.samEvents || []).slice(0, 500);
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return fallback;
+    const rows = await sql`SELECT * FROM crm_sam_events ORDER BY created_at DESC NULLS LAST LIMIT 500`;
+    return rows.map(samEventFromRow).filter((event) => event.id);
+  } catch (error) {
+    mirrorStructuredError("sam-events-state", error);
+    return fallback;
+  }
+}
+
+async function structuredSamEventById(sql, id) {
+  const rows = await sql`SELECT * FROM crm_sam_events WHERE id = ${id} LIMIT 1`;
+  return rows.length ? samEventFromRow(rows[0]) : null;
+}
+
+async function isDuplicateStructuredSamEvent(sql, eventId) {
+  if (!eventId) return false;
+  const rows = await sql`SELECT id FROM crm_sam_events WHERE event_id = ${eventId} LIMIT 1`;
+  if (rows.length) return true;
+  const logRows = await sql`SELECT id FROM crm_integration_logs
+    WHERE provider = 'SAM'
+      AND action IN ('STATUS_UPDATED', 'LEAD_NOT_FOUND', 'UNIT_MISMATCH', 'RECEIVED_MATCHED', 'RECEIVED_UNIT_MISMATCH', 'RECEIVED_NOT_FOUND')
+      AND details->>'eventId' = ${eventId}
+    LIMIT 1`;
+  return Boolean(logRows.length);
+}
+
+async function findStructuredSamLeadCandidate(sql, { email, phone }) {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPhone = normalizePhoneDigits(phone);
+  if (!normalizedEmail && normalizedPhone.length < 8) return null;
+  const phoneSuffix = normalizedPhone.length >= 8 ? normalizedPhone.slice(-8) : "";
+  const rows = await sql`SELECT l.*, false AS favorite, '{}'::text[] AS tags
+    FROM crm_leads l
+    WHERE (${Boolean(normalizedEmail)} AND (lower(l.email) = ${normalizedEmail} OR lower(COALESCE(l.payload->>'assistant', '')) = ${normalizedEmail}))
+      OR (${Boolean(phoneSuffix)} AND (
+        regexp_replace(COALESCE(l.phone, ''), '\\D', '', 'g') = ${normalizedPhone}
+        OR regexp_replace(COALESCE(l.phone, ''), '\\D', '', 'g') LIKE ${`%${phoneSuffix}`}
+      ))
+    ORDER BY l.in_pipeline DESC, l.updated_at DESC NULLS LAST, l.created_at DESC NULLS LAST
+    LIMIT 1`;
+  return rows.length ? structuredLeadFromRow(rows[0], false, []) : null;
+}
+
+async function findStructuredLeadForSamManualLink(sql, search) {
+  const query = String(search || "").trim();
+  if (!query) return null;
+  const normalizedQuery = normalizeComparableText(query);
+  const email = normalizeEmail(query);
+  const phone = normalizePhoneDigits(query);
+  const phoneSuffix = phone.length >= 8 ? phone.slice(-8) : "";
+  const rows = await sql`SELECT l.*, false AS favorite, '{}'::text[] AS tags
+    FROM crm_leads l
+    WHERE l.id = ${query}
+      OR (${Boolean(email)} AND (lower(l.email) = ${email} OR lower(COALESCE(l.payload->>'assistant', '')) = ${email}))
+      OR (${Boolean(phoneSuffix)} AND (
+        regexp_replace(COALESCE(l.phone, ''), '\\D', '', 'g') = ${phone}
+        OR regexp_replace(COALESCE(l.phone, ''), '\\D', '', 'g') LIKE ${`%${phoneSuffix}`}
+      ))
+      OR (${Boolean(normalizedQuery)} AND lower(COALESCE(l.name, '')) LIKE ${`%${String(query).toLowerCase()}%`})
+    ORDER BY l.in_pipeline DESC, l.updated_at DESC NULLS LAST, l.created_at DESC NULLS LAST
+    LIMIT 1`;
+  return rows.length ? structuredLeadFromRow(rows[0], false, []) : null;
+}
+
+async function structuredIntegration(provider, action, details = {}) {
+  const entry = { at: new Date().toISOString(), provider, action, details };
+  await mirrorStructuredIntegrationLog(entry);
+  return entry;
+}
+
+async function processSamWebhookStructured(payload) {
+  const sql = await getSql();
+  if (!sql) throw new Error("Postgres não está configurado neste ambiente.");
+  await ensureStructuredSchema(sql);
+  const eventId = String(payload.event_id || payload.eventId || payload.id || "").trim();
+  const eventType = String(payload.event_type || payload.eventType || payload.status || payload.event || payload.movimento || "").trim();
+  const eventDatetime = String(payload.event_datetime || payload.eventDatetime || "").trim();
+  const email = String(payload.email || "").trim();
+  const phone = String(payload.phone || payload.telefone || "").trim();
+  const unit = normalizeUnitForMatch(payload.unit_code || payload.unitCode || payload.unit || payload.unidade);
+  if (!eventId) return { ok: false, httpStatus: 400, error: "event_id obrigatório" };
+  if (await isDuplicateStructuredSamEvent(sql, eventId)) return { ok: true, status: "duplicate" };
+  if (!eventType) return { ok: false, httpStatus: 400, error: "event_type obrigatório" };
+  if (!email && !phone) return { ok: false, httpStatus: 400, error: "E-mail ou telefone obrigatório" };
+  if (!unit) return { ok: false, httpStatus: 400, error: "Unidade obrigatória" };
+  const [lead, statuses] = await Promise.all([
+    findStructuredSamLeadCandidate(sql, { email, phone }),
+    structuredPipelineStatuses(sql)
+  ]);
+  const nextStatus = samStatusToPipelineStatusFromList(statuses, eventType);
+  const leadUnits = lead ? leadUnitsForMatch(lead) : [];
+  const unitMatches = Boolean(lead && leadUnits.includes(unit));
+  const event = {
+    id: `sam-${crypto.randomUUID()}`,
+    eventId,
+    eventType,
+    eventDatetime,
+    email,
+    phone,
+    unit,
+    nextStatus,
+    status: unitMatches ? "matched" : lead ? "unit_mismatch" : "not_found",
+    leadId: lead?.id || "",
+    leadName: lead?.name || "",
+    leadUnits,
+    createdAt: new Date().toISOString(),
+    resolvedAt: "",
+    resolvedBy: "",
+    resolution: ""
+  };
+  await saveStructuredSamEvent(sql, event);
+  await structuredIntegration("SAM", unitMatches ? "RECEIVED_MATCHED" : lead ? "RECEIVED_UNIT_MISMATCH" : "RECEIVED_NOT_FOUND", {
+    eventId,
+    eventType,
+    eventDatetime,
+    leadId: event.leadId,
+    unit,
+    nextStatus
+  });
+  return {
+    ok: true,
+    status: "pending_review",
+    reason: unitMatches ? "Lead encontrado. Aguardando confirmação no Pipeline." : lead ? "Lead encontrado, mas unidade divergente." : "Lead não encontrado no Pipeline.",
+    sam_event_id: event.id,
+    lead_id: event.leadId || undefined
+  };
+}
+
+async function applyStructuredSamEventToLead(sql, user, event, lead) {
+  const previousStatus = lead.status || "";
+  const statuses = await structuredPipelineStatuses(sql);
+  lead.status = event.nextStatus || samStatusToPipelineStatusFromList(statuses, event.eventType);
+  lead.inPipeline = true;
+  lead.samLastEvent = {
+    eventId: event.eventId,
+    eventType: event.eventType,
+    eventDatetime: event.eventDatetime,
+    unit: event.unit,
+    appliedAt: new Date().toISOString()
+  };
+  lead.updatedAt = lead.samLastEvent.appliedAt;
+  event.status = "linked";
+  event.leadId = lead.id;
+  event.leadName = lead.name || "";
+  event.resolution = "linked";
+  event.resolvedAt = lead.updatedAt;
+  event.resolvedBy = user.username;
+  await saveStructuredLead(sql, lead);
+  await saveStructuredSamEvent(sql, event);
+  await structuredIntegration("SAM", "LINKED_TO_LEAD", { eventId: event.eventId, samEventId: event.id, leadId: lead.id, from: previousStatus, to: lead.status });
+  await structuredFup(user, lead, "SAM_STATUS_LINKED", { eventId: event.eventId, from: previousStatus, to: lead.status });
+  return { previousStatus, nextStatus: lead.status };
 }
 
 async function structuredLogsForState(db) {
@@ -4432,6 +4630,81 @@ async function fastStructuredManualLeadRoutes(req, res, url) {
   }
 }
 
+async function fastStructuredSamWebhook(req, res, url) {
+  if (!DATABASE_URL || req.method !== "POST" || url.pathname !== "/api/webhooks/sam") return false;
+  try {
+    const auth = verifySamJwt(req);
+    if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+    let body;
+    try {
+      body = await readBody(req);
+    } catch {
+      await structuredIntegration("SAM", "INVALID_JSON", {});
+      return sendJson(res, 400, { error: "Payload inválido" });
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      await structuredIntegration("SAM", "INVALID_PAYLOAD_TYPE", { type: Array.isArray(body) ? "array" : typeof body });
+      return sendJson(res, 400, { error: "Payload deve ser um objeto JSON" });
+    }
+    const forbiddenFields = ["cpf", "cnpj", "documento", "document", "nome", "name", "corretor", "broker", "imobiliaria", "imobiliária", "realEstate", "project", "projeto"];
+    const receivedForbidden = forbiddenFields.filter((field) => Object.prototype.hasOwnProperty.call(body, field));
+    if (receivedForbidden.length) {
+      await structuredIntegration("SAM", "FORBIDDEN_FIELDS_REJECTED", { fields: receivedForbidden });
+      return sendJson(res, 400, { error: "Payload contém campos não permitidos", fields: receivedForbidden });
+    }
+    const result = await processSamWebhookStructured(body);
+    const { httpStatus = 200, ...responseBody } = result;
+    return sendJson(res, httpStatus, responseBody);
+  } catch (error) {
+    console.error("SAM_WEBHOOK_STRUCTURED_ERROR", error);
+    try {
+      await structuredIntegration("SAM", "WEBHOOK_PROCESS_ERROR", { error: error.message });
+    } catch (logError) {
+      console.error("SAM_WEBHOOK_STRUCTURED_LOG_ERROR", logError);
+    }
+    return sendJson(res, 500, { error: "Erro interno no webhook SAM", detail: error.message });
+  }
+}
+
+async function fastStructuredSamEventAction(req, res, url) {
+  if (!DATABASE_URL || req.method !== "POST") return false;
+  const match = url.pathname.match(/^\/api\/sam-events\/([^/]+)\/(link|ignore)$/);
+  if (!match) return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchema(sql);
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+    if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const event = await structuredSamEventById(sql, match[1]);
+    if (!event) return notFound(res);
+    if (event.status === "linked" || event.status === "ignored") return sendJson(res, 400, { error: "Evento já tratado" });
+    const body = await readBody(req);
+    if (match[2] === "ignore") {
+      event.status = "ignored";
+      event.resolution = "ignored";
+      event.resolvedAt = new Date().toISOString();
+      event.resolvedBy = user.username;
+      event.ignoreReason = String(body.reason || "").trim();
+      await saveStructuredSamEvent(sql, event);
+      await structuredIntegration("SAM", "IGNORED", { eventId: event.eventId, samEventId: event.id, reason: event.ignoreReason });
+      await structuredAudit(user, "IGNORE_SAM_EVENT", { samEventId: event.id, eventId: event.eventId });
+      return sendJson(res, 200, { samEvent: event });
+    }
+    const lead = body.search
+      ? await findStructuredLeadForSamManualLink(sql, body.search)
+      : await structuredLeadById(sql, body.leadId || event.leadId, user);
+    if (!lead) return sendJson(res, 404, { error: "Lead não encontrado" });
+    const result = await applyStructuredSamEventToLead(sql, user, event, lead);
+    await structuredAudit(user, "LINK_SAM_EVENT", { samEventId: event.id, eventId: event.eventId, leadId: lead.id, from: result.previousStatus, to: result.nextStatus });
+    return sendJson(res, 200, { samEvent: event, lead: publicLead(lead, user) });
+  } catch (error) {
+    console.error("SAM_EVENT_STRUCTURED_ACTION_ERROR", error);
+    return sendJson(res, 500, { error: "Erro ao tratar evento SAM", detail: error.message });
+  }
+}
+
 async function fastStructuredLeadAction(req, res, url) {
   if (!DATABASE_URL || !url.pathname.startsWith("/api/leads/")) return false;
   if (url.pathname === "/api/leads/check-duplicate" || url.pathname === "/api/leads/resolve-manual-duplicate") return false;
@@ -4766,6 +5039,11 @@ async function insertStructuredDataset(sql, db, key) {
       await sql`INSERT INTO crm_fup_lead_logs (id, at, lead_id, lead_name, actor, actor_name, action, details, payload) VALUES (${logRowId("fup", item, index)}, ${dbDate(item.at)}, ${item.leadId || ""}, ${item.leadName || ""}, ${item.actor || ""}, ${item.actorName || ""}, ${item.action || ""}, ${JSON.stringify(item.details || {})}::jsonb, ${JSON.stringify(item)}::jsonb)`;
       summary.fupLeadLogs += 1;
     }
+  } else if (key === "samEvents") {
+    for (const item of db.samEvents || []) {
+      await saveStructuredSamEvent(sql, item);
+      summary.samEvents += 1;
+    }
   } else if (key === "levSales") {
     for (const sale of db.levFinance?.sales || []) {
       await sql`INSERT INTO crm_lev_sales (id, unit, client, signed_at, contract_value, commission_value, realtor_company, status, nf_number, paid_at, payload) VALUES (${sale.id || sale.unit || crypto.randomUUID()}, ${sale.unit || ""}, ${sale.client || ""}, ${dbDate(sale.signedAt)}, ${Number(sale.contractValue || 0)}, ${Number(sale.commissionValue || 0)}, ${sale.realtorCompany || sale.realEstate || ""}, ${sale.status || ""}, ${sale.nfNumber || ""}, ${dbDate(sale.paidAt)}, ${JSON.stringify(sale)}::jsonb)`;
@@ -4827,7 +5105,7 @@ async function syncStructuredDb(db, actor) {
   await ensureStructuredSchema(sql);
   const runId = crypto.randomUUID();
   await sql`INSERT INTO crm_structured_sync_runs (id, status, summary) VALUES (${runId}, 'running', '{}'::jsonb)`;
-  const summary = { users: 0, leads: 0, comments: 0, tags: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, permissions: 0, auditLogs: 0, integrationLogs: 0, fupLeadLogs: 0, levSales: 0, levReceipts: 0, knowledgeArticles: 0 };
+  const summary = { users: 0, leads: 0, comments: 0, tags: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, permissions: 0, auditLogs: 0, integrationLogs: 0, fupLeadLogs: 0, samEvents: 0, levSales: 0, levReceipts: 0, knowledgeArticles: 0 };
   try {
     ensurePermissions(db);
     await clearStructuredTables(sql);
@@ -4888,6 +5166,10 @@ async function syncStructuredDb(db, actor) {
       await sql`INSERT INTO crm_fup_lead_logs (id, at, lead_id, lead_name, actor, actor_name, action, details, payload) VALUES (${logRowId("fup", item, index)}, ${dbDate(item.at)}, ${item.leadId || ""}, ${item.leadName || ""}, ${item.actor || ""}, ${item.actorName || ""}, ${item.action || ""}, ${JSON.stringify(item.details || {})}::jsonb, ${JSON.stringify(item)}::jsonb)`;
       summary.fupLeadLogs += 1;
     }
+    for (const item of db.samEvents || []) {
+      await saveStructuredSamEvent(sql, item);
+      summary.samEvents += 1;
+    }
     for (const sale of db.levFinance?.sales || []) {
       await sql`INSERT INTO crm_lev_sales (id, unit, client, signed_at, contract_value, commission_value, realtor_company, status, nf_number, paid_at, payload) VALUES (${sale.id || sale.unit || crypto.randomUUID()}, ${sale.unit || ""}, ${sale.client || ""}, ${dbDate(sale.signedAt)}, ${Number(sale.contractValue || 0)}, ${Number(sale.commissionValue || 0)}, ${sale.realtorCompany || sale.realEstate || ""}, ${sale.status || ""}, ${sale.nfNumber || ""}, ${dbDate(sale.paidAt)}, ${JSON.stringify(sale)}::jsonb)`;
       summary.levSales += 1;
@@ -4919,7 +5201,7 @@ async function structuredDbDiagnostics(db) {
     tags: await count("crm_lead_tags"), favorites: await count("crm_lead_favorites"), statuses: await count("crm_pipeline_statuses"),
     projects: await count("crm_projects"), baseSources: await count("crm_base_sources"), metaForms: await count("crm_meta_forms"),
     permissions: await count("crm_permissions"), auditLogs: await count("crm_audit_logs"), integrationLogs: await count("crm_integration_logs"),
-    fupLeadLogs: await count("crm_fup_lead_logs"), levSales: await count("crm_lev_sales"), levReceipts: await count("crm_lev_receipts"),
+    fupLeadLogs: await count("crm_fup_lead_logs"), samEvents: await count("crm_sam_events"), levSales: await count("crm_lev_sales"), levReceipts: await count("crm_lev_receipts"),
     knowledgeArticles: await count("crm_knowledge_articles")
   };
   const permissions = ensurePermissions(db);
@@ -4937,6 +5219,7 @@ async function structuredDbDiagnostics(db) {
     auditLogs: (db.auditLog || []).length,
     integrationLogs: (db.integrationLog || []).length,
     fupLeadLogs: (db.fupLeadLog || []).length,
+    samEvents: (db.samEvents || []).length,
     levSales: (db.levFinance?.sales || []).length,
     levReceipts: (db.levFinance?.receipts || []).length,
     knowledgeArticles: (db.knowledgeArticles || []).length
@@ -5122,6 +5405,7 @@ async function routeApi(req, res, db) {
   if (method === "GET" && url.pathname === "/api/state") {
     const structuredLogs = canManageSettings(user) ? await structuredLogsForState(db) : { integrationLog: [], auditLog: [], fupLeadLog: [] };
     const structuredConfig = await structuredConfigForState(db);
+    const structuredSamEvents = canManageSettings(user) ? await structuredSamEventsForState(db) : [];
     return sendJson(res, 200, {
       user: publicUser(user),
       roles: db.roles,
@@ -5145,7 +5429,7 @@ async function routeApi(req, res, db) {
       canCreateKnowledge: canCreateKnowledge(user),
       integrationLog: structuredLogs.integrationLog,
       auditLog: structuredLogs.auditLog,
-      samEvents: canManageSettings(user) ? (db.samEvents || []).slice(0, 500) : [],
+      samEvents: structuredSamEvents,
       accessLog: canManageSettings(user) ? db.accessLog.slice(0, 100) : [],
       fupLeadLog: structuredLogs.fupLeadLog,
       dataSources: {
@@ -6435,6 +6719,8 @@ async function handleRequest(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (await fastStructuredLeadsResponse(req, res, url)) return;
     if (await fastStructuredManualLeadRoutes(req, res, url)) return;
+    if (await fastStructuredSamWebhook(req, res, url)) return;
+    if (await fastStructuredSamEventAction(req, res, url)) return;
     if (await fastStructuredLeadAction(req, res, url)) return;
     try {
       const db = await loadDb();
