@@ -823,6 +823,7 @@ const META_APP_SECRET = process.env.META_APP_SECRET || "";
 const META_PAGE_ACCESS_TOKEN = process.env.META_PAGE_ACCESS_TOKEN || "";
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 const META_DEFAULT_ASSIGNED_TO = process.env.META_DEFAULT_ASSIGNED_TO || "";
+const SAM_WEBHOOK_SECRET = process.env.SAM_WEBHOOK_SECRET || "";
 const APP_SCHEMA_VERSION = 2026072903;
 const DB_CACHE_TTL_MS = 3000;
 let sqlClientPromise = null;
@@ -2525,6 +2526,29 @@ function readSession(req) {
   return payload;
 }
 
+function verifySamJwt(req) {
+  if (!SAM_WEBHOOK_SECRET) return { ok: false, status: 500, error: "SAM_WEBHOOK_SECRET ausente" };
+  const auth = String(req.headers.authorization || "");
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (!token) return { ok: false, status: 401, error: "Token ausente" };
+  const parts = token.split(".");
+  if (parts.length !== 3) return { ok: false, status: 401, error: "JWT inválido" };
+  let header;
+  let payload;
+  try {
+    header = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
+    payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  } catch {
+    return { ok: false, status: 401, error: "JWT inválido" };
+  }
+  if (header.alg !== "HS256") return { ok: false, status: 401, error: "Algoritmo JWT inválido" };
+  const expected = crypto.createHmac("sha256", SAM_WEBHOOK_SECRET).update(`${parts[0]}.${parts[1]}`).digest("base64url");
+  if (Buffer.byteLength(parts[2]) !== Buffer.byteLength(expected)) return { ok: false, status: 401, error: "Assinatura inválida" };
+  if (!crypto.timingSafeEqual(Buffer.from(parts[2]), Buffer.from(expected))) return { ok: false, status: 401, error: "Assinatura inválida" };
+  if (payload.exp && Number(payload.exp) * 1000 < Date.now()) return { ok: false, status: 401, error: "JWT expirado" };
+  return { ok: true, payload };
+}
+
 function publicUser(user) {
   const { passwordHash, passwordSetup, ...safe } = user;
   return {
@@ -2771,6 +2795,10 @@ function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function normalizeUnitForMatch(value) {
+  return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 function leadEmailsForMatch(lead) {
   return [lead.email, String(lead.assistant || "").includes("@") ? lead.assistant : ""]
     .map(normalizeEmail)
@@ -2834,6 +2862,105 @@ function normalizeManualLeadPayload(db, body) {
       impactedBySocial: String(body.impactedBySocial || "").trim()
     }
   };
+}
+
+function samStatusToPipelineStatus(db, status) {
+  const raw = String(status || "").trim();
+  const normalized = normalizeComparableText(raw).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const aliases = {
+    reserva: "Reservado",
+    reservado: "Reservado",
+    contrato_emitido: "Contrato Emitido",
+    emissao_de_contrato: "Contrato Emitido",
+    contrato_100_assinado: "Contrato Assinado",
+    contrato_assinado: "Contrato Assinado",
+    venda_finalizada: "Contrato Assinado",
+    boleto_pago: "Boleto Pago",
+    pago: "Boleto Pago"
+  };
+  const desired = aliases[normalized] || raw;
+  const desiredComparable = normalizeComparableText(desired);
+  return (db.pipelineStatuses || []).find((item) => normalizeComparableText(item) === desiredComparable) || desired;
+}
+
+function leadUnitsForMatch(lead) {
+  return [lead.unit, lead.unidade, lead.desiredUnit, lead.meta?.unit]
+    .map(normalizeUnitForMatch)
+    .filter(Boolean);
+}
+
+function findSamLeadCandidate(db, { email, phone }) {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPhone = normalizePhoneDigits(phone);
+  return (db.leads || []).find((lead) => {
+    if (normalizedEmail && leadEmailsForMatch(lead).includes(normalizedEmail)) return true;
+    if (normalizedPhone.length >= 8) {
+      return leadPhonesForMatch(lead).some((leadPhone) => leadPhone === normalizedPhone || leadPhone.endsWith(normalizedPhone) || normalizedPhone.endsWith(leadPhone));
+    }
+    return false;
+  }) || null;
+}
+
+async function notifySamMismatch(db, subject, details) {
+  const recipients = (db.users || [])
+    .filter((user) => user.active && ["Admin TI", "Head Comercial"].includes(user.role) && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user.username))
+    .map((user) => user.username);
+  if (!recipients.length) return { sent: false, reason: "Sem destinatários" };
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;color:#17202a">
+      <h1 style="font-size:20px">${escapeHtml(subject)}</h1>
+      <p>O SAM enviou uma atualização que precisa de conferência no Pipeline Comercial.</p>
+      <table style="border-collapse:collapse;width:100%;font-size:14px">
+        ${Object.entries(details).map(([key, value]) => `
+          <tr>
+            <td style="border:1px solid #d9e0e7;padding:8px;font-weight:700">${escapeHtml(key)}</td>
+            <td style="border:1px solid #d9e0e7;padding:8px">${escapeHtml(String(value || "-"))}</td>
+          </tr>
+        `).join("")}
+      </table>
+    </div>
+  `;
+  return sendEmail(recipients, subject, html);
+}
+
+async function processSamWebhook(db, payload) {
+  const eventId = String(payload.event_id || payload.eventId || payload.id || "").trim();
+  const email = String(payload.email || "").trim();
+  const phone = String(payload.phone || payload.telefone || "").trim();
+  const unit = normalizeUnitForMatch(payload.unit || payload.unidade);
+  const status = String(payload.status || payload.event || payload.movimento || "").trim();
+  if (!status) return { ok: false, status: 400, error: "Status obrigatório" };
+  if (!email && !phone) return { ok: false, status: 400, error: "E-mail ou telefone obrigatório" };
+  if (!unit) return { ok: false, status: 400, error: "Unidade obrigatória" };
+  const lead = findSamLeadCandidate(db, { email, phone });
+  if (!lead) {
+    integrationEvent(db, "SAM", "LEAD_NOT_FOUND", { eventId, email, phone: normalizePhoneDigits(phone), unit, status });
+    const notification = await notifySamMismatch(db, "SAM: lead não encontrado no Pipeline", { eventId, email, phone, unidade: unit, status });
+    integrationEvent(db, "SAM", notification.sent ? "LEAD_NOT_FOUND_EMAIL_SENT" : "LEAD_NOT_FOUND_EMAIL_FAILED", { eventId, reason: notification.reason || "" });
+    return { ok: true, action: "not_found" };
+  }
+  const leadUnits = leadUnitsForMatch(lead);
+  if (!leadUnits.includes(unit)) {
+    integrationEvent(db, "SAM", "UNIT_MISMATCH", { eventId, leadId: lead.id, email, phone: normalizePhoneDigits(phone), unit, leadUnits, status });
+    const notification = await notifySamMismatch(db, "SAM: unidade não confere com o Pipeline", { eventId, leadId: lead.id, email, phone, unidadeRecebida: unit, unidadesNoPipeline: leadUnits.join(", "), status });
+    integrationEvent(db, "SAM", notification.sent ? "UNIT_MISMATCH_EMAIL_SENT" : "UNIT_MISMATCH_EMAIL_FAILED", { eventId, leadId: lead.id, reason: notification.reason || "" });
+    return { ok: true, action: "unit_mismatch", leadId: lead.id };
+  }
+  const previousStatus = lead.status || "";
+  const nextStatus = samStatusToPipelineStatus(db, status);
+  lead.status = nextStatus;
+  lead.inPipeline = true;
+  lead.samLastEvent = {
+    eventId,
+    status,
+    unit,
+    receivedAt: new Date().toISOString()
+  };
+  lead.updatedAt = lead.samLastEvent.receivedAt;
+  integrationEvent(db, "SAM", "STATUS_UPDATED", { eventId, leadId: lead.id, unit, from: previousStatus, to: nextStatus });
+  fupLeadEvent(db, { id: "sam", username: "sam-webhook", name: "SAM" }, lead, "SAM_STATUS_UPDATED", { eventId, unit, from: previousStatus, to: nextStatus });
+  await mirrorStructuredLead(lead);
+  return { ok: true, action: "updated", leadId: lead.id, from: previousStatus, to: nextStatus };
 }
 
 function normalizeKnowledgePayload(body, current = {}) {
@@ -4657,6 +4784,29 @@ async function routeApi(req, res, db) {
       await saveDb(db);
       return sendJson(res, 400, { error: error.message });
     }
+  }
+
+  if (method === "POST" && url.pathname === "/api/webhooks/sam") {
+    const auth = verifySamJwt(req);
+    if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+    let body;
+    try {
+      body = await readBody(req);
+    } catch {
+      integrationEvent(db, "SAM", "INVALID_JSON", {});
+      await saveDb(db);
+      return sendJson(res, 400, { error: "Payload inválido" });
+    }
+    const forbiddenFields = ["cpf", "cnpj", "documento", "document", "nome", "name", "corretor", "broker", "imobiliaria", "imobiliária", "realEstate", "project", "projeto"];
+    const receivedForbidden = forbiddenFields.filter((field) => Object.prototype.hasOwnProperty.call(body, field));
+    if (receivedForbidden.length) {
+      integrationEvent(db, "SAM", "FORBIDDEN_FIELDS_REJECTED", { fields: receivedForbidden });
+      await saveDb(db);
+      return sendJson(res, 400, { error: "Payload contém campos não permitidos", fields: receivedForbidden });
+    }
+    const result = await processSamWebhook(db, body);
+    await saveDb(db);
+    return sendJson(res, result.status || 200, result);
   }
 
   if (method === "POST" && url.pathname === "/api/login") {
