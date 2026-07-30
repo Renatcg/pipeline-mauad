@@ -3910,6 +3910,40 @@ async function activeStructuredBroker(sql, userId) {
   return user && isAssignableBroker(user) ? user : null;
 }
 
+async function firstStructuredPipelineStatus(sql) {
+  const rows = await sql`SELECT status FROM crm_pipeline_statuses ORDER BY position ASC, status ASC LIMIT 1`;
+  return rows[0]?.status || "";
+}
+
+async function structuredPermissionForUser(sql, user, resourceId) {
+  if (user.role === "Admin TI") return permissionCell(true, true);
+  const userRows = await sql`SELECT can_access, can_act FROM crm_permissions WHERE owner_type = 'user' AND owner_id = ${user.id} AND resource_id = ${resourceId} LIMIT 1`;
+  if (userRows.length) return permissionCell(userRows[0].can_access, userRows[0].can_act);
+  const roleRows = await sql`SELECT can_access, can_act FROM crm_permissions WHERE owner_type = 'role' AND owner_id = ${user.role} AND resource_id = ${resourceId} LIMIT 1`;
+  if (roleRows.length) return permissionCell(roleRows[0].can_access, roleRows[0].can_act);
+  return permissionCell(false, false);
+}
+
+async function structuredCanAccessBaseLead(sql, user, lead) {
+  if (!isAvailableBaseLead(lead) && lead.source !== "META") return false;
+  const sources = baseSourcesForLead(lead);
+  if (!sources.length) return false;
+  for (const source of sources) {
+    const permission = await structuredPermissionForUser(sql, user, basePermissionId(source));
+    if (permission.access) return true;
+  }
+  return false;
+}
+
+async function structuredCanActBaseLead(sql, user, lead) {
+  if (!(await structuredCanAccessBaseLead(sql, user, lead))) return false;
+  for (const source of baseSourcesForLead(lead)) {
+    const permission = await structuredPermissionForUser(sql, user, basePermissionId(source));
+    if (permission.action) return true;
+  }
+  return false;
+}
+
 async function fastStructuredLeadsResponse(req, res, url) {
   if (!DATABASE_URL || req.method !== "GET" || url.pathname !== "/api/leads") return false;
   const requestedScope = String(url.searchParams.get("scope") || "all");
@@ -4039,20 +4073,67 @@ async function fastStructuredLeadsResponse(req, res, url) {
 async function fastStructuredLeadAction(req, res, url) {
   if (!DATABASE_URL || !url.pathname.startsWith("/api/leads/")) return false;
   const leadMatch = url.pathname.match(/^\/api\/leads\/([^/]+)$/);
+  const rescueMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rescue$/);
+  const rollbackMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rollback$/);
   const commentMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments$/);
   const commentDeleteMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments\/([^/]+)$/);
-  if (!leadMatch && !commentMatch && !commentDeleteMatch) return false;
+  if (!leadMatch && !rescueMatch && !rollbackMatch && !commentMatch && !commentDeleteMatch) return false;
   try {
     const sql = await getSql();
     if (!sql) return false;
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
-    const leadId = decodeURIComponent(leadMatch?.[1] || commentMatch?.[1] || commentDeleteMatch?.[1] || "");
+    const leadId = decodeURIComponent(leadMatch?.[1] || rescueMatch?.[1] || rollbackMatch?.[1] || commentMatch?.[1] || commentDeleteMatch?.[1] || "");
     const lead = await structuredLeadById(sql, leadId, user);
     if (!lead) {
       notFound(res);
       return true;
     }
+
+    if (rescueMatch && req.method === "POST") {
+      if (!canManageLeads(user) && user.role !== "Corretor") return sendJson(res, 403, { error: "Sem permissão" });
+      if (!(await structuredCanActBaseLead(sql, user, lead))) return sendJson(res, 403, { error: "Sem permissão para resgatar este lead" });
+      if (lead.inPipeline) return sendJson(res, 400, { error: "Este lead já está no pipeline" });
+      const firstStatus = await firstStructuredPipelineStatus(sql);
+      if (!firstStatus) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de resgatar leads" });
+      rememberLeadBaseOrigin(lead);
+      const body = await readBody(req);
+      lead.inPipeline = true;
+      lead.status = firstStatus;
+      if (user.role === "Corretor" || (canOperateAsBroker(user) && body.assignToSelf)) {
+        lead.assignedTo = user.id;
+        lead.assignedName = user.name;
+      }
+      lead.order = Date.now();
+      lead.rescuedAt = new Date().toISOString();
+      lead.updatedAt = lead.rescuedAt;
+      await saveStructuredLead(sql, lead);
+      await structuredAudit(user, "RESCUE_BASE_LEAD", { leadId: lead.id, source: lead.source });
+      await structuredFup(user, lead, "RESCUE_BASE_LEAD", { source: lead.source, assignedTo: lead.assignedName || "" });
+      return sendJson(res, 200, { lead: publicLead(lead, user), dataSources: { action: "structured" } });
+    }
+
+    if (rollbackMatch && req.method === "POST") {
+      if (!canManageLeads(user) && !(user.role === "Corretor" && lead.assignedTo === user.id)) return sendJson(res, 403, { error: "Sem permissão" });
+      if (!lead.inPipeline) return sendJson(res, 400, { error: "Este lead já está apenas na base" });
+      const pipelineSource = lead.source || "";
+      const previousSource = lead.baseSourceBeforePipeline || lead.previousPipelineSource || lead.source || "Pipeline GDrive";
+      const previousStatus = lead.baseStatusBeforePipeline || lead.sourceStatus || lead.odysseiaStatus || lead.status || "Base";
+      lead.inPipeline = false;
+      lead.source = previousSource;
+      lead.sourceStatus = previousStatus;
+      lead.previousPipelineSource = pipelineSource;
+      lead.status = previousStatus;
+      lead.assignedTo = null;
+      lead.assignedName = "";
+      lead.rolledBackAt = new Date().toISOString();
+      lead.updatedAt = lead.rolledBackAt;
+      await saveStructuredLead(sql, lead);
+      await structuredAudit(user, "ROLLBACK_BASE_LEAD", { leadId: lead.id, source: lead.source, previousSource });
+      await structuredFup(user, lead, "ROLLBACK_BASE_LEAD", { source: lead.source, previousSource });
+      return sendJson(res, 200, { lead: publicLead(lead, user), dataSources: { action: "structured" } });
+    }
+
     if (!canAccessStructuredLead(user, lead)) return false;
 
     if (leadMatch && req.method === "GET") {
