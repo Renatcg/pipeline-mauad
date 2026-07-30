@@ -360,13 +360,13 @@ textarea {
 
 .permission-matrix td,
 .permission-matrix th {
-  padding-top: 7px;
-  padding-bottom: 7px;
+  padding-top: 5px;
+  padding-bottom: 5px;
 }
 
 .permission-cell {
   display: grid;
-  gap: 3px;
+  gap: 0;
   min-width: 88px;
 }
 
