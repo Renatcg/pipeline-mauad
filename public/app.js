@@ -3788,6 +3788,29 @@ function structuredDbLabel(key) {
   }[key] || key;
 }
 
+function structuredDbRunLabel(run) {
+  if (!run) return '<span class="muted">Nunca</span>';
+  const when = run.finished_at || run.finishedAt || run.started_at || run.startedAt;
+  const status = run.status === "success" ? "OK" : run.status === "reset" ? "Reiniciado" : run.status || "running";
+  const statusClass = run.status === "success" || run.status === "reset" ? "status-active" : "chip-warning";
+  const summary = run.summary || {};
+  const remaining = Number(summary.remaining || 0);
+  return `
+    <span class="chip ${statusClass}">${escapeHtml(status)}</span>
+    <small class="structured-run-date">${when ? escapeHtml(new Date(when).toLocaleString("pt-BR")) : ""}</small>
+    ${remaining > 0 ? `<small class="structured-run-date">Faltam ${remaining.toLocaleString("pt-BR")}</small>` : ""}
+    ${run.error ? `<small class="structured-run-error">${escapeHtml(run.error)}</small>` : ""}
+  `;
+}
+
+function structuredDbLatestLabel(run) {
+  if (!run) return "Ainda não executada";
+  const when = run.finished_at || run.finishedAt || run.started_at || run.startedAt;
+  const isStaleRunning = run.status === "running" && when && Date.now() - new Date(when).getTime() > 5 * 60 * 1000;
+  const status = isStaleRunning ? "interrompida" : run.status;
+  return `${status} · ${when ? new Date(when).toLocaleString("pt-BR") : ""}`;
+}
+
 function renderStructuredDbSettings() {
   const diagnostics = state.structuredDbDiagnostics;
   const latest = diagnostics?.latestRun;
@@ -3797,6 +3820,13 @@ function renderStructuredDbSettings() {
       <td>${Number(item.json || 0).toLocaleString("pt-BR")}</td>
       <td>${Number(item.structured || 0).toLocaleString("pt-BR")}</td>
       <td><span class="chip ${item.ok ? "status-active" : "chip-warning"}">${item.ok ? "OK" : "Divergente"}</span></td>
+      <td>${structuredDbRunLabel(diagnostics?.latestRuns?.[item.key])}</td>
+      <td>
+        <div class="row-actions">
+          <button class="compact-button structured-reset" type="button" data-dataset="${escapeHtml(item.key)}">Reiniciar</button>
+          <button class="compact-button primary structured-sync" type="button" data-dataset="${escapeHtml(item.key)}">Sincronizar</button>
+        </div>
+      </td>
     </tr>
   `).join("");
   settingsLayout(`
@@ -3805,20 +3835,19 @@ function renderStructuredDbSettings() {
         <h2>Banco estruturado</h2>
         <div class="row-actions">
           <button type="button" id="diagnoseStructuredDb">Diagnosticar</button>
-          <button class="primary" type="button" id="syncStructuredDb">Sincronizar agora</button>
         </div>
       </div>
       ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
       <p class="muted-copy">Fase 1 da migração: cria e popula tabelas Postgres paralelas sem alterar o JSON atual, que continua sendo a fonte oficial do sistema.</p>
       <div class="info-card">
-        <strong>Última sincronização</strong>
-        <span>${latest ? `${escapeHtml(latest.status)} · ${escapeHtml(new Date(latest.started_at || latest.startedAt).toLocaleString("pt-BR"))}` : "Ainda não executada"}</span>
+        <strong>Última atividade geral</strong>
+        <span>${escapeHtml(structuredDbLatestLabel(latest))}</span>
         ${latest?.error ? `<small>${escapeHtml(latest.error)}</small>` : ""}
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Dados</th><th>JSON atual</th><th>Banco estruturado</th><th>Status</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="4" class="empty">Clique em Diagnosticar para comparar os dados.</td></tr>'}</tbody>
+          <thead><tr><th>Dados</th><th>JSON atual</th><th>Banco estruturado</th><th>Status</th><th>Última sincronização</th><th>Ações</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="6" class="empty">Clique em Diagnosticar para comparar os dados.</td></tr>'}</tbody>
         </table>
       </div>
     </section>
@@ -3837,20 +3866,39 @@ function renderStructuredDbSettings() {
       alert(error.message);
     }
   });
-  document.querySelector("#syncStructuredDb")?.addEventListener("click", async (event) => {
-    if (!confirm("Sincronizar o banco estruturado agora? O JSON atual continuará funcionando normalmente.")) return;
+  document.querySelectorAll(".structured-sync").forEach((button) => button.addEventListener("click", async (event) => {
+    const dataset = event.currentTarget.dataset.dataset;
+    if (!confirm(`Sincronizar ${structuredDbLabel(dataset)} agora?`)) return;
     const button = event.currentTarget;
     try {
       setButtonBusy(button, true, "Sincronizando...");
-      const data = await api("/api/structured-db/sync", { method: "POST" });
+      const data = await api("/api/structured-db/sync", { method: "POST", body: JSON.stringify({ dataset }) });
       state.structuredDbDiagnostics = data.diagnostics;
-      state.settingsNotice = "Banco estruturado sincronizado.";
+      const remaining = Number(data.summary?.remaining || 0);
+      state.settingsNotice = remaining > 0
+        ? `${structuredDbLabel(dataset)} sincronizado parcialmente. Ainda faltam ${remaining.toLocaleString("pt-BR")} registro(s); clique em Sincronizar novamente para continuar.`
+        : `${structuredDbLabel(dataset)} sincronizado.`;
       renderSettings();
     } catch (error) {
       setButtonBusy(button, false);
       alert(error.message);
     }
-  });
+  }));
+  document.querySelectorAll(".structured-reset").forEach((button) => button.addEventListener("click", async (event) => {
+    const dataset = event.currentTarget.dataset.dataset;
+    if (!confirm(`Reiniciar ${structuredDbLabel(dataset)}? Isso zera apenas essa tabela estruturada, sem mexer no JSON atual.`)) return;
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Reiniciando...");
+      const data = await api("/api/structured-db/reset", { method: "POST", body: JSON.stringify({ dataset }) });
+      state.structuredDbDiagnostics = data.diagnostics;
+      state.settingsNotice = `${structuredDbLabel(dataset)} reiniciado.`;
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  }));
 }
 
 function levStatusKey(value) {
