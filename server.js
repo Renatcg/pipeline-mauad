@@ -3826,6 +3826,90 @@ function publicStructuredLeadSummary(row, user) {
   return publicLeadSummary(lead, user);
 }
 
+function structuredLeadFromRow(row, favorite = false, tags = []) {
+  const payload = row?.payload || {};
+  const lead = {
+    ...payload,
+    id: row.id || payload.id,
+    name: row.name || payload.name || "",
+    email: row.email || payload.email || "",
+    phone: row.phone || payload.phone || "",
+    source: row.source || payload.source || "",
+    status: row.status || payload.status || "",
+    inPipeline: Boolean(row.in_pipeline ?? payload.inPipeline),
+    assignedTo: row.assigned_to || payload.assignedTo || "",
+    assignedName: row.assigned_name || payload.assignedName || "",
+    project: row.project || payload.project || payload.empreendimento || payload.desiredProject || "",
+    unit: row.unit || payload.unit || payload.unidade || payload.desiredUnit || "",
+    unitValue: row.unit_value || payload.unitValue || payload.valorUnidade || "",
+    baseSourceBeforePipeline: row.base_source_before_pipeline || payload.baseSourceBeforePipeline || "",
+    previousPipelineSource: row.previous_pipeline_source || payload.previousPipelineSource || "",
+    createdAt: row.created_at || payload.createdAt || payload.meta?.createdTime || "",
+    updatedAt: row.updated_at || payload.updatedAt || "",
+    tags: Array.isArray(tags) ? tags.filter(Boolean) : (payload.tags || payload.tagIds || []),
+    favorite: Boolean(favorite),
+    favoritesByUser: { ...(payload.favoritesByUser || {}) }
+  };
+  lead.favoritesByUser = { ...lead.favoritesByUser };
+  return lead;
+}
+
+async function structuredLeadById(sql, leadId, user) {
+  const rows = await sql`SELECT l.*, COALESCE(f.favorite, false) AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
+    FROM crm_leads l
+    LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
+    LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
+    WHERE l.id = ${leadId}
+    GROUP BY l.id, f.favorite
+    LIMIT 1`;
+  if (!rows.length) return null;
+  const commentRows = await sql`SELECT payload FROM crm_lead_comments WHERE lead_id = ${leadId} ORDER BY created_at DESC NULLS LAST`;
+  const lead = structuredLeadFromRow(rows[0], rows[0].favorite, rows[0].tags);
+  lead.comments = commentRows.map((row) => row.payload || {}).filter((comment) => comment.id);
+  lead.favoritesByUser[user.id] = Boolean(rows[0].favorite);
+  return lead;
+}
+
+async function saveStructuredLead(sql, lead) {
+  await sql`INSERT INTO crm_leads (id, name, email, phone, source, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload)
+    VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${lead.source || ""}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${lead.project || lead.empreendimento || lead.desiredProject || ""}, ${lead.unit || lead.unidade || lead.desiredUnit || ""}, ${lead.unitValue || lead.valorUnidade || ""}, ${lead.baseSourceBeforePipeline || ""}, ${lead.previousPipelineSource || ""}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, source = EXCLUDED.source, status = EXCLUDED.status, in_pipeline = EXCLUDED.in_pipeline, assigned_to = EXCLUDED.assigned_to, assigned_name = EXCLUDED.assigned_name, project = EXCLUDED.project, unit = EXCLUDED.unit, unit_value = EXCLUDED.unit_value, base_source_before_pipeline = EXCLUDED.base_source_before_pipeline, previous_pipeline_source = EXCLUDED.previous_pipeline_source, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
+}
+
+async function structuredAudit(actor, action, details) {
+  await mirrorStructuredAuditLog({ at: new Date().toISOString(), actor: actor.username, actorName: actor.name, action, details });
+}
+
+async function structuredFup(actor, lead, action, details = {}) {
+  await mirrorStructuredFupLeadLog({
+    at: new Date().toISOString(),
+    actor: actor.username,
+    actorName: actor.name,
+    userId: actor.id,
+    leadId: lead.id,
+    leadName: lead.name || "",
+    action,
+    details
+  });
+}
+
+function canAccessStructuredLead(user, lead) {
+  if (!lead) return false;
+  if (user.role === "Admin TI") return true;
+  if (lead.inPipeline) {
+    if (user.role === "Corretor") return lead.assignedTo === user.id;
+    return ["Head Comercial", "Supervisor Comercial", "Diretoria"].includes(user.role);
+  }
+  return false;
+}
+
+async function activeStructuredBroker(sql, userId) {
+  if (!userId) return null;
+  const rows = await sql`SELECT payload FROM crm_users WHERE id = ${userId} AND active = true LIMIT 1`;
+  const user = rows[0]?.payload;
+  return user && isAssignableBroker(user) ? user : null;
+}
+
 async function fastStructuredLeadsResponse(req, res, url) {
   if (!DATABASE_URL || req.method !== "GET" || url.pathname !== "/api/leads") return false;
   const requestedScope = String(url.searchParams.get("scope") || "all");
@@ -3949,6 +4033,149 @@ async function fastStructuredLeadsResponse(req, res, url) {
   } catch (error) {
     mirrorStructuredError("fast-leads", error);
     return false;
+  }
+}
+
+async function fastStructuredLeadAction(req, res, url) {
+  if (!DATABASE_URL || !url.pathname.startsWith("/api/leads/")) return false;
+  const leadMatch = url.pathname.match(/^\/api\/leads\/([^/]+)$/);
+  const commentMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments$/);
+  const commentDeleteMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments\/([^/]+)$/);
+  if (!leadMatch && !commentMatch && !commentDeleteMatch) return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+    const leadId = decodeURIComponent(leadMatch?.[1] || commentMatch?.[1] || commentDeleteMatch?.[1] || "");
+    const lead = await structuredLeadById(sql, leadId, user);
+    if (!lead) {
+      notFound(res);
+      return true;
+    }
+    if (!canAccessStructuredLead(user, lead)) return false;
+
+    if (leadMatch && req.method === "GET") {
+      return sendJson(res, 200, { lead: publicLead(lead, user) });
+    }
+
+    if (leadMatch && req.method === "PATCH") {
+      if (user.role === "Corretor" && lead.assignedTo !== user.id) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const previousStatus = lead.status;
+      const previousAssignedTo = lead.assignedTo || null;
+      const previousAssignedName = lead.assignedName || "";
+      const previousOrder = Number(lead.order || 0);
+      const previousFavorite = Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite);
+      const detailFields = ["name", "phone", "email", "assistant", "desiredProject", "desiredUnit", "unitValue", "notes", "tags"];
+      const allowed = canManageLeads(user) && lead.inPipeline
+        ? ["status", "favorite", "assignedTo", "order", ...detailFields]
+        : canEditLead(user, lead) && lead.inPipeline
+          ? ["status", "favorite", "order", ...detailFields]
+          : ["favorite"];
+      for (const key of allowed) {
+        if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
+        if (key === "tags") {
+          lead.tags = Array.isArray(body.tags)
+            ? [...new Set(body.tags.map((tag) => String(tag).trim()).filter(Boolean))].slice(0, 12)
+            : [];
+        } else if (key === "favorite") {
+          const favorite = Boolean(body.favorite);
+          lead.favoritesByUser[user.id] = favorite;
+          lead.favorite = Object.values(lead.favoritesByUser).some(Boolean);
+          await sql`INSERT INTO crm_lead_favorites (lead_id, user_id, favorite) VALUES (${lead.id}, ${user.id}, ${favorite}) ON CONFLICT (lead_id, user_id) DO UPDATE SET favorite = EXCLUDED.favorite`;
+        } else if (key === "assignedTo") {
+          const assignedUser = body.assignedTo ? await activeStructuredBroker(sql, body.assignedTo) : null;
+          if (body.assignedTo && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
+          lead.assignedTo = assignedUser?.id || null;
+          lead.assignedName = assignedUser?.name || "";
+        } else {
+          lead[key] = body[key];
+        }
+      }
+      if (body.status && body.status !== previousStatus && !Object.prototype.hasOwnProperty.call(body, "order")) lead.order = Date.now();
+      lead.updatedAt = new Date().toISOString();
+      await saveStructuredLead(sql, lead);
+      if (Object.prototype.hasOwnProperty.call(body, "tags")) {
+        await sql`DELETE FROM crm_lead_tags WHERE lead_id = ${lead.id}`;
+        for (const tag of lead.tags || []) {
+          await sql`INSERT INTO crm_lead_tags (lead_id, tag_id) VALUES (${lead.id}, ${String(tag)}) ON CONFLICT DO NOTHING`;
+        }
+      }
+      await structuredAudit(user, "UPDATE_LEAD", { leadId: lead.id, changes: body });
+      if (Object.prototype.hasOwnProperty.call(body, "assignedTo") && (lead.assignedTo || null) !== previousAssignedTo) {
+        await structuredFup(user, lead, lead.assignedTo ? "ASSIGN_BROKER" : "UNASSIGN_BROKER", { from: previousAssignedName, to: lead.assignedName || "" });
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "status") && lead.status !== previousStatus) {
+        await structuredFup(user, lead, "CHANGE_STATUS", { from: previousStatus, to: lead.status });
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "order") && Number(lead.order || 0) !== previousOrder) {
+        await structuredFup(user, lead, "CHANGE_ORDER_MANUAL", { from: previousOrder, to: Number(lead.order || 0), status: lead.status });
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "favorite")) {
+        const nextFavorite = Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite);
+        if (nextFavorite !== previousFavorite) await structuredFup(user, lead, nextFavorite ? "FAVORITE_LEAD" : "UNFAVORITE_LEAD", {});
+      }
+      return sendJson(res, 200, { lead: publicLead(lead, user) });
+    }
+
+    if (commentMatch && req.method === "POST") {
+      if (!canEditLead(user, lead) || !lead.inPipeline) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const text = String(body.text || "").trim();
+      if (!text) return sendJson(res, 400, { error: "Comentário obrigatório" });
+      const comment = {
+        id: `comment-${crypto.randomUUID()}`,
+        text,
+        fromUser: Boolean(body.fromUser),
+        createdAt: new Date().toISOString(),
+        authorId: user.id,
+        authorName: user.name
+      };
+      lead.comments = [comment, ...(lead.comments || [])];
+      lead.updatedAt = comment.createdAt;
+      await sql`INSERT INTO crm_lead_comments (id, lead_id, author_user_id, author_name, comment_text, from_user, deleted, created_at, payload) VALUES (${comment.id}, ${lead.id}, ${user.id}, ${user.name || ""}, ${comment.text}, ${comment.fromUser}, false, ${dbDate(comment.createdAt)}, ${JSON.stringify(comment)}::jsonb)`;
+      await saveStructuredLead(sql, lead);
+      await structuredAudit(user, "COMMENT_LEAD", { leadId: lead.id });
+      await structuredFup(user, lead, "COMMENT_LEAD", { commentId: comment.id, fromUser: comment.fromUser });
+      return sendJson(res, 201, { lead: publicLead(lead, user), comment });
+    }
+
+    if (commentDeleteMatch && req.method === "DELETE") {
+      if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const commentId = decodeURIComponent(commentDeleteMatch[2]);
+      const comments = Array.isArray(lead.comments) ? lead.comments : [];
+      const index = comments.findIndex((comment) => comment.id === commentId);
+      if (index === -1) {
+        notFound(res);
+        return true;
+      }
+      const comment = comments[index];
+      if (user.role === "Admin TI") {
+        comments.splice(index, 1);
+        await sql`DELETE FROM crm_lead_comments WHERE id = ${commentId}`;
+        await structuredAudit(user, "DELETE_COMMENT_PERMANENT", { leadId: lead.id, commentId });
+      } else if (["Head Comercial", "Supervisor Comercial"].includes(user.role)) {
+        comment.deletedAt = new Date().toISOString();
+        comment.deletedBy = user.id;
+        comment.deletedByName = user.name;
+        comment.deletedText = comment.deletedText || comment.text;
+        comment.text = "";
+        await sql`UPDATE crm_lead_comments SET deleted = true, payload = ${JSON.stringify(comment)}::jsonb WHERE id = ${commentId}`;
+        await structuredAudit(user, "DELETE_COMMENT_SOFT", { leadId: lead.id, commentId });
+      } else {
+        return sendJson(res, 403, { error: "Sem permissão" });
+      }
+      lead.comments = comments;
+      lead.updatedAt = new Date().toISOString();
+      await saveStructuredLead(sql, lead);
+      return sendJson(res, 200, { lead: publicLead(lead, user) });
+    }
+    return false;
+  } catch (error) {
+    mirrorStructuredError("fast-lead-action", error);
+    sendJson(res, 500, { error: "Erro interno" });
+    return true;
   }
 }
 
@@ -5688,6 +5915,7 @@ async function handleRequest(req, res) {
   if (req.url.startsWith("/api/")) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (await fastStructuredLeadsResponse(req, res, url)) return;
+    if (await fastStructuredLeadAction(req, res, url)) return;
     const db = await loadDb();
     return routeApi(req, res, db);
   } else {
