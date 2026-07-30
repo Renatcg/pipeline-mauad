@@ -2746,6 +2746,12 @@ function visibleLeads(db, user) {
   return visibleLeadsFromList(db, user, db.leads || []);
 }
 
+function leadMatchesScope(lead, scope) {
+  if (scope === "pipeline") return Boolean(lead.inPipeline);
+  if (scope === "bases") return isAvailableBaseLead(lead) || lead.source === "META" || MANUAL_LEAD_SOURCES.includes(lead.source);
+  return true;
+}
+
 function canEditLead(user, lead) {
   return canManageLeads(user) || (user.role === "Corretor" && lead.assignedTo === user.id);
 }
@@ -3743,20 +3749,33 @@ async function structuredConfigForState(db) {
   }
 }
 
-async function structuredLeadsForState(db, user) {
+async function structuredLeadsForState(db, user, scope = "all") {
+  const fallbackLeads = visibleLeads(db, user).filter((lead) => leadMatchesScope(lead, scope));
   const fallback = {
-    leads: visibleLeads(db, user).map((lead) => publicLeadSummary(lead, user)),
+    leads: fallbackLeads.map((lead) => publicLeadSummary(lead, user)),
     source: "legacy"
   };
   try {
     const sql = await structuredSqlForMirror();
     if (!sql) return fallback;
-    const rows = await sql`SELECT payload FROM crm_leads ORDER BY in_pipeline DESC, updated_at DESC NULLS LAST, created_at DESC NULLS LAST`;
+    let rows;
+    if (scope === "pipeline") {
+      rows = await sql`SELECT payload FROM crm_leads WHERE in_pipeline = true ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST`;
+    } else if (scope === "bases") {
+      rows = await sql`SELECT payload FROM crm_leads
+        WHERE in_pipeline = false
+          OR source IN ('META', 'Stand', 'Lista RMeirelles')
+          OR payload->>'sourceStatus' IS NOT NULL
+          OR payload->>'odysseiaStatus' IS NOT NULL
+        ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST`;
+    } else {
+      rows = await sql`SELECT payload FROM crm_leads ORDER BY in_pipeline DESC, updated_at DESC NULLS LAST, created_at DESC NULLS LAST`;
+    }
     const leads = rows.map((row) => row.payload || {}).filter((item) => item.id);
-    const legacyCount = (db.leads || []).length;
-    if (legacyCount && leads.length < Math.floor(legacyCount * 0.95)) return fallback;
+    const visibleStructuredLeads = visibleLeadsFromList(db, user, leads).filter((lead) => leadMatchesScope(lead, scope));
+    if (fallbackLeads.length && visibleStructuredLeads.length < Math.floor(fallbackLeads.length * 0.95)) return fallback;
     return {
-      leads: visibleLeadsFromList(db, user, leads).map((lead) => publicLeadSummary(lead, user)),
+      leads: visibleStructuredLeads.map((lead) => publicLeadSummary(lead, user)),
       source: "structured"
     };
   } catch (error) {
@@ -4251,9 +4270,12 @@ async function routeApi(req, res, db) {
   }
 
   if (method === "GET" && url.pathname === "/api/leads") {
-    const structuredLeads = await structuredLeadsForState(db, user);
+    const requestedScope = String(url.searchParams.get("scope") || "all");
+    const scope = ["pipeline", "bases", "all"].includes(requestedScope) ? requestedScope : "all";
+    const structuredLeads = await structuredLeadsForState(db, user, scope);
     return sendJson(res, 200, {
       leads: structuredLeads.leads,
+      scope,
       dataSources: { leads: structuredLeads.source }
     });
   }

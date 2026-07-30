@@ -13,6 +13,7 @@ const state = {
   users: [],
   leads: [],
   leadsLoaded: false,
+  leadsScope: "",
   leadsLoading: false,
   leadsLoadError: "",
   integrations: null,
@@ -662,17 +663,31 @@ async function loadState() {
 }
 
 function viewNeedsLeads(view = state.view) {
-  return ["kanban", "sheet", "odysseia", "dashboard", "lead"].includes(view);
+  return ["kanban", "sheet", "odysseia", "dashboard"].includes(view);
+}
+
+function leadScopeForView(view = state.view) {
+  if (["kanban", "sheet", "dashboard"].includes(view)) return "pipeline";
+  if (view === "odysseia") return "bases";
+  return "";
+}
+
+function hasLoadedLeadsForView(view = state.view) {
+  const scope = leadScopeForView(view);
+  return !scope || (state.leadsLoaded && state.leadsScope === scope);
 }
 
 async function loadLeads(force = false) {
+  const scope = leadScopeForView();
+  if (!scope) return;
   if (state.leadsLoading) return;
-  if (state.leadsLoaded && !force) return;
+  if (state.leadsLoaded && state.leadsScope === scope && !force) return;
   state.leadsLoading = true;
   state.leadsLoadError = "";
   try {
-    const data = await api("/api/leads");
+    const data = await api(`/api/leads?scope=${encodeURIComponent(scope)}`);
     state.leads = data.leads || [];
+    state.leadsScope = data.scope || scope;
     state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
     state.leadsLoaded = true;
   } catch (error) {
@@ -684,6 +699,7 @@ async function loadLeads(force = false) {
 
 function invalidateLeads() {
   state.leadsLoaded = false;
+  state.leadsScope = "";
 }
 
 function navButton(view, icon, label) {
@@ -4577,7 +4593,7 @@ function bindSettingsCommon() {
 
 function renderApp() {
   if (state.view === "password-setup") return renderPasswordSetup();
-  if (viewNeedsLeads() && !state.leadsLoaded) {
+  if (viewNeedsLeads() && !hasLoadedLeadsForView()) {
     const retry = state.leadsLoadError ? `<button class="primary" data-retry-leads>Carregar novamente</button>` : "";
     renderShell(`
       <section class="panel">
