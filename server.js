@@ -4271,6 +4271,7 @@ async function fastStructuredLeadsResponse(req, res, url) {
 
 async function fastStructuredLeadAction(req, res, url) {
   if (!DATABASE_URL || !url.pathname.startsWith("/api/leads/")) return false;
+  if (url.pathname === "/api/leads/check-duplicate" || url.pathname === "/api/leads/resolve-manual-duplicate") return false;
   const leadMatch = url.pathname.match(/^\/api\/leads\/([^/]+)$/);
   const rescueMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rescue$/);
   const rollbackMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rollback$/);
@@ -4385,6 +4386,13 @@ async function fastStructuredLeadAction(req, res, url) {
       await structuredAudit(user, "UPDATE_LEAD", { leadId: lead.id, changes: body });
       if (Object.prototype.hasOwnProperty.call(body, "assignedTo") && (lead.assignedTo || null) !== previousAssignedTo) {
         await structuredFup(user, lead, lead.assignedTo ? "ASSIGN_BROKER" : "UNASSIGN_BROKER", { from: previousAssignedName, to: lead.assignedName || "" });
+        if (lead.assignedTo) {
+          const assignedUser = await activeStructuredBroker(sql, lead.assignedTo);
+          if (assignedUser) {
+            const notificationDb = await loadDb();
+            await notifyLeadAssignment(notificationDb, lead, assignedUser, Boolean(previousAssignedTo));
+          }
+        }
       }
       if (Object.prototype.hasOwnProperty.call(body, "status") && lead.status !== previousStatus) {
         await structuredFup(user, lead, "CHANGE_STATUS", { from: previousStatus, to: lead.status });
