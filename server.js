@@ -2657,6 +2657,9 @@ function baseSourcesForLead(lead) {
 
 function allBaseSources(db) {
   const sources = new Set(["ODYSSEIA", "RD Station", "OAB", "Vinhos na Serra", "Pipeline GDrive", "META", "Stand", "Lista RMeirelles"]);
+  for (const source of db.baseAccessSources || []) {
+    if (source) sources.add(source);
+  }
   for (const lead of db.leads || []) {
     for (const source of baseSourcesForLead(lead)) sources.add(source);
   }
@@ -4196,6 +4199,74 @@ function structuredBaseAccessFromPermissions(permissions = {}, sources = []) {
   return baseAccess;
 }
 
+async function structuredUsers(sql, publicOnly = false) {
+  const rows = await sql`SELECT * FROM crm_users ORDER BY name ASC, username ASC`;
+  const users = rows.map((row) => structuredUserFromAuthRow(row)).filter((item) => item?.id);
+  return publicOnly ? users.map((item) => publicUser(item)) : users;
+}
+
+async function structuredBaseSources(sql) {
+  const rows = await sql`SELECT name FROM crm_base_sources ORDER BY name ASC`;
+  const sources = rows.map((row) => row.name).filter(Boolean);
+  return sources.length ? sources : allBaseSources({ leads: [] });
+}
+
+async function structuredStateForPermissions(sql, users = null) {
+  const [sourceRows, permissionRows] = await Promise.all([
+    structuredBaseSources(sql),
+    sql`SELECT owner_type, owner_id, resource_id, can_access, can_act FROM crm_permissions`
+  ]);
+  const stateDb = {
+    users: users || await structuredUsers(sql),
+    leads: [],
+    permissions: structuredPermissionsFromRows(permissionRows),
+    baseAccess: {},
+    baseAccessSources: sourceRows,
+    pipelineStatuses: [],
+    projects: []
+  };
+  stateDb.baseAccess = structuredBaseAccessFromPermissions(stateDb.permissions, sourceRows);
+  ensurePermissions(stateDb);
+  return stateDb;
+}
+
+async function saveStructuredPermissions(sql, permissions) {
+  await sql`DELETE FROM crm_permissions`;
+  for (const [scope, owners] of Object.entries(permissions || {})) {
+    const ownerType = scope === "roles" ? "role" : scope === "users" ? "user" : "";
+    if (!ownerType || !owners || typeof owners !== "object" || Array.isArray(owners)) continue;
+    for (const [ownerId, rules] of Object.entries(owners)) {
+      if (!rules || typeof rules !== "object" || Array.isArray(rules)) continue;
+      for (const [resourceId, rawCell] of Object.entries(rules)) {
+        const cell = normalizePermissionCell(rawCell);
+        await sql`INSERT INTO crm_permissions (owner_type, owner_id, resource_id, can_access, can_act)
+          VALUES (${ownerType}, ${ownerId}, ${resourceId}, ${Boolean(cell.access || cell.action)}, ${Boolean(cell.action)})
+          ON CONFLICT (owner_type, owner_id, resource_id) DO UPDATE SET can_access = EXCLUDED.can_access, can_act = EXCLUDED.can_act`;
+      }
+    }
+  }
+}
+
+async function structuredNotificationDb(sql) {
+  const [users, statuses, formRows] = await Promise.all([
+    structuredUsers(sql),
+    structuredPipelineStatuses(sql),
+    sql`SELECT payload FROM crm_meta_forms ORDER BY name ASC`
+  ]);
+  return {
+    users,
+    pipelineStatuses: statuses,
+    integrations: {
+      metaForms: {
+        forms: formRows.map((row) => row.payload || {}).filter((item) => item.id)
+      }
+    },
+    auditLog: [],
+    integrationLog: [],
+    fupLeadLog: []
+  };
+}
+
 async function fastStructuredStateResponse(req, res, url) {
   if (!DATABASE_URL || req.method !== "GET" || url.pathname !== "/api/state") return false;
   try {
@@ -4475,6 +4546,288 @@ async function fastStructuredAuthRoutes(req, res, url) {
   } catch (error) {
     mirrorStructuredError("auth", error);
     return false;
+  }
+}
+
+async function fastStructuredUserPermissionRoutes(req, res, url) {
+  if (!DATABASE_URL) return false;
+  const isUserCollection = url.pathname === "/api/users";
+  const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
+  const inviteMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/invite$/);
+  const notificationTestMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/notification-test$/);
+  const assignmentNotificationTestMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/assignment-notification-test$/);
+  const isBaseAccess = url.pathname === "/api/base-access";
+  const isPermissions = url.pathname === "/api/permissions";
+  if (!isUserCollection && !userMatch && !inviteMatch && !notificationTestMatch && !assignmentNotificationTestMatch && !isBaseAccess && !isPermissions) return false;
+
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchema(sql);
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+
+    if (isUserCollection && req.method === "POST") {
+      if (!canManageUsers(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const username = String(body.username || "").trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(username)) return sendJson(res, 400, { error: "E-mail inválido ou já existente" });
+      const existingRows = await sql`SELECT id FROM crm_users WHERE lower(username) = ${username} LIMIT 1`;
+      if (existingRows.length) return sendJson(res, 400, { error: "E-mail inválido ou já existente" });
+      if (!manageableRoles(user).includes(body.role)) return sendJson(res, 400, { error: "Perfil inválido" });
+      const now = new Date().toISOString();
+      const newUser = {
+        id: `user-${crypto.randomUUID()}`,
+        name: String(body.name || username).trim(),
+        username,
+        role: body.role,
+        active: Boolean(body.active),
+        operatesAsBroker: ["Head Comercial", "Supervisor Comercial"].includes(body.role) && Boolean(body.operatesAsBroker),
+        notifications: normalizeNotificationPreferences(body.notifications),
+        passwordHash: null,
+        createdAt: now,
+        updatedAt: now
+      };
+      const token = createPasswordSetup(newUser);
+      await saveStructuredUser(sql, newUser);
+      const permissionDb = await structuredStateForPermissions(sql, await structuredUsers(sql));
+      await saveStructuredPermissions(sql, permissionDb.permissions);
+      const invitation = await sendPasswordSetupEmail(req, newUser, token);
+      await structuredAudit(user, "CREATE_USER", { userId: newUser.id, role: newUser.role, invitationSent: invitation.sent });
+      return sendJson(res, 201, { user: publicUser(newUser), invitation, dataSources: { action: "structured" } });
+    }
+
+    if (userMatch && req.method === "PATCH") {
+      if (!canManageUsers(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const targetRows = await sql`SELECT * FROM crm_users WHERE id = ${decodeURIComponent(userMatch[1])} LIMIT 1`;
+      const target = structuredUserFromAuthRow(targetRows[0]);
+      if (!target) return notFound(res);
+      if (!manageableRoles(user).includes(target.role)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      if (Object.prototype.hasOwnProperty.call(body, "role") && !manageableRoles(user).includes(body.role)) {
+        return sendJson(res, 400, { error: "Perfil inválido" });
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "username")) {
+        if (user.role !== "Admin TI") return sendJson(res, 403, { error: "Apenas Admin TI pode alterar o e-mail de acesso" });
+        const nextUsername = String(body.username || "").trim().toLowerCase();
+        const isBuiltinAdmin = target.role === "Admin TI" && String(target.username || "").toLowerCase() === "admin";
+        if (!isBuiltinAdmin && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextUsername)) return sendJson(res, 400, { error: "E-mail inválido" });
+        const emailRows = await sql`SELECT id FROM crm_users WHERE lower(username) = ${nextUsername} AND id <> ${target.id} LIMIT 1`;
+        if (emailRows.length) return sendJson(res, 400, { error: "Este e-mail já está em uso por outro usuário" });
+        if (!isBuiltinAdmin || nextUsername !== "admin") target.username = nextUsername;
+      }
+      const currentAssignableBroker = isAssignableBroker(target);
+      const willDeactivateBroker = currentAssignableBroker && target.active && body.active === false;
+      let reassignedLeads = 0;
+      if (willDeactivateBroker) {
+        const assignedRows = await sql`SELECT l.*, false AS favorite, '{}'::text[] AS tags FROM crm_leads l WHERE l.in_pipeline = true AND l.assigned_to = ${target.id}`;
+        if (assignedRows.length) {
+          const replacement = body.reassignTo ? await activeStructuredBroker(sql, body.reassignTo) : null;
+          if (!replacement || replacement.id === target.id) {
+            return sendJson(res, 409, {
+              error: "Escolha um corretor ativo para receber os leads antes de inativar este corretor",
+              requiresReassignment: true,
+              leadCount: assignedRows.length
+            });
+          }
+          for (const row of assignedRows) {
+            const lead = structuredLeadFromRow(row, false, []);
+            lead.assignedTo = replacement.id;
+            lead.assignedName = replacement.name;
+            lead.updatedAt = new Date().toISOString();
+            await saveStructuredLead(sql, lead);
+            await structuredFup(user, lead, "ASSIGN_BROKER", { from: target.name || "", to: replacement.name || "", reason: "Inativação de usuário" });
+            reassignedLeads += 1;
+          }
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "name")) target.name = String(body.name || "").trim();
+      if (Object.prototype.hasOwnProperty.call(body, "role")) target.role = body.role;
+      if (Object.prototype.hasOwnProperty.call(body, "active")) target.active = Boolean(body.active);
+      if (Object.prototype.hasOwnProperty.call(body, "operatesAsBroker")) {
+        target.operatesAsBroker = ["Head Comercial", "Supervisor Comercial"].includes(target.role) && Boolean(body.operatesAsBroker);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "notifications")) {
+        target.notifications = normalizeNotificationPreferences(body.notifications);
+      }
+      target.updatedAt = new Date().toISOString();
+      await saveStructuredUser(sql, target);
+      await structuredAudit(user, "UPDATE_USER", { userId: target.id, changes: body, reassignedLeads });
+      return sendJson(res, 200, { user: publicUser(target), dataSources: { action: "structured" } });
+    }
+
+    if (inviteMatch && req.method === "POST") {
+      if (!canManageUsers(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const targetRows = await sql`SELECT * FROM crm_users WHERE id = ${decodeURIComponent(inviteMatch[1])} LIMIT 1`;
+      const target = structuredUserFromAuthRow(targetRows[0]);
+      if (!target) return notFound(res);
+      if (!manageableRoles(user).includes(target.role)) return sendJson(res, 403, { error: "Sem permissão" });
+      if (!target.active) return sendJson(res, 400, { error: "Ative o usuário antes de enviar convite" });
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target.username)) return sendJson(res, 400, { error: "Usuário sem e-mail válido" });
+      const token = createPasswordSetup(target);
+      target.updatedAt = new Date().toISOString();
+      await saveStructuredUser(sql, target);
+      const invitation = await sendPasswordSetupEmail(req, target, token);
+      await structuredAudit(user, "SEND_PASSWORD_INVITE", { userId: target.id, invitationSent: invitation.sent });
+      return sendJson(res, 200, { user: publicUser(target), invitation, dataSources: { action: "structured" } });
+    }
+
+    if (notificationTestMatch && req.method === "POST") {
+      if (!canManageUsers(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const targetRows = await sql`SELECT * FROM crm_users WHERE id = ${decodeURIComponent(notificationTestMatch[1])} LIMIT 1`;
+      const target = structuredUserFromAuthRow(targetRows[0]);
+      if (!target) return notFound(res);
+      if (!manageableRoles(user).includes(target.role) && target.id !== user.id) return sendJson(res, 403, { error: "Sem permissão" });
+      if (target.role !== "Admin TI") return sendJson(res, 403, { error: "Teste disponível apenas para usuários Admin TI" });
+      if (!target.active) return sendJson(res, 400, { error: "Ative o usuário antes de testar notificações" });
+      const results = await sendLeadNotificationTest(await structuredNotificationDb(sql), user, target);
+      return sendJson(res, 200, { results, dataSources: { action: "structured" } });
+    }
+
+    if (assignmentNotificationTestMatch && req.method === "POST") {
+      if (!canManageUsers(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const targetRows = await sql`SELECT * FROM crm_users WHERE id = ${decodeURIComponent(assignmentNotificationTestMatch[1])} LIMIT 1`;
+      const target = structuredUserFromAuthRow(targetRows[0]);
+      if (!target) return notFound(res);
+      if (!manageableRoles(user).includes(target.role) && target.id !== user.id) return sendJson(res, 403, { error: "Sem permissão" });
+      if (target.role !== "Admin TI") return sendJson(res, 403, { error: "Teste disponível apenas para usuários Admin TI" });
+      if (!target.active) return sendJson(res, 400, { error: "Ative o usuário antes de testar notificações" });
+      const results = await sendLeadAssignmentNotificationTest(await structuredNotificationDb(sql), user, target);
+      return sendJson(res, 200, { results, dataSources: { action: "structured" } });
+    }
+
+    if (userMatch && req.method === "DELETE") {
+      if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const targetId = decodeURIComponent(userMatch[1]);
+      const targetRows = await sql`SELECT * FROM crm_users WHERE id = ${targetId} LIMIT 1`;
+      const target = structuredUserFromAuthRow(targetRows[0]);
+      if (!target) return notFound(res);
+      if (target.id === user.id) return sendJson(res, 400, { error: "Não é possível excluir o próprio usuário" });
+      const leadRows = await sql`SELECT l.*, false AS favorite, '{}'::text[] AS tags FROM crm_leads l WHERE l.assigned_to = ${target.id}`;
+      for (const row of leadRows) {
+        const lead = structuredLeadFromRow(row, false, []);
+        lead.assignedTo = null;
+        lead.assignedName = "";
+        lead.updatedAt = new Date().toISOString();
+        await saveStructuredLead(sql, lead);
+        await structuredFup(user, lead, "UNASSIGN_BROKER", { from: target.name || "", to: "", reason: "Exclusão de usuário" });
+      }
+      await sql`DELETE FROM crm_permissions WHERE owner_type = 'user' AND owner_id = ${target.id}`;
+      await sql`DELETE FROM crm_lead_favorites WHERE user_id = ${target.id}`;
+      await sql`DELETE FROM crm_users WHERE id = ${target.id}`;
+      await structuredAudit(user, "DELETE_USER", { userId: target.id });
+      return sendJson(res, 200, { ok: true, dataSources: { action: "structured" } });
+    }
+
+    if (isBaseAccess && req.method === "PUT") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const users = await structuredUsers(sql);
+      const stateDb = await structuredStateForPermissions(sql, users);
+      const sourceSet = new Set(allBaseSources(stateDb));
+      const next = stateDb.permissions;
+      const roleRules = body.roles && typeof body.roles === "object" && !Array.isArray(body.roles) ? body.roles : {};
+      for (const role of ROLES) {
+        const rule = roleRules[role] || {};
+        const sources = Array.isArray(rule.sources) ? [...new Set(rule.sources.map((source) => String(source || "").trim()).filter((source) => sourceSet.has(source)))] : [];
+        for (const source of sourceSet) {
+          const allowed = Boolean(rule.enabled) && (!sources.length || sources.includes(source));
+          next.roles[role][basePermissionId(source)] = role === "Admin TI" ? permissionCell(true, true) : permissionCell(allowed, allowed && role !== "Diretoria");
+        }
+      }
+      const userRules = body.users && typeof body.users === "object" && !Array.isArray(body.users) ? body.users : {};
+      const validUserIds = new Set(users.map((item) => item.id));
+      for (const [userId, rule] of Object.entries(userRules)) {
+        if (!validUserIds.has(userId) || !rule || typeof rule !== "object" || Array.isArray(rule)) continue;
+        const targetUser = users.find((item) => item.id === userId);
+        const sources = Array.isArray(rule.sources) ? [...new Set(rule.sources.map((source) => String(source || "").trim()).filter((source) => sourceSet.has(source)))] : [];
+        for (const source of sourceSet) {
+          if (!rule.override) {
+            next.users[userId][basePermissionId(source)] = { ...(next.roles[targetUser.role]?.[basePermissionId(source)] || permissionCell(false, false)) };
+            continue;
+          }
+          const allowed = Boolean(rule.enabled) && (!sources.length || sources.includes(source));
+          next.users[userId][basePermissionId(source)] = targetUser.role === "Admin TI" ? permissionCell(true, true) : permissionCell(allowed, allowed);
+        }
+      }
+      await saveStructuredPermissions(sql, next);
+      const refreshedDb = await structuredStateForPermissions(sql, users);
+      await structuredAudit(user, "UPDATE_BASE_ACCESS", { roles: Object.keys(roleRules).length, users: Object.keys(userRules).length });
+      return sendJson(res, 200, {
+        baseAccess: structuredBaseAccessFromPermissions(refreshedDb.permissions, allBaseSources(refreshedDb)),
+        baseAccessSources: allBaseSources(refreshedDb),
+        accessibleBaseSources: accessibleBaseSources(refreshedDb, user),
+        actionableBaseSources: allBaseSources(refreshedDb).filter((source) => permissionForUser(refreshedDb, user, basePermissionId(source)).action),
+        permissions: refreshedDb.permissions,
+        currentPermissions: refreshedDb.permissions.users?.[user.id] || {},
+        leads: [],
+        dataSources: { action: "structured" }
+      });
+    }
+
+    if (isPermissions && req.method === "PUT") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const users = await structuredUsers(sql);
+      const stateDb = await structuredStateForPermissions(sql, users);
+      const resources = permissionResources(stateDb);
+      const resourceIds = new Set(resources.map((resource) => resource.id));
+      const next = stateDb.permissions;
+
+      if (body.roles && typeof body.roles === "object" && !Array.isArray(body.roles)) {
+        for (const role of ROLES) {
+          const roleRules = body.roles[role];
+          if (!roleRules || typeof roleRules !== "object" || Array.isArray(roleRules)) continue;
+          next.roles[role] = next.roles[role] || {};
+          for (const [resourceId, cell] of Object.entries(roleRules)) {
+            if (!resourceIds.has(resourceId)) continue;
+            next.roles[role][resourceId] = role === "Admin TI" ? permissionCell(true, true) : normalizePermissionCell(cell);
+          }
+        }
+      }
+
+      const applyToUsers = Boolean(body.applyToUsers);
+      if (applyToUsers && body.roles) {
+        for (const target of users) {
+          next.users[target.id] = next.users[target.id] || {};
+          for (const resource of resources) {
+            next.users[target.id][resource.id] = { ...(next.roles[target.role]?.[resource.id] || permissionCell(false, false)) };
+          }
+        }
+      }
+
+      if (body.users && typeof body.users === "object" && !Array.isArray(body.users)) {
+        const validUserIds = new Set(users.map((item) => item.id));
+        for (const [userId, userRules] of Object.entries(body.users)) {
+          if (!validUserIds.has(userId) || !userRules || typeof userRules !== "object" || Array.isArray(userRules)) continue;
+          next.users[userId] = next.users[userId] || {};
+          for (const [resourceId, cell] of Object.entries(userRules)) {
+            if (!resourceIds.has(resourceId)) continue;
+            const targetUser = users.find((item) => item.id === userId);
+            next.users[userId][resourceId] = targetUser?.role === "Admin TI" ? permissionCell(true, true) : normalizePermissionCell(cell);
+          }
+        }
+      }
+
+      await saveStructuredPermissions(sql, next);
+      const refreshedDb = await structuredStateForPermissions(sql, users);
+      await structuredAudit(user, "UPDATE_PERMISSIONS", { scope: body.users ? "users" : "roles", applyToUsers });
+      return sendJson(res, 200, {
+        permissions: refreshedDb.permissions,
+        currentPermissions: refreshedDb.permissions.users?.[user.id] || {},
+        permissionResources: resources,
+        accessibleBaseSources: accessibleBaseSources(refreshedDb, user),
+        actionableBaseSources: allBaseSources(refreshedDb).filter((source) => permissionForUser(refreshedDb, user, basePermissionId(source)).action),
+        leads: [],
+        dataSources: { action: "structured" }
+      });
+    }
+
+    return false;
+  } catch (error) {
+    mirrorStructuredError("users-permissions", error);
+    sendJson(res, 500, { error: "Erro interno em usuários/permissões", detail: error.message });
+    return true;
   }
 }
 
@@ -7035,6 +7388,7 @@ async function handleRequest(req, res) {
   if (req.url.startsWith("/api/")) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (await fastStructuredAuthRoutes(req, res, url)) return;
+    if (await fastStructuredUserPermissionRoutes(req, res, url)) return;
     if (await fastStructuredStateResponse(req, res, url)) return;
     if (await fastStructuredLeadsResponse(req, res, url)) return;
     if (await fastStructuredManualLeadRoutes(req, res, url)) return;
