@@ -3998,6 +3998,7 @@ function structuredDbLabel(key) {
     samEvents: "Eventos SAM",
     levSales: "Vendas Lev",
     levReceipts: "Recebimentos Lev",
+    levSettlements: "Acertos Lev",
     knowledgeArticles: "Tutoriais"
   }[key] || key;
 }

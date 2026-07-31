@@ -3761,13 +3761,14 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE INDEX IF NOT EXISTS crm_sam_events_created_idx ON crm_sam_events (created_at DESC)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_lev_settlements (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_knowledge_articles (id text PRIMARY KEY, title text, category text, published boolean NOT NULL DEFAULT false, updated_at timestamptz, payload jsonb NOT NULL)`;
 }
 
 const STRUCTURED_TABLES = [
   "crm_lead_comments", "crm_lead_tags", "crm_lead_favorites", "crm_permissions", "crm_meta_forms", "crm_tag_definitions", "crm_settings",
   "crm_pipeline_statuses", "crm_projects", "crm_base_sources", "crm_audit_logs", "crm_integration_logs",
-  "crm_fup_lead_logs", "crm_sam_events", "crm_lev_sales", "crm_lev_receipts", "crm_knowledge_articles", "crm_leads", "crm_users"
+  "crm_fup_lead_logs", "crm_sam_events", "crm_lev_sales", "crm_lev_receipts", "crm_lev_settlements", "crm_knowledge_articles", "crm_leads", "crm_users"
 ];
 
 const STRUCTURED_DATASETS = [
@@ -3789,6 +3790,7 @@ const STRUCTURED_DATASETS = [
   { key: "samEvents", tables: ["crm_sam_events"] },
   { key: "levSales", tables: ["crm_lev_sales"] },
   { key: "levReceipts", tables: ["crm_lev_receipts"] },
+  { key: "levSettlements", tables: ["crm_lev_settlements"] },
   { key: "knowledgeArticles", tables: ["crm_knowledge_articles"] }
 ];
 
@@ -3817,6 +3819,7 @@ async function clearStructuredTable(sql, table) {
   if (table === "crm_sam_events") return sql`DELETE FROM crm_sam_events`;
   if (table === "crm_lev_sales") return sql`DELETE FROM crm_lev_sales`;
   if (table === "crm_lev_receipts") return sql`DELETE FROM crm_lev_receipts`;
+  if (table === "crm_lev_settlements") return sql`DELETE FROM crm_lev_settlements`;
   if (table === "crm_knowledge_articles") return sql`DELETE FROM crm_knowledge_articles`;
   if (table === "crm_leads") return sql`DELETE FROM crm_leads`;
   if (table === "crm_users") return sql`DELETE FROM crm_users`;
@@ -3851,6 +3854,7 @@ async function countStructuredTable(sql, table) {
   if (table === "crm_sam_events") return (await sql`SELECT COUNT(*)::int AS count FROM crm_sam_events`)[0]?.count || 0;
   if (table === "crm_lev_sales") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_sales`)[0]?.count || 0;
   if (table === "crm_lev_receipts") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_receipts`)[0]?.count || 0;
+  if (table === "crm_lev_settlements") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_settlements`)[0]?.count || 0;
   if (table === "crm_knowledge_articles") return (await sql`SELECT COUNT(*)::int AS count FROM crm_knowledge_articles`)[0]?.count || 0;
   throw new Error(`Tabela estruturada inválida: ${table}`);
 }
@@ -4276,6 +4280,122 @@ async function saveStructuredSetting(sql, key, payload) {
   await sql`INSERT INTO crm_settings (key, payload, updated_at)
     VALUES (${key}, ${JSON.stringify(payload || {})}::jsonb, now())
     ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`;
+}
+
+function normalizeLevFinanceSettingsPayload(settings = {}) {
+  return {
+    commissionPercent: Math.max(0, Number(settings.commissionPercent || 0)),
+    provisionTo: String(settings.provisionTo || "").trim(),
+    provisionCc: String(settings.provisionCc || "").trim(),
+    paymentSchedule: (Array.isArray(settings.paymentSchedule) ? settings.paymentSchedule : DEFAULT_LEV_PAYMENT_SCHEDULE)
+      .map((item) => ({
+        start: String(item.start || "").trim(),
+        end: String(item.end || "").trim(),
+        paymentDate: String(item.paymentDate || "").trim()
+      }))
+      .filter((item) => item.start && item.end && item.paymentDate)
+      .sort((a, b) => new Date(`${a.start}T00:00:00`).getTime() - new Date(`${b.start}T00:00:00`).getTime())
+  };
+}
+
+function levFinancePayloadFromRow(row) {
+  const payload = row?.payload || {};
+  return {
+    ...payload,
+    id: row.id || payload.id || "",
+    unit: normalizeLevUnit(row.unit || payload.unit || ""),
+    client: row.client || payload.client || "",
+    signedAt: payload.signedAt || payload.assinatura || row.signed_at || "",
+    contractValue: Number(row.contract_value ?? payload.contractValue ?? 0),
+    commissionValue: Number(row.commission_value ?? payload.commissionValue ?? 0),
+    realEstate: row.realtor_company || payload.realEstate || payload.realtorCompany || "",
+    realtorCompany: row.realtor_company || payload.realtorCompany || payload.realEstate || "",
+    status: row.status || payload.status || "",
+    invoiceNumber: row.nf_number || payload.invoiceNumber || payload.nfNumber || "",
+    nfNumber: row.nf_number || payload.nfNumber || payload.invoiceNumber || "",
+    paidAt: payload.paidAt || row.paid_at || ""
+  };
+}
+
+function levReceiptPayloadFromRow(row) {
+  const payload = row?.payload || {};
+  return {
+    ...payload,
+    id: row.id || payload.id || "",
+    unit: normalizeLevUnit(row.unit || payload.unit || ""),
+    amount: Number(row.amount ?? payload.amount ?? 0),
+    receivedAt: payload.receivedAt || payload.paidAt || row.paid_at || "",
+    paidAt: payload.paidAt || payload.receivedAt || row.paid_at || ""
+  };
+}
+
+async function saveStructuredLevSale(sql, sale) {
+  if (!sale?.id && !sale?.unit) return;
+  const payload = { ...sale, unit: normalizeLevUnit(sale.unit || "") };
+  const id = String(payload.id || `lev-sale-${payload.unit || crypto.randomUUID()}`);
+  payload.id = id;
+  const signedAt = parseBrazilDate(payload.signedAt) || dbDate(payload.signedAt);
+  await sql`INSERT INTO crm_lev_sales (id, unit, client, signed_at, contract_value, commission_value, realtor_company, status, nf_number, paid_at, payload)
+    VALUES (${id}, ${payload.unit || ""}, ${payload.client || ""}, ${signedAt}, ${Number(payload.contractValue || 0)}, ${Number(payload.commissionValue || 0)}, ${payload.realtorCompany || payload.realEstate || ""}, ${payload.status || ""}, ${payload.invoiceNumber || payload.nfNumber || ""}, ${dbDate(payload.paidAt)}, ${JSON.stringify(payload)}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET unit = EXCLUDED.unit, client = EXCLUDED.client, signed_at = EXCLUDED.signed_at, contract_value = EXCLUDED.contract_value, commission_value = EXCLUDED.commission_value, realtor_company = EXCLUDED.realtor_company, status = EXCLUDED.status, nf_number = EXCLUDED.nf_number, paid_at = EXCLUDED.paid_at, payload = EXCLUDED.payload`;
+}
+
+async function saveStructuredLevReceipt(sql, receipt) {
+  if (!receipt?.unit && !receipt?.id) return;
+  const payload = { ...receipt, unit: normalizeLevUnit(receipt.unit || "") };
+  const id = String(payload.id || `lev-receipt-${crypto.randomUUID()}`);
+  payload.id = id;
+  await sql`INSERT INTO crm_lev_receipts (id, unit, amount, paid_at, payload)
+    VALUES (${id}, ${payload.unit || ""}, ${Number(payload.amount || 0)}, ${dbDate(payload.receivedAt || payload.paidAt)}, ${JSON.stringify(payload)}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET unit = EXCLUDED.unit, amount = EXCLUDED.amount, paid_at = EXCLUDED.paid_at, payload = EXCLUDED.payload`;
+}
+
+async function saveStructuredLevSettlement(sql, settlement) {
+  if (!settlement?.id && !settlement?.unit) return;
+  const payload = { ...settlement, unit: normalizeLevUnit(settlement.unit || "") };
+  const id = String(payload.id || `lev-settlement-${payload.unit || crypto.randomUUID()}`);
+  payload.id = id;
+  const signedAt = parseBrazilDate(payload.signedAt) || dbDate(payload.signedAt);
+  await sql`INSERT INTO crm_lev_settlements (id, unit, client, signed_at, contract_value, commission_value, realtor_company, status, nf_number, paid_at, payload)
+    VALUES (${id}, ${payload.unit || ""}, ${payload.client || ""}, ${signedAt}, ${Number(payload.contractValue || 0)}, ${Number(payload.commissionValue || 0)}, ${payload.realtorCompany || payload.realEstate || ""}, ${payload.status || ""}, ${payload.invoiceNumber || payload.nfNumber || ""}, ${dbDate(payload.paidAt)}, ${JSON.stringify(payload)}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET unit = EXCLUDED.unit, client = EXCLUDED.client, signed_at = EXCLUDED.signed_at, contract_value = EXCLUDED.contract_value, commission_value = EXCLUDED.commission_value, realtor_company = EXCLUDED.realtor_company, status = EXCLUDED.status, nf_number = EXCLUDED.nf_number, paid_at = EXCLUDED.paid_at, payload = EXCLUDED.payload`;
+}
+
+async function structuredLevFinanceDb(sql) {
+  const [settingsRows, saleRows, receiptRows, settlementRows] = await Promise.all([
+    sql`SELECT payload FROM crm_settings WHERE key = 'levFinanceSettings' LIMIT 1`,
+    sql`SELECT * FROM crm_lev_sales ORDER BY signed_at DESC NULLS LAST, unit ASC`,
+    sql`SELECT * FROM crm_lev_receipts ORDER BY paid_at DESC NULLS LAST, unit ASC`,
+    sql`SELECT * FROM crm_lev_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC`
+  ]);
+  const settings = normalizeLevFinanceSettingsPayload(settingsRows[0]?.payload || {});
+  const sales = saleRows.map(levFinancePayloadFromRow).filter((item) => item.id || item.unit);
+  const receipts = receiptRows.map(levReceiptPayloadFromRow).filter((item) => item.id || item.unit);
+  const settlements = settlementRows.map(levFinancePayloadFromRow).filter((item) => item.id || item.unit);
+  return {
+    levFinance: {
+      settings,
+      sales,
+      receipts,
+      settlements,
+      paidUnits: [...new Set([
+        ...receipts.map((receipt) => receipt.unit),
+        ...settlements.filter((settlement) => levSettlementIsPaidOrIgnored(settlement)).map((settlement) => settlement.unit)
+      ].filter(Boolean))],
+      defaultSettlementsCleared: true
+    }
+  };
+}
+
+async function persistStructuredLevFinance(sql, finance) {
+  await Promise.all([
+    sql`DELETE FROM crm_lev_sales`,
+    sql`DELETE FROM crm_lev_receipts`,
+    sql`DELETE FROM crm_lev_settlements`
+  ]);
+  for (const sale of finance.sales || []) await saveStructuredLevSale(sql, sale);
+  for (const receipt of finance.receipts || []) await saveStructuredLevReceipt(sql, receipt);
+  for (const settlement of finance.settlements || []) await saveStructuredLevSettlement(sql, settlement);
 }
 
 function normalizeMetaFormPayload(form) {
@@ -4890,6 +5010,228 @@ async function fastStructuredSettingsRoutes(req, res, url) {
   }
 }
 
+async function fastStructuredLevFinanceRoutes(req, res, url) {
+  if (!DATABASE_URL || !url.pathname.startsWith("/api/lev-finance/")) return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchema(sql);
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+    if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+
+    const method = req.method;
+    const stateDb = await structuredLevFinanceDb(sql);
+
+    if (method === "PUT" && url.pathname === "/api/lev-finance/settings") {
+      const body = await readBody(req);
+      const currentSettings = stateDb.levFinance.settings || {};
+      const nextSettings = normalizeLevFinanceSettingsPayload({
+        commissionPercent: body.commissionPercent,
+        provisionTo: body.provisionTo,
+        provisionCc: body.provisionCc,
+        paymentSchedule: Array.isArray(body.paymentSchedule) ? body.paymentSchedule : currentSettings.paymentSchedule
+      });
+      stateDb.levFinance.settings = nextSettings;
+      await saveStructuredSetting(sql, "levFinanceSettings", nextSettings);
+      await structuredAudit(user, "UPDATE_LEV_FINANCE_SETTINGS", { commissionPercent: nextSettings.commissionPercent });
+      return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), dataSources: { action: "structured" } });
+    }
+
+    if (method === "DELETE" && url.pathname === "/api/lev-finance/data") {
+      if (!canResetLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const cleared = {
+        sales: stateDb.levFinance.sales.length,
+        receipts: stateDb.levFinance.receipts.length,
+        paidUnits: stateDb.levFinance.paidUnits.length,
+        settlements: stateDb.levFinance.settlements.length
+      };
+      stateDb.levFinance.sales = [];
+      stateDb.levFinance.receipts = [];
+      stateDb.levFinance.paidUnits = [];
+      stateDb.levFinance.settlements = [];
+      stateDb.levFinance.defaultSettlementsCleared = true;
+      await persistStructuredLevFinance(sql, stateDb.levFinance);
+      await structuredAudit(user, "RESET_LEV_FINANCE_DATA", cleared);
+      return sendJson(res, 200, { ok: true, cleared, levFinance: publicLevFinance(stateDb), dataSources: { action: "structured" } });
+    }
+
+    if (method === "POST" && url.pathname === "/api/lev-finance/extract") {
+      const body = await readBody(req);
+      const imageDataUrl = String(body.imageDataUrl || "");
+      if (!imageDataUrl.startsWith("data:image/")) return sendJson(res, 400, { error: "Envie uma imagem válida" });
+      let rawSales;
+      try {
+        rawSales = await extractLevSalesFromImage(imageDataUrl);
+      } catch (error) {
+        await structuredIntegration("LEV_FINANCE", "IMAGE_EXTRACTION_FAILED", { error: error.message });
+        return sendJson(res, 400, { error: error.message });
+      }
+      const extraction = buildLevExtractionPreview(stateDb, rawSales);
+      await structuredAudit(user, "PREVIEW_LEV_SALES_IMAGE", extraction.summary);
+      return sendJson(res, 200, { ...extraction, dataSources: { action: "structured" } });
+    }
+
+    if (method === "POST" && url.pathname === "/api/lev-finance/import-extracted") {
+      const body = await readBody(req);
+      const rawSales = Array.isArray(body.sales) ? body.sales : [];
+      if (!rawSales.length) return sendJson(res, 400, { error: "Nenhuma venda válida para importar" });
+      const settled = levFinanceSettledUnits(stateDb);
+      let created = 0;
+      let duplicates = 0;
+      let paidSkipped = 0;
+      let invalidSkipped = 0;
+      for (const raw of rawSales) {
+        const sale = normalizeLevSale(raw, stateDb.levFinance.settings);
+        if (levSaleValidation(stateDb, sale).length) {
+          invalidSkipped += 1;
+          continue;
+        }
+        if (settled.has(sale.unit)) {
+          paidSkipped += 1;
+          continue;
+        }
+        if (stateDb.levFinance.sales.some((item) => normalizeLevUnit(item.unit) === sale.unit)) {
+          duplicates += 1;
+          continue;
+        }
+        stateDb.levFinance.sales.push(sale);
+        upsertLevSettlement(stateDb, sale, "Extraída, aguardando confirmação", "Imagem submetida no Financeiro Lev");
+        created += 1;
+      }
+      await persistStructuredLevFinance(sql, stateDb.levFinance);
+      const summary = { extracted: rawSales.length, created, duplicates, paidSkipped, invalidSkipped };
+      await structuredAudit(user, "IMPORT_LEV_SALES_IMAGE", summary);
+      return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), summary, dataSources: { action: "structured" } });
+    }
+
+    if (method === "POST" && url.pathname === "/api/lev-finance/receipts") {
+      const body = await readBody(req);
+      const units = String(body.units || "")
+        .split(/[\n,;]+/)
+        .map((unit) => normalizeLevUnit(unit))
+        .filter(Boolean);
+      if (!units.length) return sendJson(res, 400, { error: "Informe ao menos uma unidade paga" });
+      const amount = parseMoney(body.amount);
+      const receivedAt = String(body.receivedAt || new Date().toISOString().slice(0, 10)).trim();
+      for (const unit of units) {
+        if (!stateDb.levFinance.paidUnits.includes(unit)) stateDb.levFinance.paidUnits.push(unit);
+        const sale = stateDb.levFinance.sales.find((item) => normalizeLevUnit(item.unit) === unit) || { unit, commissionValue: amount };
+        upsertLevSettlement(stateDb, sale, "Paga", String(body.note || "Recebimento registrado").trim() || "Recebimento registrado");
+        stateDb.levFinance.receipts.unshift({
+          id: `lev-receipt-${crypto.randomUUID()}`,
+          unit,
+          amount,
+          receivedAt,
+          note: String(body.note || "").trim(),
+          createdAt: new Date().toISOString(),
+          createdBy: user.username
+        });
+      }
+      await persistStructuredLevFinance(sql, stateDb.levFinance);
+      await structuredAudit(user, "REGISTER_LEV_RECEIPTS", { units: units.length, amount });
+      return sendJson(res, 201, { levFinance: publicLevFinance(stateDb), dataSources: { action: "structured" } });
+    }
+
+    const levRecordMatch = url.pathname.match(/^\/api\/lev-finance\/records\/([^/]+)$/);
+    if (levRecordMatch && method === "PATCH") {
+      const body = await readBody(req);
+      const { sale, settlement, unit } = findLevFinanceRecord(stateDb, levRecordMatch[1]);
+      if (!sale && !settlement) return notFound(res);
+      let targetSale = sale;
+      const action = String(body.action || "edit");
+
+      if (action === "edit") {
+        applyLevRecordFields(stateDb, sale, settlement, body.fields || {});
+      } else if (action === "confirm") {
+        targetSale = targetSale || saleFromSettlement(stateDb, settlement);
+        targetSale.eligible = true;
+        targetSale.status = "NF/provisionamento solicitado";
+        targetSale.confirmedAt = new Date().toISOString();
+        targetSale.confirmedBy = user.username;
+        targetSale.provisionDate = provisionDateFromPaymentSchedule(stateDb.levFinance.settings, new Date());
+        targetSale.commissionPercent = Number(stateDb.levFinance.settings.commissionPercent || targetSale.commissionPercent || 0);
+        targetSale.commissionValue = Number(targetSale.contractValue || 0) * (targetSale.commissionPercent / 100);
+        upsertLevSettlement(stateDb, targetSale, "NF/provisionamento solicitado", "Venda confirmada no Financeiro Lev");
+        const email = await sendLevProvisionEmail(stateDb, targetSale);
+        if (email.sent) targetSale.provisionEmailSentAt = new Date().toISOString();
+        else await structuredIntegration("LEV_FINANCE", "PROVISION_EMAIL_FAILED", { saleId: targetSale.id, unit: targetSale.unit, reason: email.reason });
+        targetSale.updatedAt = new Date().toISOString();
+        await persistStructuredLevFinance(sql, stateDb.levFinance);
+        await structuredAudit(user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: targetSale.id, unit: targetSale.unit, provisionDate: targetSale.provisionDate, emailSent: email.sent });
+        return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), email, dataSources: { action: "structured" } });
+      } else if (action === "invoice_issued") {
+        targetSale = targetSale || saleFromSettlement(stateDb, settlement);
+        targetSale.eligible = true;
+        targetSale.status = "NF Emitida";
+        targetSale.invoiceNumber = String(body.invoiceNumber || "").trim();
+        targetSale.invoiceIssuedAt = String(body.invoiceIssuedAt || new Date().toISOString().slice(0, 10)).trim();
+        targetSale.updatedAt = new Date().toISOString();
+        upsertLevSettlement(stateDb, targetSale, "NF Emitida", "NF registrada no Financeiro Lev");
+      } else if (action === "paid") {
+        targetSale = targetSale || saleFromSettlement(stateDb, settlement);
+        targetSale.status = "Paga";
+        targetSale.paidAt = String(body.paidAt || new Date().toISOString().slice(0, 10)).trim();
+        targetSale.updatedAt = new Date().toISOString();
+        if (!stateDb.levFinance.paidUnits.includes(targetSale.unit)) stateDb.levFinance.paidUnits.push(targetSale.unit);
+        upsertLevSettlement(stateDb, targetSale, "Paga", "Pagamento registrado no Financeiro Lev");
+        if (!stateDb.levFinance.receipts.some((receipt) => normalizeLevUnit(receipt.unit) === normalizeLevUnit(targetSale.unit) && receipt.receivedAt === targetSale.paidAt)) {
+          stateDb.levFinance.receipts.unshift({
+            id: `lev-receipt-${crypto.randomUUID()}`,
+            unit: targetSale.unit,
+            amount: Number(targetSale.commissionValue || 0),
+            receivedAt: targetSale.paidAt,
+            note: targetSale.invoiceNumber ? `NF ${targetSale.invoiceNumber}` : "NF paga",
+            createdAt: new Date().toISOString(),
+            createdBy: user.username
+          });
+        }
+      } else {
+        return sendJson(res, 400, { error: "Ação inválida" });
+      }
+
+      await persistStructuredLevFinance(sql, stateDb.levFinance);
+      await structuredAudit(user, "UPDATE_LEV_FINANCE_RECORD", { action, unit: normalizeLevUnit(unit || targetSale?.unit || settlement?.unit) });
+      return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), dataSources: { action: "structured" } });
+    }
+
+    if (levRecordMatch && method === "DELETE") {
+      const { sale, settlement, unit } = findLevFinanceRecord(stateDb, levRecordMatch[1]);
+      if (!sale && !settlement) return notFound(res);
+      deleteLevFinanceRecord(stateDb, sale, settlement, unit);
+      await persistStructuredLevFinance(sql, stateDb.levFinance);
+      await structuredAudit(user, "DELETE_LEV_FINANCE_RECORD", { unit: normalizeLevUnit(unit || sale?.unit || settlement?.unit) });
+      return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), dataSources: { action: "structured" } });
+    }
+
+    const levConfirmMatch = url.pathname.match(/^\/api\/lev-finance\/sales\/([^/]+)\/confirm$/);
+    if (levConfirmMatch && method === "POST") {
+      const sale = stateDb.levFinance.sales.find((item) => item.id === levConfirmMatch[1]);
+      if (!sale) return notFound(res);
+      sale.eligible = true;
+      sale.confirmedAt = new Date().toISOString();
+      sale.confirmedBy = user.username;
+      sale.provisionDate = provisionDateFromPaymentSchedule(stateDb.levFinance.settings, new Date());
+      sale.commissionPercent = Number(stateDb.levFinance.settings.commissionPercent || sale.commissionPercent || 0);
+      sale.commissionValue = Number(sale.contractValue || 0) * (sale.commissionPercent / 100);
+      upsertLevSettlement(stateDb, sale, "NF/provisionamento solicitado", "Venda confirmada no Financeiro Lev");
+      const email = await sendLevProvisionEmail(stateDb, sale);
+      if (email.sent) sale.provisionEmailSentAt = new Date().toISOString();
+      else await structuredIntegration("LEV_FINANCE", "PROVISION_EMAIL_FAILED", { saleId: sale.id, unit: sale.unit, reason: email.reason });
+      sale.updatedAt = new Date().toISOString();
+      await persistStructuredLevFinance(sql, stateDb.levFinance);
+      await structuredAudit(user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: sale.id, unit: sale.unit, provisionDate: sale.provisionDate, emailSent: email.sent });
+      return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), email, dataSources: { action: "structured" } });
+    }
+
+    return false;
+  } catch (error) {
+    mirrorStructuredError("fast-lev-finance", error);
+    sendJson(res, 500, { error: "Erro interno", detail: error.message });
+    return true;
+  }
+}
+
 async function fastStructuredMetaRoutes(req, res, url) {
   if (!DATABASE_URL) return false;
   const method = req.method;
@@ -4977,6 +5319,7 @@ async function fastStructuredStateResponse(req, res, url) {
       samRows,
       saleRows,
       receiptRows,
+      settlementRows,
       articleRows,
       settingsRows
     ] = await Promise.all([
@@ -4993,6 +5336,7 @@ async function fastStructuredStateResponse(req, res, url) {
       canManageSettings(user) ? sql`SELECT * FROM crm_sam_events ORDER BY created_at DESC NULLS LAST LIMIT 500` : Promise.resolve([]),
       canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_sales ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_receipts ORDER BY paid_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
+      canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
       sql`SELECT key, payload FROM crm_settings`
     ]);
@@ -5029,7 +5373,7 @@ async function fastStructuredStateResponse(req, res, url) {
         sales: saleRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit),
         receipts: receiptRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit),
         paidUnits: [],
-        settlements: []
+        settlements: settlementRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit)
       }
     };
     ensurePermissions(stateDb);
@@ -6388,13 +6732,18 @@ async function insertStructuredDataset(sql, db, key) {
     }
   } else if (key === "levSales") {
     for (const sale of db.levFinance?.sales || []) {
-      await sql`INSERT INTO crm_lev_sales (id, unit, client, signed_at, contract_value, commission_value, realtor_company, status, nf_number, paid_at, payload) VALUES (${sale.id || sale.unit || crypto.randomUUID()}, ${sale.unit || ""}, ${sale.client || ""}, ${dbDate(sale.signedAt)}, ${Number(sale.contractValue || 0)}, ${Number(sale.commissionValue || 0)}, ${sale.realtorCompany || sale.realEstate || ""}, ${sale.status || ""}, ${sale.nfNumber || ""}, ${dbDate(sale.paidAt)}, ${JSON.stringify(sale)}::jsonb)`;
+      await saveStructuredLevSale(sql, sale);
       summary.levSales += 1;
     }
   } else if (key === "levReceipts") {
-    for (const [index, receipt] of (db.levFinance?.receipts || []).entries()) {
-      await sql`INSERT INTO crm_lev_receipts (id, unit, amount, paid_at, payload) VALUES (${receipt.id || `receipt-${index}`}, ${receipt.unit || ""}, ${Number(receipt.amount || 0)}, ${dbDate(receipt.paidAt || receipt.date)}, ${JSON.stringify(receipt)}::jsonb)`;
+    for (const receipt of db.levFinance?.receipts || []) {
+      await saveStructuredLevReceipt(sql, receipt);
       summary.levReceipts += 1;
+    }
+  } else if (key === "levSettlements") {
+    for (const settlement of db.levFinance?.settlements || []) {
+      await saveStructuredLevSettlement(sql, settlement);
+      summary.levSettlements += 1;
     }
   } else if (key === "knowledgeArticles") {
     for (const article of db.knowledgeArticles || []) {
@@ -6447,7 +6796,7 @@ async function syncStructuredDb(db, actor) {
   await ensureStructuredSchema(sql);
   const runId = crypto.randomUUID();
   await sql`INSERT INTO crm_structured_sync_runs (id, status, summary) VALUES (${runId}, 'running', '{}'::jsonb)`;
-  const summary = { users: 0, leads: 0, comments: 0, tags: 0, tagDefinitions: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, settings: 0, permissions: 0, auditLogs: 0, integrationLogs: 0, fupLeadLogs: 0, samEvents: 0, levSales: 0, levReceipts: 0, knowledgeArticles: 0 };
+  const summary = { users: 0, leads: 0, comments: 0, tags: 0, tagDefinitions: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, settings: 0, permissions: 0, auditLogs: 0, integrationLogs: 0, fupLeadLogs: 0, samEvents: 0, levSales: 0, levReceipts: 0, levSettlements: 0, knowledgeArticles: 0 };
   try {
     ensurePermissions(db);
     await clearStructuredTables(sql);
@@ -6526,12 +6875,16 @@ async function syncStructuredDb(db, actor) {
       summary.samEvents += 1;
     }
     for (const sale of db.levFinance?.sales || []) {
-      await sql`INSERT INTO crm_lev_sales (id, unit, client, signed_at, contract_value, commission_value, realtor_company, status, nf_number, paid_at, payload) VALUES (${sale.id || sale.unit || crypto.randomUUID()}, ${sale.unit || ""}, ${sale.client || ""}, ${dbDate(sale.signedAt)}, ${Number(sale.contractValue || 0)}, ${Number(sale.commissionValue || 0)}, ${sale.realtorCompany || sale.realEstate || ""}, ${sale.status || ""}, ${sale.nfNumber || ""}, ${dbDate(sale.paidAt)}, ${JSON.stringify(sale)}::jsonb)`;
+      await saveStructuredLevSale(sql, sale);
       summary.levSales += 1;
     }
-    for (const [index, receipt] of (db.levFinance?.receipts || []).entries()) {
-      await sql`INSERT INTO crm_lev_receipts (id, unit, amount, paid_at, payload) VALUES (${receipt.id || `receipt-${index}`}, ${receipt.unit || ""}, ${Number(receipt.amount || 0)}, ${dbDate(receipt.paidAt || receipt.date)}, ${JSON.stringify(receipt)}::jsonb)`;
+    for (const receipt of db.levFinance?.receipts || []) {
+      await saveStructuredLevReceipt(sql, receipt);
       summary.levReceipts += 1;
+    }
+    for (const settlement of db.levFinance?.settlements || []) {
+      await saveStructuredLevSettlement(sql, settlement);
+      summary.levSettlements += 1;
     }
     for (const article of db.knowledgeArticles || []) {
       await sql`INSERT INTO crm_knowledge_articles (id, title, category, published, updated_at, payload) VALUES (${article.id}, ${article.title || ""}, ${article.category || ""}, ${article.published !== false}, ${dbDate(article.updatedAt)}, ${JSON.stringify(article)}::jsonb)`;
@@ -6557,7 +6910,7 @@ async function structuredDbDiagnostics(db) {
     tagDefinitions: await count("crm_tag_definitions"), projects: await count("crm_projects"), baseSources: await count("crm_base_sources"), metaForms: await count("crm_meta_forms"),
     settings: await count("crm_settings"),
     permissions: await count("crm_permissions"), auditLogs: await count("crm_audit_logs"), integrationLogs: await count("crm_integration_logs"),
-    fupLeadLogs: await count("crm_fup_lead_logs"), samEvents: await count("crm_sam_events"), levSales: await count("crm_lev_sales"), levReceipts: await count("crm_lev_receipts"),
+    fupLeadLogs: await count("crm_fup_lead_logs"), samEvents: await count("crm_sam_events"), levSales: await count("crm_lev_sales"), levReceipts: await count("crm_lev_receipts"), levSettlements: await count("crm_lev_settlements"),
     knowledgeArticles: await count("crm_knowledge_articles")
   };
   const permissions = ensurePermissions(db);
@@ -6580,6 +6933,7 @@ async function structuredDbDiagnostics(db) {
     samEvents: (db.samEvents || []).length,
     levSales: (db.levFinance?.sales || []).length,
     levReceipts: (db.levFinance?.receipts || []).length,
+    levSettlements: (db.levFinance?.settlements || []).length,
     knowledgeArticles: (db.knowledgeArticles || []).length
   };
   const latestRun = await sql`SELECT id, started_at, finished_at, status, summary, error FROM crm_structured_sync_runs ORDER BY started_at DESC LIMIT 1`;
@@ -8079,6 +8433,7 @@ async function handleRequest(req, res) {
     if (await fastStructuredAuthRoutes(req, res, url)) return;
     if (await fastStructuredUserPermissionRoutes(req, res, url)) return;
     if (await fastStructuredSettingsRoutes(req, res, url)) return;
+    if (await fastStructuredLevFinanceRoutes(req, res, url)) return;
     if (await fastStructuredStateResponse(req, res, url)) return;
     if (await fastStructuredLeadsResponse(req, res, url)) return;
     if (await fastStructuredManualLeadRoutes(req, res, url)) return;
