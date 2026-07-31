@@ -853,6 +853,14 @@ function verifyPassword(password, stored) {
   return crypto.timingSafeEqual(Buffer.from(expected, "hex"), actual);
 }
 
+function verifyPasswordSafe(password, stored) {
+  try {
+    return verifyPassword(password, stored);
+  } catch {
+    return false;
+  }
+}
+
 function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
@@ -4383,6 +4391,20 @@ async function structuredUserBySetupToken(sql, token) {
   return user;
 }
 
+async function legacyLoginResponse(req, res, login, password) {
+  const db = await loadDb();
+  const user = (db.users || []).find((item) => String(item.username || "").toLowerCase() === login);
+  if (!user || !user.active) return false;
+  if (!user.passwordHash) return sendJson(res, 403, { error: "Senha ainda não cadastrada. Use o link enviado por e-mail." });
+  if (!verifyPasswordSafe(password, user.passwordHash)) return false;
+  access(db, user, "LOGIN", { path: "/login", view: "Login", source: "legacy-fallback" }, req);
+  await saveAccessLog(db);
+  await mirrorStructuredUser(user);
+  return sendJson(res, 200, { user: publicUser(user), dataSources: { auth: "legacy-fallback" } }, {
+    "Set-Cookie": sessionCookie(user.id)
+  });
+}
+
 async function fastStructuredAuthRoutes(req, res, url) {
   if (!DATABASE_URL) return false;
   const authPaths = new Set(["/api/login", "/api/logout", "/api/me", "/api/password/setup/validate", "/api/password/setup"]);
@@ -4397,10 +4419,20 @@ async function fastStructuredAuthRoutes(req, res, url) {
       const login = String(body.username || "").trim().toLowerCase();
       const rows = await sql`SELECT * FROM crm_users WHERE lower(username) = ${login} AND active = true LIMIT 1`;
       const user = structuredUserFromAuthRow(rows[0]);
-      if (!user) return false;
-      if (!user.passwordHash && !user.passwordSetup) return false;
+      const password = String(body.password || "");
+      if (!user) {
+        if (await legacyLoginResponse(req, res, login, password)) return true;
+        return sendJson(res, 401, { error: "Usuário ou senha inválidos" });
+      }
+      if (!user.passwordHash && !user.passwordSetup) {
+        if (await legacyLoginResponse(req, res, login, password)) return true;
+        return sendJson(res, 401, { error: "Usuário ou senha inválidos" });
+      }
       if (!user.passwordHash) return sendJson(res, 403, { error: "Senha ainda não cadastrada. Use o link enviado por e-mail." });
-      if (!verifyPassword(String(body.password || ""), user.passwordHash)) return sendJson(res, 401, { error: "Usuário ou senha inválidos" });
+      if (!verifyPasswordSafe(password, user.passwordHash)) {
+        if (await legacyLoginResponse(req, res, login, password)) return true;
+        return sendJson(res, 401, { error: "Usuário ou senha inválidos" });
+      }
       await structuredAudit(user, "LOGIN", { path: "/login", view: "Login", source: "structured" });
       return sendJson(res, 200, { user: publicUser(user), dataSources: { auth: "structured" } }, {
         "Set-Cookie": sessionCookie(user.id)
