@@ -4267,6 +4267,530 @@ async function structuredNotificationDb(sql) {
   };
 }
 
+async function structuredSettingsMap(sql) {
+  const rows = await sql`SELECT key, payload FROM crm_settings`;
+  return Object.fromEntries(rows.map((row) => [row.key, row.payload || {}]));
+}
+
+async function saveStructuredSetting(sql, key, payload) {
+  await sql`INSERT INTO crm_settings (key, payload, updated_at)
+    VALUES (${key}, ${JSON.stringify(payload || {})}::jsonb, now())
+    ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`;
+}
+
+function normalizeMetaFormPayload(form) {
+  const id = String(form?.id || form?.formId || "").trim();
+  if (!id) return null;
+  return {
+    ...form,
+    id,
+    name: String(form?.name || "").trim(),
+    project: String(form?.project || "").trim(),
+    archived: Boolean(form?.archived),
+    adUrl: String(form?.adUrl || form?.adURL || "").trim(),
+    adLinks: Array.isArray(form?.adLinks) ? form.adLinks : [],
+    questionLabels: form?.questionLabels || {},
+    answerLabels: form?.answerLabels || {}
+  };
+}
+
+async function saveStructuredMetaForms(sql, integrations = {}) {
+  const currentRows = await sql`SELECT payload FROM crm_meta_forms ORDER BY archived ASC, name ASC`;
+  const incomingForms = Array.isArray(integrations?.metaForms?.forms)
+    ? integrations.metaForms.forms
+    : currentRows.map((row) => row.payload || {});
+  const forms = incomingForms.map(normalizeMetaFormPayload).filter(Boolean);
+  await sql`DELETE FROM crm_meta_forms`;
+  for (const form of forms) {
+    await sql`INSERT INTO crm_meta_forms (id, name, project, archived, ad_url, payload)
+      VALUES (${form.id}, ${form.name || ""}, ${form.project || ""}, ${Boolean(form.archived)}, ${form.adUrl || ""}, ${JSON.stringify(form)}::jsonb)
+      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, project = EXCLUDED.project, archived = EXCLUDED.archived, ad_url = EXCLUDED.ad_url, payload = EXCLUDED.payload`;
+  }
+  await saveStructuredSetting(sql, "integrations", integrations || {});
+  return {
+    ...(integrations || {}),
+    metaForms: {
+      ...(integrations?.metaForms || {}),
+      enabled: forms.length > 0,
+      forms
+    }
+  };
+}
+
+async function structuredKnowledgeArticles(sql) {
+  const rows = await sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`;
+  return rows.map((row) => row.payload || {}).filter((article) => article.id);
+}
+
+async function saveStructuredKnowledgeArticle(sql, article) {
+  if (!article?.id) return;
+  await sql`INSERT INTO crm_knowledge_articles (id, title, category, published, updated_at, payload)
+    VALUES (${article.id}, ${article.title || ""}, ${article.category || ""}, ${article.published !== false}, ${dbDate(article.updatedAt)}, ${JSON.stringify(article)}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, category = EXCLUDED.category, published = EXCLUDED.published, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
+}
+
+async function structuredConfigDb(sql, { includeLeads = false } = {}) {
+  const [users, statuses, projectRows, tagRows, formRows, articleRows, settings] = await Promise.all([
+    structuredUsers(sql),
+    structuredPipelineStatuses(sql),
+    sql`SELECT name FROM crm_projects ORDER BY position ASC, name ASC`,
+    sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`,
+    sql`SELECT payload FROM crm_meta_forms ORDER BY archived ASC, name ASC`,
+    sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
+    structuredSettingsMap(sql)
+  ]);
+  const forms = formRows.map((row) => row.payload || {}).filter((form) => form.id);
+  const db = {
+    roles: ROLES,
+    users,
+    projects: projectRows.map((row) => row.name).filter(Boolean),
+    pipelineStatuses: statuses,
+    tagDefinitions: tagRows.map((row) => row.payload || {}).filter((tag) => tag.id),
+    integrations: {
+      ...(settings.integrations || {}),
+      metaForms: {
+        ...(settings.integrations?.metaForms || {}),
+        enabled: forms.length > 0,
+        forms
+      }
+    },
+    knowledgeArticles: articleRows.map((row) => row.payload || {}).filter((article) => article.id),
+    knowledgeChatSessions: Array.isArray(settings.knowledgeChatSessions) ? settings.knowledgeChatSessions : [],
+    leads: [],
+    auditLog: [],
+    integrationLog: [],
+    fupLeadLog: []
+  };
+  if (includeLeads) {
+    const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
+      FROM crm_leads l
+      LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
+      GROUP BY l.id
+      ORDER BY l.updated_at DESC NULLS LAST, l.created_at DESC NULLS LAST`;
+    db.leads = leadRows.map((row) => structuredLeadFromRow(row, false, row.tags)).filter((lead) => lead.id);
+  }
+  return db;
+}
+
+async function replaceStructuredProjects(sql, projects) {
+  await sql`DELETE FROM crm_projects`;
+  for (const [position, name] of projects.entries()) {
+    await sql`INSERT INTO crm_projects (name, position, payload)
+      VALUES (${name}, ${position}, ${JSON.stringify({ name, position })}::jsonb)`;
+  }
+}
+
+async function replaceStructuredStatuses(sql, statuses) {
+  await sql`DELETE FROM crm_pipeline_statuses`;
+  for (const [position, status] of statuses.entries()) {
+    await sql`INSERT INTO crm_pipeline_statuses (status, position) VALUES (${status}, ${position})`;
+  }
+}
+
+async function fastStructuredSettingsRoutes(req, res, url) {
+  if (!DATABASE_URL) return false;
+  const method = req.method;
+  const isSettingsRoute =
+    url.pathname === "/api/integrations" ||
+    url.pathname.startsWith("/api/integrations/meta/") ||
+    url.pathname === "/api/knowledge" ||
+    url.pathname.startsWith("/api/knowledge/") ||
+    url.pathname === "/api/projects" ||
+    url.pathname.startsWith("/api/projects/") ||
+    url.pathname === "/api/statuses" ||
+    url.pathname.startsWith("/api/statuses/") ||
+    url.pathname === "/api/tags" ||
+    url.pathname.startsWith("/api/tags/");
+  if (!isSettingsRoute) return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchema(sql);
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+
+    if (url.pathname === "/api/integrations" && method === "PUT") {
+      if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const integrations = await saveStructuredMetaForms(sql, body.integrations || {});
+      await structuredAudit(user, "UPDATE_INTEGRATIONS", {});
+      return sendJson(res, 200, { integrations, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/integrations/meta/import-lead" && method === "POST") {
+      if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const leadgenId = String(body.leadgenId || "").trim();
+      const db = await structuredConfigDb(sql, { includeLeads: true });
+      try {
+        const imported = await importMetaLeadById(db, user, leadgenId, {});
+        if (imported.lead) await saveStructuredLead(sql, imported.lead);
+        return sendJson(res, 200, { ok: true, status: imported.status, lead: publicLead(imported.lead, user), dataSources: { action: "structured" } });
+      } catch (error) {
+        await structuredIntegration("META", "MANUAL_IMPORT_ERROR", { leadgenId, error: error.message });
+        return sendJson(res, 400, { error: error.message });
+      }
+    }
+
+    if (url.pathname === "/api/integrations/meta/sync-recent" && method === "POST") {
+      if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const db = await structuredConfigDb(sql, { includeLeads: true });
+      try {
+        const result = await syncRecentMetaLeads(db, user, { days: Number(body.days || 7), formId: body.formId });
+        for (const lead of db.leads || []) {
+          if (String(lead.id || "").startsWith("meta-")) await saveStructuredLead(sql, lead);
+        }
+        return sendJson(res, 200, { ok: true, ...result, dataSources: { action: "structured" } });
+      } catch (error) {
+        await structuredIntegration("META", "SYNC_MANUAL_ERROR", { error: error.message });
+        return sendJson(res, 400, { error: error.message });
+      }
+    }
+
+    if (url.pathname === "/api/integrations/meta/subscribe-page" && method === "POST") {
+      if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const pageId = String(body.pageId || "").trim();
+      try {
+        const result = await subscribeMetaLeadgenPage(pageId);
+        await structuredIntegration("META", "PAGE_SUBSCRIBED", { pageId, fields: "leadgen" });
+        await structuredAudit(user, "SUBSCRIBE_META_PAGE", { pageId });
+        return sendJson(res, 200, { ok: true, ...result, dataSources: { action: "structured" } });
+      } catch (error) {
+        await structuredIntegration("META", "PAGE_SUBSCRIBE_ERROR", { pageId, error: error.message });
+        return sendJson(res, 400, { error: error.message });
+      }
+    }
+
+    if (url.pathname === "/api/integrations/meta/diagnostics" && method === "POST") {
+      if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      try {
+        const db = await structuredConfigDb(sql);
+        const diagnostics = await diagnoseMeta(db);
+        await structuredAudit(user, "DIAGNOSE_META", { forms: diagnostics.forms.length });
+        return sendJson(res, 200, { ok: true, diagnostics, dataSources: { action: "structured" } });
+      } catch (error) {
+        await structuredIntegration("META", "DIAGNOSTIC_ERROR", { error: error.message });
+        return sendJson(res, 400, { error: error.message });
+      }
+    }
+
+    if (url.pathname === "/api/knowledge" && method === "POST") {
+      if (!canCreateKnowledge(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const articleData = normalizeKnowledgePayload(body);
+      if (!articleData.title) return sendJson(res, 400, { error: "Título obrigatório" });
+      if (!articleData.content) return sendJson(res, 400, { error: "Conteúdo obrigatório" });
+      const now = new Date().toISOString();
+      const article = {
+        id: `kb-${crypto.randomUUID()}`,
+        ...articleData,
+        createdAt: now,
+        updatedAt: now,
+        updatedBy: user.name || user.username
+      };
+      await saveStructuredKnowledgeArticle(sql, article);
+      await structuredAudit(user, "CREATE_KNOWLEDGE_ARTICLE", { articleId: article.id, title: article.title });
+      const db = await structuredConfigDb(sql);
+      return sendJson(res, 201, { knowledgeArticles: visibleKnowledgeArticles(db, user), dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/knowledge/ask" && method === "POST") {
+      const body = await readBody(req);
+      const question = String(body.question || "").trim();
+      if (!question) return sendJson(res, 400, { error: "Digite uma pergunta." });
+      const db = await structuredConfigDb(sql);
+      const now = new Date().toISOString();
+      let session = (db.knowledgeChatSessions || []).find((item) => item.id === String(body.sessionId || "") && item.userId === user.id);
+      if (!session) {
+        session = {
+          id: `kc-${crypto.randomUUID()}`,
+          userId: user.id,
+          title: question.slice(0, 64) || "Nova conversa",
+          messages: [],
+          generatedTutorialId: "",
+          createdAt: now,
+          updatedAt: now
+        };
+        db.knowledgeChatSessions.unshift(session);
+      }
+      try {
+        const result = await answerKnowledgeQuestion(db, user, question);
+        session.messages.push({ role: "user", text: question, sources: [], at: now });
+        session.messages.push({ role: "assistant", text: result.answer, sources: result.sources || [], at: new Date().toISOString() });
+        session.messages = session.messages.slice(-30);
+        session.updatedAt = new Date().toISOString();
+        if (!session.title || session.title === "Nova conversa") session.title = question.slice(0, 64) || "Nova conversa";
+        const tutorialDraft = await generateTutorialDraftFromSession(db, user, session);
+        if (tutorialDraft) await saveStructuredKnowledgeArticle(sql, tutorialDraft);
+        await saveStructuredSetting(sql, "knowledgeChatSessions", db.knowledgeChatSessions || []);
+        await structuredAudit(user, "ASK_KNOWLEDGE_AI", { question: question.slice(0, 180) });
+        return sendJson(res, 200, {
+          ...result,
+          session: publicKnowledgeChatSession(session),
+          knowledgeChatSessions: userKnowledgeChatSessions(db, user),
+          tutorialDraft: tutorialDraft ? publicKnowledgeArticle(tutorialDraft) : null,
+          knowledgeArticles: tutorialDraft ? visibleKnowledgeArticles(db, user) : undefined,
+          dataSources: { action: "structured" }
+        });
+      } catch (error) {
+        await structuredAudit(user, "ASK_KNOWLEDGE_AI_ERROR", { error: error.message, question: question.slice(0, 180) });
+        return sendJson(res, 400, { error: error.message });
+      }
+    }
+
+    const knowledgeMatch = url.pathname.match(/^\/api\/knowledge\/([^/]+)$/);
+    if (knowledgeMatch && method === "PATCH") {
+      if (!canManageKnowledge(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const rows = await sql`SELECT payload FROM crm_knowledge_articles WHERE id = ${knowledgeMatch[1]} LIMIT 1`;
+      const article = rows[0]?.payload;
+      if (!article?.id) return notFound(res);
+      const body = await readBody(req);
+      const articleData = normalizeKnowledgePayload(body, article);
+      if (!articleData.title) return sendJson(res, 400, { error: "Título obrigatório" });
+      if (!articleData.content) return sendJson(res, 400, { error: "Conteúdo obrigatório" });
+      Object.assign(article, articleData, { updatedAt: new Date().toISOString(), updatedBy: user.name || user.username });
+      await saveStructuredKnowledgeArticle(sql, article);
+      await structuredAudit(user, "UPDATE_KNOWLEDGE_ARTICLE", { articleId: article.id, title: article.title });
+      const db = await structuredConfigDb(sql);
+      return sendJson(res, 200, { knowledgeArticles: visibleKnowledgeArticles(db, user), dataSources: { action: "structured" } });
+    }
+
+    if (knowledgeMatch && method === "DELETE") {
+      if (!canManageKnowledge(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const rows = await sql`SELECT payload FROM crm_knowledge_articles WHERE id = ${knowledgeMatch[1]} LIMIT 1`;
+      const article = rows[0]?.payload;
+      if (!article?.id) return notFound(res);
+      await sql`DELETE FROM crm_knowledge_articles WHERE id = ${article.id}`;
+      await structuredAudit(user, "DELETE_KNOWLEDGE_ARTICLE", { articleId: article.id, title: article.title });
+      const db = await structuredConfigDb(sql);
+      return sendJson(res, 200, { knowledgeArticles: visibleKnowledgeArticles(db, user), dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/projects" && method === "POST") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const name = String(body.name || "").trim();
+      if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+      const projects = await structuredProjectNames(sql);
+      if (projects.some((project) => project.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Empreendimento já existe" });
+      projects.push(name);
+      await replaceStructuredProjects(sql, projects);
+      await structuredAudit(user, "CREATE_PROJECT", { name });
+      return sendJson(res, 201, { projects, dataSources: { action: "structured" } });
+    }
+
+    const projectMatch = url.pathname.match(/^\/api\/projects\/(\d+)$/);
+    if (projectMatch && method === "PATCH") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const projects = await structuredProjectNames(sql);
+      const index = Number(projectMatch[1]);
+      const oldName = projects[index];
+      if (!oldName) return notFound(res);
+      const body = await readBody(req);
+      const name = String(body.name || "").trim();
+      if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+      if (projects.some((project, projectIndex) => projectIndex !== index && project.toLowerCase() === name.toLowerCase())) {
+        return sendJson(res, 400, { error: "Empreendimento já existe" });
+      }
+      projects[index] = name;
+      await replaceStructuredProjects(sql, projects);
+      const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
+        FROM crm_leads l
+        LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
+        WHERE l.project = ${oldName} OR l.payload->>'desiredProject' = ${oldName}
+        GROUP BY l.id`;
+      for (const row of leadRows) {
+        const lead = structuredLeadFromRow(row, false, row.tags);
+        if (lead.desiredProject === oldName) lead.desiredProject = name;
+        if (lead.project === oldName) lead.project = name;
+        lead.updatedAt = new Date().toISOString();
+        await saveStructuredLead(sql, lead);
+      }
+      const formRows = await sql`SELECT payload FROM crm_meta_forms WHERE project = ${oldName} OR payload->>'project' = ${oldName}`;
+      for (const row of formRows) {
+        const form = normalizeMetaFormPayload({ ...(row.payload || {}), project: name });
+        if (!form) continue;
+        await sql`INSERT INTO crm_meta_forms (id, name, project, archived, ad_url, payload)
+          VALUES (${form.id}, ${form.name || ""}, ${form.project || ""}, ${Boolean(form.archived)}, ${form.adUrl || ""}, ${JSON.stringify(form)}::jsonb)
+          ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, project = EXCLUDED.project, archived = EXCLUDED.archived, ad_url = EXCLUDED.ad_url, payload = EXCLUDED.payload`;
+      }
+      await structuredAudit(user, "UPDATE_PROJECT", { oldName, name });
+      return sendJson(res, 200, { projects, dataSources: { action: "structured" } });
+    }
+
+    if (projectMatch && method === "DELETE") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const projects = await structuredProjectNames(sql);
+      const index = Number(projectMatch[1]);
+      const [deleted] = projects.splice(index, 1);
+      if (!deleted) return notFound(res);
+      await replaceStructuredProjects(sql, projects);
+      const formRows = await sql`SELECT payload FROM crm_meta_forms WHERE project = ${deleted} OR payload->>'project' = ${deleted}`;
+      for (const row of formRows) {
+        const form = normalizeMetaFormPayload({ ...(row.payload || {}), project: "" });
+        if (!form) continue;
+        await sql`INSERT INTO crm_meta_forms (id, name, project, archived, ad_url, payload)
+          VALUES (${form.id}, ${form.name || ""}, ${form.project || ""}, ${Boolean(form.archived)}, ${form.adUrl || ""}, ${JSON.stringify(form)}::jsonb)
+          ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, project = EXCLUDED.project, archived = EXCLUDED.archived, ad_url = EXCLUDED.ad_url, payload = EXCLUDED.payload`;
+      }
+      await structuredAudit(user, "DELETE_PROJECT", { name: deleted });
+      return sendJson(res, 200, { projects, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/statuses" && method === "POST") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const name = String(body.name || "").trim();
+      if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+      const statuses = await structuredPipelineStatuses(sql);
+      if (statuses.some((status) => status.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Status já existe" });
+      statuses.push(name);
+      await replaceStructuredStatuses(sql, statuses);
+      await structuredAudit(user, "CREATE_STATUS", { name });
+      return sendJson(res, 201, { pipelineStatuses: statuses, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/statuses/reorder" && method === "PUT") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const currentStatuses = await structuredPipelineStatuses(sql);
+      const statuses = Array.isArray(body.statuses) ? body.statuses.map((status) => String(status).trim()).filter(Boolean) : [];
+      if (statuses.length !== currentStatuses.length || new Set(statuses).size !== currentStatuses.length) {
+        return sendJson(res, 400, { error: "Sequência inválida" });
+      }
+      for (const status of currentStatuses) {
+        if (!statuses.includes(status)) return sendJson(res, 400, { error: "Sequência inválida" });
+      }
+      await replaceStructuredStatuses(sql, statuses);
+      await structuredAudit(user, "REORDER_STATUS", { statuses });
+      return sendJson(res, 200, { pipelineStatuses: statuses, dataSources: { action: "structured" } });
+    }
+
+    const statusMatch = url.pathname.match(/^\/api\/statuses\/(\d+)$/);
+    if (statusMatch && method === "PATCH") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const statuses = await structuredPipelineStatuses(sql);
+      const index = Number(statusMatch[1]);
+      const oldName = statuses[index];
+      if (!oldName) return notFound(res);
+      const body = await readBody(req);
+      const name = String(body.name || "").trim();
+      if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+      if (statuses.some((status, idx) => idx !== index && status.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Status já existe" });
+      statuses[index] = name;
+      await replaceStructuredStatuses(sql, statuses);
+      const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
+        FROM crm_leads l
+        LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
+        WHERE l.in_pipeline = true AND l.status = ${oldName}
+        GROUP BY l.id`;
+      for (const row of leadRows) {
+        const lead = structuredLeadFromRow(row, false, row.tags);
+        lead.status = name;
+        lead.updatedAt = new Date().toISOString();
+        await saveStructuredLead(sql, lead);
+      }
+      await structuredAudit(user, "UPDATE_STATUS", { oldName, name });
+      return sendJson(res, 200, { pipelineStatuses: statuses, dataSources: { action: "structured" } });
+    }
+
+    if (statusMatch && method === "DELETE") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const statuses = await structuredPipelineStatuses(sql);
+      const index = Number(statusMatch[1]);
+      const status = statuses[index];
+      if (!status) return notFound(res);
+      const rows = await sql`SELECT COUNT(*)::int AS count FROM crm_leads WHERE in_pipeline = true AND status = ${status}`;
+      if (Number(rows[0]?.count || 0) > 0) return sendJson(res, 400, { error: "Não é possível excluir status usado por leads" });
+      statuses.splice(index, 1);
+      await replaceStructuredStatuses(sql, statuses);
+      await structuredAudit(user, "DELETE_STATUS", { status });
+      return sendJson(res, 200, { pipelineStatuses: statuses, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/tags" && method === "POST") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const name = String(body.name || "").trim();
+      if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+      const rows = await sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`;
+      const tags = rows.map((row) => row.payload || {}).filter((tag) => tag.id);
+      if (tags.some((tag) => String(tag.name || "").toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Etiqueta já existe" });
+      const tag = { id: `tag-${crypto.randomUUID()}`, name, color: cleanColor(body.color) };
+      await sql`INSERT INTO crm_tag_definitions (id, name, color, payload)
+        VALUES (${tag.id}, ${tag.name}, ${tag.color}, ${JSON.stringify(tag)}::jsonb)`;
+      await structuredAudit(user, "CREATE_TAG", { name });
+      return sendJson(res, 201, { tagDefinitions: [...tags, tag], dataSources: { action: "structured" } });
+    }
+
+    const tagMatch = url.pathname.match(/^\/api\/tags\/([^/]+)$/);
+    if (tagMatch && method === "PATCH") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const rows = await sql`SELECT payload FROM crm_tag_definitions WHERE id = ${tagMatch[1]} LIMIT 1`;
+      const tag = rows[0]?.payload;
+      if (!tag?.id) return notFound(res);
+      const body = await readBody(req);
+      const oldName = tag.name;
+      const name = String(body.name || "").trim();
+      if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
+      const allRows = await sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`;
+      const tags = allRows.map((row) => row.payload || {}).filter((item) => item.id);
+      if (tags.some((item) => item.id !== tag.id && String(item.name || "").toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Etiqueta já existe" });
+      tag.name = name;
+      tag.color = cleanColor(body.color);
+      await sql`UPDATE crm_tag_definitions SET name = ${tag.name}, color = ${tag.color}, payload = ${JSON.stringify(tag)}::jsonb WHERE id = ${tag.id}`;
+      if (oldName && oldName !== name) {
+        await sql`UPDATE crm_lead_tags SET tag_id = ${name} WHERE tag_id = ${oldName}`;
+        const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
+          FROM crm_leads l
+          LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
+          WHERE l.payload->'tags' ? ${oldName}
+          GROUP BY l.id`;
+        for (const row of leadRows) {
+          const lead = structuredLeadFromRow(row, false, row.tags);
+          lead.tags = (lead.tags || []).map((item) => item === oldName ? name : item);
+          lead.updatedAt = new Date().toISOString();
+          await saveStructuredLead(sql, lead);
+        }
+      }
+      await structuredAudit(user, "UPDATE_TAG", { oldName, name });
+      const nextRows = await sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`;
+      return sendJson(res, 200, { tagDefinitions: nextRows.map((row) => row.payload || {}).filter((item) => item.id), dataSources: { action: "structured" } });
+    }
+
+    if (tagMatch && method === "DELETE") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const rows = await sql`SELECT payload FROM crm_tag_definitions WHERE id = ${tagMatch[1]} LIMIT 1`;
+      const tag = rows[0]?.payload;
+      if (!tag?.id) return notFound(res);
+      await sql`DELETE FROM crm_tag_definitions WHERE id = ${tag.id}`;
+      await sql`DELETE FROM crm_lead_tags WHERE tag_id = ${tag.name} OR tag_id = ${tag.id}`;
+      const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
+        FROM crm_leads l
+        LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
+        WHERE l.payload->'tags' ? ${tag.name}
+        GROUP BY l.id`;
+      for (const row of leadRows) {
+        const lead = structuredLeadFromRow(row, false, row.tags);
+        lead.tags = (lead.tags || []).filter((item) => item !== tag.name && item !== tag.id);
+        lead.updatedAt = new Date().toISOString();
+        await saveStructuredLead(sql, lead);
+      }
+      await structuredAudit(user, "DELETE_TAG", { name: tag.name });
+      const nextRows = await sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`;
+      return sendJson(res, 200, { tagDefinitions: nextRows.map((row) => row.payload || {}).filter((item) => item.id), dataSources: { action: "structured" } });
+    }
+
+    return false;
+  } catch (error) {
+    mirrorStructuredError("fast-settings", error);
+    sendJson(res, 500, { error: "Erro interno", detail: error.message });
+    return true;
+  }
+}
+
 async function fastStructuredStateResponse(req, res, url) {
   if (!DATABASE_URL || req.method !== "GET" || url.pathname !== "/api/state") return false;
   try {
@@ -7389,6 +7913,7 @@ async function handleRequest(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (await fastStructuredAuthRoutes(req, res, url)) return;
     if (await fastStructuredUserPermissionRoutes(req, res, url)) return;
+    if (await fastStructuredSettingsRoutes(req, res, url)) return;
     if (await fastStructuredStateResponse(req, res, url)) return;
     if (await fastStructuredLeadsResponse(req, res, url)) return;
     if (await fastStructuredManualLeadRoutes(req, res, url)) return;
