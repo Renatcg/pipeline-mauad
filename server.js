@@ -2648,7 +2648,7 @@ function canResetLevFinance(user) {
 }
 
 function hasBaseHistory(lead) {
-  return Boolean(lead.sourceStatus || lead.odysseiaStatus);
+  return Boolean(lead.sourceStatus || lead.odysseiaStatus || lead.baseSourceBeforePipeline || lead.previousPipelineSource);
 }
 
 function isAvailableBaseLead(lead) {
@@ -3745,6 +3745,21 @@ function logRowId(prefix, item, index) {
   return item.id || `${prefix}-${index}-${crypto.createHash("sha1").update(JSON.stringify(item)).digest("hex").slice(0, 16)}`;
 }
 
+function structuredLeadDbFields(lead = {}) {
+  return {
+    source: lead.source || lead.origem || lead.origin || "",
+    sourceStatus: lead.sourceStatus || lead.source_status || "",
+    odysseiaStatus: lead.odysseiaStatus || lead.odysseia_status || "",
+    baseSourceBeforePipeline: lead.baseSourceBeforePipeline || lead.base_source_before_pipeline || "",
+    previousPipelineSource: lead.previousPipelineSource || lead.previous_pipeline_source || "",
+    assistant: lead.assistant || "",
+    externalId: lead.externalId || lead.external_id || "",
+    project: lead.project || lead.empreendimento || lead.desiredProject || "",
+    unit: lead.unit || lead.unidade || lead.desiredUnit || "",
+    unitValue: lead.unitValue || lead.valorUnidade || ""
+  };
+}
+
 async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_structured_sync_runs (id text PRIMARY KEY, started_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz, status text NOT NULL, summary jsonb NOT NULL DEFAULT '{}'::jsonb, error text)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_users (id text PRIMARY KEY, username text, name text, role text, active boolean NOT NULL DEFAULT true, operates_as_broker boolean NOT NULL DEFAULT false, notifications jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz, updated_at timestamptz, payload jsonb NOT NULL)`;
@@ -3752,12 +3767,35 @@ async function ensureStructuredSchema(sql) {
   await sql`ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS password_setup jsonb`;
   await sql`CREATE INDEX IF NOT EXISTS crm_users_username_idx ON crm_users (lower(username))`;
   await sql`CREATE TABLE IF NOT EXISTS crm_leads (id text PRIMARY KEY, name text, email text, phone text, source text, status text, in_pipeline boolean NOT NULL DEFAULT false, assigned_to text, assigned_name text, project text, unit text, unit_value text, base_source_before_pipeline text, previous_pipeline_source text, created_at timestamptz, updated_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`ALTER TABLE crm_leads ADD COLUMN IF NOT EXISTS source_status text`;
+  await sql`ALTER TABLE crm_leads ADD COLUMN IF NOT EXISTS odysseia_status text`;
+  await sql`ALTER TABLE crm_leads ADD COLUMN IF NOT EXISTS assistant text`;
+  await sql`ALTER TABLE crm_leads ADD COLUMN IF NOT EXISTS external_id text`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_source_idx ON crm_leads (source)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_pipeline_idx ON crm_leads (in_pipeline)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_status_idx ON crm_leads (status)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_assigned_idx ON crm_leads (assigned_to)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_email_idx ON crm_leads (email)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_phone_idx ON crm_leads (phone)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_leads_base_before_idx ON crm_leads (base_source_before_pipeline)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_leads_previous_source_idx ON crm_leads (previous_pipeline_source)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_leads_source_status_idx ON crm_leads (source_status)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_leads_odysseia_status_idx ON crm_leads (odysseia_status)`;
+  await sql`UPDATE crm_leads SET
+      source = COALESCE(NULLIF(source, ''), NULLIF(payload->>'source', ''), NULLIF(payload->>'origem', ''), NULLIF(payload->>'origin', ''), ''),
+      base_source_before_pipeline = COALESCE(NULLIF(base_source_before_pipeline, ''), NULLIF(payload->>'baseSourceBeforePipeline', ''), NULLIF(payload->>'base_source_before_pipeline', ''), ''),
+      previous_pipeline_source = COALESCE(NULLIF(previous_pipeline_source, ''), NULLIF(payload->>'previousPipelineSource', ''), NULLIF(payload->>'previous_pipeline_source', ''), ''),
+      source_status = COALESCE(NULLIF(source_status, ''), NULLIF(payload->>'sourceStatus', ''), NULLIF(payload->>'source_status', ''), ''),
+      odysseia_status = COALESCE(NULLIF(odysseia_status, ''), NULLIF(payload->>'odysseiaStatus', ''), NULLIF(payload->>'odysseia_status', ''), ''),
+      assistant = COALESCE(NULLIF(assistant, ''), NULLIF(payload->>'assistant', ''), ''),
+      external_id = COALESCE(NULLIF(external_id, ''), NULLIF(payload->>'externalId', ''), NULLIF(payload->>'external_id', ''), '')
+    WHERE (NULLIF(source, '') IS NULL AND COALESCE(NULLIF(payload->>'source', ''), NULLIF(payload->>'origem', ''), NULLIF(payload->>'origin', '')) IS NOT NULL)
+      OR (NULLIF(base_source_before_pipeline, '') IS NULL AND COALESCE(NULLIF(payload->>'baseSourceBeforePipeline', ''), NULLIF(payload->>'base_source_before_pipeline', '')) IS NOT NULL)
+      OR (NULLIF(previous_pipeline_source, '') IS NULL AND COALESCE(NULLIF(payload->>'previousPipelineSource', ''), NULLIF(payload->>'previous_pipeline_source', '')) IS NOT NULL)
+      OR (NULLIF(source_status, '') IS NULL AND COALESCE(NULLIF(payload->>'sourceStatus', ''), NULLIF(payload->>'source_status', '')) IS NOT NULL)
+      OR (NULLIF(odysseia_status, '') IS NULL AND COALESCE(NULLIF(payload->>'odysseiaStatus', ''), NULLIF(payload->>'odysseia_status', '')) IS NOT NULL)
+      OR (NULLIF(assistant, '') IS NULL AND NULLIF(payload->>'assistant', '') IS NOT NULL)
+      OR (NULLIF(external_id, '') IS NULL AND COALESCE(NULLIF(payload->>'externalId', ''), NULLIF(payload->>'external_id', '')) IS NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lead_comments (id text PRIMARY KEY, lead_id text NOT NULL, author_user_id text, author_name text, comment_text text, from_user boolean NOT NULL DEFAULT false, deleted boolean NOT NULL DEFAULT false, created_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_lead_comments_lead_idx ON crm_lead_comments (lead_id)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lead_tags (lead_id text NOT NULL, tag_id text NOT NULL, PRIMARY KEY (lead_id, tag_id))`;
@@ -3914,9 +3952,10 @@ async function mirrorStructuredLead(lead) {
   try {
     const sql = await structuredSqlForMirror();
     if (!sql) return;
-    await sql`INSERT INTO crm_leads (id, name, email, phone, source, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload)
-      VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${lead.source || ""}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${lead.project || lead.empreendimento || lead.desiredProject || ""}, ${lead.unit || lead.unidade || lead.desiredUnit || ""}, ${lead.unitValue || lead.valorUnidade || ""}, ${lead.baseSourceBeforePipeline || ""}, ${lead.previousPipelineSource || ""}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)
-      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, source = EXCLUDED.source, status = EXCLUDED.status, in_pipeline = EXCLUDED.in_pipeline, assigned_to = EXCLUDED.assigned_to, assigned_name = EXCLUDED.assigned_name, project = EXCLUDED.project, unit = EXCLUDED.unit, unit_value = EXCLUDED.unit_value, base_source_before_pipeline = EXCLUDED.base_source_before_pipeline, previous_pipeline_source = EXCLUDED.previous_pipeline_source, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
+    const fields = structuredLeadDbFields(lead);
+    await sql`INSERT INTO crm_leads (id, name, email, phone, source, source_status, odysseia_status, assistant, external_id, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload)
+      VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${fields.source}, ${fields.sourceStatus}, ${fields.odysseiaStatus}, ${fields.assistant}, ${fields.externalId}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${fields.project}, ${fields.unit}, ${fields.unitValue}, ${fields.baseSourceBeforePipeline}, ${fields.previousPipelineSource}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)
+      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, source = EXCLUDED.source, source_status = EXCLUDED.source_status, odysseia_status = EXCLUDED.odysseia_status, assistant = EXCLUDED.assistant, external_id = EXCLUDED.external_id, status = EXCLUDED.status, in_pipeline = EXCLUDED.in_pipeline, assigned_to = EXCLUDED.assigned_to, assigned_name = EXCLUDED.assigned_name, project = EXCLUDED.project, unit = EXCLUDED.unit, unit_value = EXCLUDED.unit_value, base_source_before_pipeline = EXCLUDED.base_source_before_pipeline, previous_pipeline_source = EXCLUDED.previous_pipeline_source, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
   } catch (error) {
     mirrorStructuredError("lead", error);
   }
@@ -6143,6 +6182,8 @@ function publicStructuredLeadSummary(row, user) {
     email: row.email || payload.email || "",
     phone: row.phone || payload.phone || "",
     source: row.source || payload.source || "",
+    sourceStatus: row.source_status || "",
+    odysseiaStatus: row.odysseia_status || "",
     status: row.status || payload.status || "",
     inPipeline: Boolean(row.in_pipeline ?? payload.inPipeline),
     assignedTo: row.assigned_to || payload.assignedTo || "",
@@ -6152,6 +6193,8 @@ function publicStructuredLeadSummary(row, user) {
     unitValue: row.unit_value || payload.unitValue || payload.valorUnidade || "",
     baseSourceBeforePipeline: row.base_source_before_pipeline || payload.baseSourceBeforePipeline || "",
     previousPipelineSource: row.previous_pipeline_source || payload.previousPipelineSource || "",
+    assistant: row.assistant || "",
+    externalId: row.external_id || "",
     createdAt: row.created_at || payload.createdAt || payload.meta?.createdTime || "",
     updatedAt: row.updated_at || payload.updatedAt || "",
     tags: Array.isArray(row.tags) ? row.tags.filter(Boolean) : (payload.tags || payload.tagIds || []),
@@ -6169,6 +6212,8 @@ function structuredLeadFromRow(row, favorite = false, tags = []) {
     email: row.email || payload.email || "",
     phone: row.phone || payload.phone || "",
     source: row.source || payload.source || "",
+    sourceStatus: row.source_status || "",
+    odysseiaStatus: row.odysseia_status || "",
     status: row.status || payload.status || "",
     inPipeline: Boolean(row.in_pipeline ?? payload.inPipeline),
     assignedTo: row.assigned_to || payload.assignedTo || "",
@@ -6178,6 +6223,8 @@ function structuredLeadFromRow(row, favorite = false, tags = []) {
     unitValue: row.unit_value || payload.unitValue || payload.valorUnidade || "",
     baseSourceBeforePipeline: row.base_source_before_pipeline || payload.baseSourceBeforePipeline || "",
     previousPipelineSource: row.previous_pipeline_source || payload.previousPipelineSource || "",
+    assistant: row.assistant || "",
+    externalId: row.external_id || "",
     createdAt: row.created_at || payload.createdAt || payload.meta?.createdTime || "",
     updatedAt: row.updated_at || payload.updatedAt || "",
     tags: Array.isArray(tags) ? tags.filter(Boolean) : (payload.tags || payload.tagIds || []),
@@ -6205,9 +6252,10 @@ async function structuredLeadById(sql, leadId, user) {
 }
 
 async function saveStructuredLead(sql, lead) {
-  await sql`INSERT INTO crm_leads (id, name, email, phone, source, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload)
-    VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${lead.source || ""}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${lead.project || lead.empreendimento || lead.desiredProject || ""}, ${lead.unit || lead.unidade || lead.desiredUnit || ""}, ${lead.unitValue || lead.valorUnidade || ""}, ${lead.baseSourceBeforePipeline || ""}, ${lead.previousPipelineSource || ""}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)
-    ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, source = EXCLUDED.source, status = EXCLUDED.status, in_pipeline = EXCLUDED.in_pipeline, assigned_to = EXCLUDED.assigned_to, assigned_name = EXCLUDED.assigned_name, project = EXCLUDED.project, unit = EXCLUDED.unit, unit_value = EXCLUDED.unit_value, base_source_before_pipeline = EXCLUDED.base_source_before_pipeline, previous_pipeline_source = EXCLUDED.previous_pipeline_source, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
+  const fields = structuredLeadDbFields(lead);
+  await sql`INSERT INTO crm_leads (id, name, email, phone, source, source_status, odysseia_status, assistant, external_id, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload)
+    VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${fields.source}, ${fields.sourceStatus}, ${fields.odysseiaStatus}, ${fields.assistant}, ${fields.externalId}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${fields.project}, ${fields.unit}, ${fields.unitValue}, ${fields.baseSourceBeforePipeline}, ${fields.previousPipelineSource}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, source = EXCLUDED.source, source_status = EXCLUDED.source_status, odysseia_status = EXCLUDED.odysseia_status, assistant = EXCLUDED.assistant, external_id = EXCLUDED.external_id, status = EXCLUDED.status, in_pipeline = EXCLUDED.in_pipeline, assigned_to = EXCLUDED.assigned_to, assigned_name = EXCLUDED.assigned_name, project = EXCLUDED.project, unit = EXCLUDED.unit, unit_value = EXCLUDED.unit_value, base_source_before_pipeline = EXCLUDED.base_source_before_pipeline, previous_pipeline_source = EXCLUDED.previous_pipeline_source, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
 }
 
 async function structuredAudit(actor, action, details) {
@@ -6431,16 +6479,24 @@ async function fastStructuredLeadsResponse(req, res, url) {
         LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
         WHERE (
             l.in_pipeline = false
-          OR l.source IN ('META', 'Stand', 'Lista RMeirelles')
+            OR l.source IN ('META', 'Stand', 'Lista RMeirelles')
             OR COALESCE(l.base_source_before_pipeline, '') <> ''
             OR COALESCE(l.previous_pipeline_source, '') <> ''
-            OR l.payload->>'sourceStatus' IS NOT NULL
-            OR l.payload->>'odysseiaStatus' IS NOT NULL
+            OR COALESCE(l.source_status, '') <> ''
+            OR COALESCE(l.odysseia_status, '') <> ''
           )
-          AND (${sourceIsAll} OR l.source = ${sourceFilter} OR l.base_source_before_pipeline = ${sourceFilter} OR l.previous_pipeline_source = ${sourceFilter})
-          AND (${allowedIsAll} OR l.source = ANY(${allowedSources}) OR l.base_source_before_pipeline = ANY(${allowedSources}) OR l.previous_pipeline_source = ANY(${allowedSources}))
+          AND (${sourceIsAll}
+            OR l.source = ${sourceFilter}
+            OR l.base_source_before_pipeline = ${sourceFilter}
+            OR l.previous_pipeline_source = ${sourceFilter}
+          )
+          AND (${allowedIsAll}
+            OR l.source = ANY(${allowedSources})
+            OR l.base_source_before_pipeline = ANY(${allowedSources})
+            OR l.previous_pipeline_source = ANY(${allowedSources})
+          )
           AND (${!favoriteOnly} OR COALESCE(f.favorite, false) = true)
-          AND (${!searchFilter} OR lower(concat_ws(' ', l.name, l.phone, l.email, l.assigned_name, l.source, l.status, l.payload->>'assistant', l.payload->>'externalId')) LIKE ${searchLike})`;
+          AND (${!searchFilter} OR lower(concat_ws(' ', l.name, l.phone, l.email, l.assigned_name, l.source, l.status, l.assistant, l.external_id)) LIKE ${searchLike})`;
       const page = summaryRows[0] || { total: 0, pending: 0, rescued: 0 };
       rows = await sql`SELECT l.*, COALESCE(f.favorite, false) AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
           FROM crm_leads l
@@ -6451,21 +6507,29 @@ async function fastStructuredLeadsResponse(req, res, url) {
               OR l.source IN ('META', 'Stand', 'Lista RMeirelles')
               OR COALESCE(l.base_source_before_pipeline, '') <> ''
               OR COALESCE(l.previous_pipeline_source, '') <> ''
-              OR l.payload->>'sourceStatus' IS NOT NULL
-              OR l.payload->>'odysseiaStatus' IS NOT NULL
+              OR COALESCE(l.source_status, '') <> ''
+              OR COALESCE(l.odysseia_status, '') <> ''
             )
-            AND (${sourceIsAll} OR l.source = ${sourceFilter} OR l.base_source_before_pipeline = ${sourceFilter} OR l.previous_pipeline_source = ${sourceFilter})
-            AND (${allowedIsAll} OR l.source = ANY(${allowedSources}) OR l.base_source_before_pipeline = ANY(${allowedSources}) OR l.previous_pipeline_source = ANY(${allowedSources}))
+            AND (${sourceIsAll}
+              OR l.source = ${sourceFilter}
+              OR l.base_source_before_pipeline = ${sourceFilter}
+              OR l.previous_pipeline_source = ${sourceFilter}
+            )
+            AND (${allowedIsAll}
+              OR l.source = ANY(${allowedSources})
+              OR l.base_source_before_pipeline = ANY(${allowedSources})
+              OR l.previous_pipeline_source = ANY(${allowedSources})
+            )
             AND (${!favoriteOnly} OR COALESCE(f.favorite, false) = true)
-            AND (${!searchFilter} OR lower(concat_ws(' ', l.name, l.phone, l.email, l.assigned_name, l.source, l.status, l.payload->>'assistant', l.payload->>'externalId')) LIKE ${searchLike})
+            AND (${!searchFilter} OR lower(concat_ws(' ', l.name, l.phone, l.email, l.assigned_name, l.source, l.status, l.assistant, l.external_id)) LIKE ${searchLike})
           GROUP BY l.id, f.favorite
           ORDER BY
             CASE WHEN ${sortKey} = 'name' AND ${sortDirection} = 'asc' THEN lower(l.name) END ASC NULLS LAST,
             CASE WHEN ${sortKey} = 'name' AND ${sortDirection} = 'desc' THEN lower(l.name) END DESC NULLS LAST,
             CASE WHEN ${sortKey} = 'phone' AND ${sortDirection} = 'asc' THEN lower(l.phone) END ASC NULLS LAST,
             CASE WHEN ${sortKey} = 'phone' AND ${sortDirection} = 'desc' THEN lower(l.phone) END DESC NULLS LAST,
-            CASE WHEN ${sortKey} = 'email' AND ${sortDirection} = 'asc' THEN lower(COALESCE(l.email, l.payload->>'assistant')) END ASC NULLS LAST,
-            CASE WHEN ${sortKey} = 'email' AND ${sortDirection} = 'desc' THEN lower(COALESCE(l.email, l.payload->>'assistant')) END DESC NULLS LAST,
+            CASE WHEN ${sortKey} = 'email' AND ${sortDirection} = 'asc' THEN lower(COALESCE(l.email, l.assistant)) END ASC NULLS LAST,
+            CASE WHEN ${sortKey} = 'email' AND ${sortDirection} = 'desc' THEN lower(COALESCE(l.email, l.assistant)) END DESC NULLS LAST,
             CASE WHEN ${sortKey} = 'status' AND ${sortDirection} = 'asc' THEN lower(l.status) END ASC NULLS LAST,
             CASE WHEN ${sortKey} = 'status' AND ${sortDirection} = 'desc' THEN lower(l.status) END DESC NULLS LAST,
             CASE WHEN ${sortKey} = 'broker' AND ${sortDirection} = 'asc' THEN lower(l.assigned_name) END ASC NULLS LAST,
@@ -6491,7 +6555,11 @@ async function fastStructuredLeadsResponse(req, res, url) {
       return false;
     }
     if (scope === "bases" && user.role !== "Admin TI") {
-      rows = rows.filter((row) => baseSourcesForLead(row.payload || {}).some((source) => allowedSources.includes(source)));
+      rows = rows.filter((row) => baseSourcesForLead({
+        source: row.source,
+        baseSourceBeforePipeline: row.base_source_before_pipeline,
+        previousPipelineSource: row.previous_pipeline_source
+      }).some((source) => allowedSources.includes(source)));
     }
     return sendJson(res, 200, {
       leads: rows.map((row) => publicStructuredLeadSummary(row, user)),
@@ -6985,7 +7053,8 @@ async function insertStructuredDataset(sql, db, key) {
     summary.totalJson = leads.length;
     summary.remaining = Math.max(0, leads.length - offset - batch.length);
     for (const lead of batch) {
-      await sql`INSERT INTO crm_leads (id, name, email, phone, source, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload) VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${lead.source || ""}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${lead.project || lead.empreendimento || ""}, ${lead.unit || lead.unidade || ""}, ${lead.unitValue || lead.valorUnidade || ""}, ${lead.baseSourceBeforePipeline || ""}, ${lead.previousPipelineSource || ""}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)`;
+      const fields = structuredLeadDbFields(lead);
+      await sql`INSERT INTO crm_leads (id, name, email, phone, source, source_status, odysseia_status, assistant, external_id, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload) VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${fields.source}, ${fields.sourceStatus}, ${fields.odysseiaStatus}, ${fields.assistant}, ${fields.externalId}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${fields.project}, ${fields.unit}, ${fields.unitValue}, ${fields.baseSourceBeforePipeline}, ${fields.previousPipelineSource}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)`;
       summary.leads += 1;
     }
   } else if (key === "comments") {
@@ -7161,7 +7230,8 @@ async function syncStructuredDb(db, actor) {
       summary.users += 1;
     }
     for (const lead of db.leads || []) {
-      await sql`INSERT INTO crm_leads (id, name, email, phone, source, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload) VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${lead.source || ""}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${lead.project || lead.empreendimento || ""}, ${lead.unit || lead.unidade || ""}, ${lead.unitValue || lead.valorUnidade || ""}, ${lead.baseSourceBeforePipeline || ""}, ${lead.previousPipelineSource || ""}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)`;
+      const fields = structuredLeadDbFields(lead);
+      await sql`INSERT INTO crm_leads (id, name, email, phone, source, source_status, odysseia_status, assistant, external_id, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload) VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${fields.source}, ${fields.sourceStatus}, ${fields.odysseiaStatus}, ${fields.assistant}, ${fields.externalId}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${fields.project}, ${fields.unit}, ${fields.unitValue}, ${fields.baseSourceBeforePipeline}, ${fields.previousPipelineSource}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)`;
       summary.leads += 1;
       for (const comment of lead.comments || []) {
         await sql`INSERT INTO crm_lead_comments (id, lead_id, author_user_id, author_name, comment_text, from_user, deleted, created_at, payload) VALUES (${comment.id || crypto.randomUUID()}, ${lead.id}, ${comment.userId || comment.authorId || ""}, ${comment.userName || comment.authorName || comment.author || ""}, ${comment.text || ""}, ${Boolean(comment.fromUser)}, ${Boolean(comment.deletedAt || comment.deleted)}, ${dbDate(comment.at || comment.createdAt)}, ${JSON.stringify(comment)}::jsonb)`;

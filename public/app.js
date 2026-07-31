@@ -401,7 +401,7 @@ function odysseiaLeads() {
 }
 
 function hasBaseHistory(lead) {
-  return Boolean(lead.sourceStatus || lead.odysseiaStatus);
+  return Boolean(lead.sourceStatus || lead.odysseiaStatus || lead.baseSourceBeforePipeline || lead.previousPipelineSource);
 }
 
 function isAvailableBaseLead(lead) {
