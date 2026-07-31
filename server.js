@@ -9,7 +9,7 @@ const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? path.join("/tmp",
 const DB_PATH = path.join(DATA_DIR, "db.json");
 const SEED_PATH = path.join(DATA_DIR, "seed.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
-const SESSION_TTL_MS = 1000 * 60 * 5;
+const SESSION_TTL_MS = 1000 * 60 * 15;
 const PASSWORD_SETUP_TTL_MS = 1000 * 60 * 60 * 24;
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor", "Gerente Financeiro", "Auxiliar Financeiro", "Gestor de Tráfego", "Coordenador de Marketing"];
 const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
@@ -5538,10 +5538,10 @@ async function fastStructuredOperationalRoutes(req, res, url) {
     }
 
     if (url.pathname === "/api/structured-db/normalize-bases" && req.method === "POST") {
-      if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      if (!canManageSettings(user) || user.role !== "Admin TI" || user.username !== "admin") return sendJson(res, 403, { error: "Sem permissão" });
       const body = await readBody(req);
       const limit = Math.max(0, Math.min(10000, Number(body.limit || 0)));
-      const summary = await normalizeStructuredBaseColumns(sql, { limit });
+      const summary = await normalizeStructuredBaseColumns(sql, { limit, source: body.source });
       const runId = crypto.randomUUID();
       await sql`INSERT INTO crm_structured_sync_runs (id, status, finished_at, summary) VALUES (${runId}, 'success', now(), ${JSON.stringify({ dataset: "baseColumnNormalization", ...summary })}::jsonb)`;
       await structuredAudit(user, "NORMALIZE_STRUCTURED_BASE_COLUMNS", summary);
@@ -7403,21 +7403,39 @@ async function normalizeStructuredBaseColumns(sql, options = {}) {
   await ensureStructuredSchemaOnce(sql);
   const limit = Math.max(0, Math.min(10000, Number(options.limit || 0)));
   const knownSources = ["ODYSSEIA", "RD Station", "OAB", "Vinhos na Serra", "Pipeline GDrive", "META", "Stand", "Lista RMeirelles"];
-  for (const source of knownSources) {
-    await sql`INSERT INTO crm_base_sources (name) VALUES (${source}) ON CONFLICT DO NOTHING`;
+  const allowedNormalizationSources = ["RD Station", "Pipeline GDrive", "Vinhos na Serra"];
+  const source = allowedNormalizationSources.includes(String(options.source || "")) ? String(options.source) : "";
+  if (!source) throw new Error("Informe uma base válida para normalizar.");
+  for (const knownSource of knownSources) {
+    await sql`INSERT INTO crm_base_sources (name) VALUES (${knownSource}) ON CONFLICT DO NOTHING`;
   }
-  const targetRows = limit
+  const sourcePattern = source === "Pipeline GDrive"
+    ? "%gdrive%"
+    : source === "RD Station"
+      ? "%rd station%"
+      : source === "Vinhos na Serra"
+        ? "%vinhos na serra%"
+        : "";
+  const targetRows = (limit || source)
     ? await sql`SELECT id FROM crm_leads
-        WHERE (NULLIF(source, '') IS NULL AND COALESCE(NULLIF(payload->>'source', ''), NULLIF(payload->>'origem', ''), NULLIF(payload->>'origin', ''), NULLIF(payload->>'baseSource', ''), NULLIF(payload->>'base_source', ''), NULLIF(payload->>'sourceName', ''), NULLIF(payload->>'originName', ''), NULLIF(payload->>'baseName', '')) IS NOT NULL)
-          OR COALESCE(source, '') IN ('', 'IMPORTADO', 'Base', 'EMPTY')
-          OR lower(concat_ws(' ', source, base_source_before_pipeline, previous_pipeline_source, payload::text)) LIKE '%gdrive%'
-          OR lower(concat_ws(' ', source, base_source_before_pipeline, previous_pipeline_source, payload::text)) LIKE '%rd station%'
-          OR lower(concat_ws(' ', source, base_source_before_pipeline, previous_pipeline_source, payload::text)) LIKE '%vinhos na serra%'
+        WHERE (
+            (NULLIF(source, '') IS NULL AND COALESCE(NULLIF(payload->>'source', ''), NULLIF(payload->>'origem', ''), NULLIF(payload->>'origin', ''), NULLIF(payload->>'baseSource', ''), NULLIF(payload->>'base_source', ''), NULLIF(payload->>'sourceName', ''), NULLIF(payload->>'originName', ''), NULLIF(payload->>'baseName', '')) IS NOT NULL)
+            OR COALESCE(source, '') IN ('', 'IMPORTADO', 'Base', 'EMPTY')
+            OR lower(concat_ws(' ', source, base_source_before_pipeline, previous_pipeline_source, payload::text)) LIKE '%gdrive%'
+            OR lower(concat_ws(' ', source, base_source_before_pipeline, previous_pipeline_source, payload::text)) LIKE '%rd station%'
+            OR lower(concat_ws(' ', source, base_source_before_pipeline, previous_pipeline_source, payload::text)) LIKE '%vinhos na serra%'
+          )
+          AND (${!source}
+            OR source = ${source}
+            OR base_source_before_pipeline = ${source}
+            OR previous_pipeline_source = ${source}
+            OR (${Boolean(sourcePattern)} AND lower(concat_ws(' ', source, base_source_before_pipeline, previous_pipeline_source, payload::text)) LIKE ${sourcePattern})
+          )
         ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id ASC
-        LIMIT ${limit}`
+        LIMIT ${limit || 100000}`
     : [];
   const targetIds = targetRows.map((row) => row.id);
-  const limited = limit > 0;
+  const limited = limit > 0 || Boolean(source);
 
   const enrichedRows = await sql`UPDATE crm_leads SET
       source = COALESCE(NULLIF(source, ''), NULLIF(payload->>'source', ''), NULLIF(payload->>'origem', ''), NULLIF(payload->>'origin', ''), NULLIF(payload->>'baseSource', ''), NULLIF(payload->>'base_source', ''), NULLIF(payload->>'sourceName', ''), NULLIF(payload->>'originName', ''), NULLIF(payload->>'baseName', ''), ''),
@@ -7516,6 +7534,7 @@ async function normalizeStructuredBaseColumns(sql, options = {}) {
 
   return {
     tested: limit || null,
+    source: source || null,
     candidateCount: limited ? targetIds.length : null,
     enriched: enrichedRows.length,
     sourcesNormalized: sourceRows.length,
