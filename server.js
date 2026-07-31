@@ -4372,6 +4372,109 @@ async function structuredConfigDb(sql, { includeLeads = false } = {}) {
   return db;
 }
 
+function metaLeadLocalId(leadgenId) {
+  return `meta-${String(leadgenId || "").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function metaLeadgenIdsFromWebhookPayload(payload = {}) {
+  const ids = [];
+  for (const entry of payload.entry || []) {
+    for (const change of entry.changes || []) {
+      if (change.field === "leadgen" && change.value?.leadgen_id) ids.push(String(change.value.leadgen_id).trim());
+    }
+  }
+  return [...new Set(ids.filter(Boolean))];
+}
+
+async function structuredMetaRuntimeDb(sql, leadgenIds = []) {
+  const db = await structuredConfigDb(sql);
+  const ids = [...new Set((leadgenIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!ids.length) return db;
+  const localIds = ids.map(metaLeadLocalId);
+  const externalIds = ids.map((id) => `META-${id}`);
+  const rows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
+    FROM crm_leads l
+    LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
+    WHERE l.id = ANY(${localIds})
+      OR l.payload->>'metaLeadId' = ANY(${ids})
+      OR l.payload->>'externalId' = ANY(${externalIds})
+    GROUP BY l.id`;
+  db.leads = rows.map((row) => structuredLeadFromRow(row, false, row.tags)).filter((lead) => lead.id);
+  return db;
+}
+
+async function persistStructuredMetaRuntimeLeads(sql, db, leadgenIds = []) {
+  const ids = new Set((leadgenIds || []).map((id) => String(id || "").trim()).filter(Boolean));
+  for (const lead of db.leads || []) {
+    const metaId = String(lead.metaLeadId || lead.meta?.leadgenId || "").trim();
+    if (String(lead.id || "").startsWith("meta-") || ids.has(metaId)) await saveStructuredLead(sql, lead);
+  }
+}
+
+async function syncRecentMetaLeadsStructured(sql, actor, { days = 7, limitPerForm = 200, formId = "" } = {}) {
+  const configDb = await structuredConfigDb(sql);
+  const requestedFormId = String(formId || "").trim();
+  const forms = configuredMetaForms(configDb).filter((form) => !requestedFormId || form.id === requestedFormId);
+  if (!forms.length) {
+    throw new Error(requestedFormId
+      ? `Formulário Meta ${requestedFormId} não está cadastrado como ativo`
+      : "Cadastre pelo menos um ID de formulário do Meta");
+  }
+  const sinceIso = new Date(Date.now() - Math.max(1, Number(days) || 7) * 24 * 60 * 60 * 1000).toISOString();
+  const result = {
+    forms: forms.length,
+    formId: requestedFormId,
+    found: 0,
+    created: 0,
+    duplicates: 0,
+    errors: []
+  };
+  const leadRefs = [];
+  for (const form of forms) {
+    try {
+      const recentLeads = await fetchMetaFormLeads(form.id, { sinceIso, limit: limitPerForm });
+      result.found += recentLeads.length;
+      for (const item of recentLeads) {
+        if (item.id) leadRefs.push({ leadgenId: String(item.id), formId: form.id });
+      }
+    } catch (error) {
+      result.errors.push({ formId: form.id, error: error.message });
+      await structuredIntegration("META", "SYNC_FORM_ERROR", { formId: form.id, error: error.message });
+    }
+  }
+  const db = await structuredMetaRuntimeDb(sql, leadRefs.map((item) => item.leadgenId));
+  for (const item of leadRefs) {
+    try {
+      const imported = await importMetaLeadById(db, actor, item.leadgenId, { form_id: item.formId });
+      if (imported.status === "created") result.created += 1;
+      else result.duplicates += 1;
+    } catch (error) {
+      result.errors.push({ formId: item.formId, leadgenId: item.leadgenId, error: error.message });
+      integrationEvent(db, "META", "SYNC_LEAD_ERROR", { formId: item.formId, leadgenId: item.leadgenId, error: error.message });
+    }
+  }
+  await persistStructuredMetaRuntimeLeads(sql, db, leadRefs.map((item) => item.leadgenId));
+  integrationEvent(db, "META", "SYNC_RECENT", {
+    days,
+    formId: requestedFormId,
+    forms: result.forms,
+    found: result.found,
+    created: result.created,
+    duplicates: result.duplicates,
+    errors: result.errors.length
+  });
+  audit(db, actor, "SYNC_META_RECENT", {
+    days,
+    formId: requestedFormId,
+    forms: result.forms,
+    found: result.found,
+    created: result.created,
+    duplicates: result.duplicates,
+    errors: result.errors.length
+  });
+  return result;
+}
+
 async function replaceStructuredProjects(sql, projects) {
   await sql`DELETE FROM crm_projects`;
   for (const [position, name] of projects.entries()) {
@@ -4421,7 +4524,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
       const body = await readBody(req);
       const leadgenId = String(body.leadgenId || "").trim();
-      const db = await structuredConfigDb(sql, { includeLeads: true });
+      const db = await structuredMetaRuntimeDb(sql, [leadgenId]);
       try {
         const imported = await importMetaLeadById(db, user, leadgenId, {});
         if (imported.lead) await saveStructuredLead(sql, imported.lead);
@@ -4435,12 +4538,8 @@ async function fastStructuredSettingsRoutes(req, res, url) {
     if (url.pathname === "/api/integrations/meta/sync-recent" && method === "POST") {
       if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
       const body = await readBody(req);
-      const db = await structuredConfigDb(sql, { includeLeads: true });
       try {
-        const result = await syncRecentMetaLeads(db, user, { days: Number(body.days || 7), formId: body.formId });
-        for (const lead of db.leads || []) {
-          if (String(lead.id || "").startsWith("meta-")) await saveStructuredLead(sql, lead);
-        }
+        const result = await syncRecentMetaLeadsStructured(sql, user, { days: Number(body.days || 7), formId: body.formId });
         return sendJson(res, 200, { ok: true, ...result, dataSources: { action: "structured" } });
       } catch (error) {
         await structuredIntegration("META", "SYNC_MANUAL_ERROR", { error: error.message });
@@ -4786,6 +4885,71 @@ async function fastStructuredSettingsRoutes(req, res, url) {
     return false;
   } catch (error) {
     mirrorStructuredError("fast-settings", error);
+    sendJson(res, 500, { error: "Erro interno", detail: error.message });
+    return true;
+  }
+}
+
+async function fastStructuredMetaRoutes(req, res, url) {
+  if (!DATABASE_URL) return false;
+  const method = req.method;
+  const isMetaRoute = url.pathname === "/api/webhooks/meta" || url.pathname === "/api/cron/meta-sync";
+  if (!isMetaRoute) return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchema(sql);
+
+    if (method === "GET" && url.pathname === "/api/webhooks/meta") {
+      const mode = url.searchParams.get("hub.mode");
+      const token = url.searchParams.get("hub.verify_token");
+      const challenge = url.searchParams.get("hub.challenge");
+      if (mode === "subscribe" && META_VERIFY_TOKEN && token === META_VERIFY_TOKEN) {
+        await structuredIntegration("META", "WEBHOOK_VERIFIED", {});
+        return send(res, 200, challenge || "", { "Content-Type": "text/plain; charset=utf-8" });
+      }
+      await structuredIntegration("META", "WEBHOOK_VERIFY_FAILED", { mode });
+      return send(res, 403, "Token inválido", { "Content-Type": "text/plain; charset=utf-8" });
+    }
+
+    if (method === "POST" && url.pathname === "/api/webhooks/meta") {
+      const rawBody = await readRawBody(req);
+      const signature = verifyMetaSignature(req, rawBody);
+      if (!signature.ok) {
+        await structuredIntegration("META", "WEBHOOK_SIGNATURE_FAILED", { error: signature.error });
+        return sendJson(res, signature.status, { error: signature.error });
+      }
+      let payload;
+      try {
+        payload = rawBody ? JSON.parse(rawBody) : {};
+      } catch {
+        await structuredIntegration("META", "WEBHOOK_INVALID_JSON", {});
+        return sendJson(res, 400, { error: "Payload inválido" });
+      }
+      const leadgenIds = metaLeadgenIdsFromWebhookPayload(payload);
+      const db = await structuredMetaRuntimeDb(sql, leadgenIds);
+      const result = await processMetaWebhook(db, payload);
+      await persistStructuredMetaRuntimeLeads(sql, db, leadgenIds);
+      return sendJson(res, 200, { ok: !result.errors.length, ...result, dataSources: { action: "structured" } });
+    }
+
+    if (method === "GET" && url.pathname === "/api/cron/meta-sync") {
+      const secret = process.env.CRON_SECRET || "";
+      if (!secret) return sendJson(res, 500, { error: "CRON_SECRET ausente" });
+      if (req.headers.authorization !== `Bearer ${secret}`) return sendJson(res, 401, { error: "Não autorizado" });
+      try {
+        const result = await syncRecentMetaLeadsStructured(sql, { username: "meta-cron", name: "Meta Cron" }, { days: Number(url.searchParams.get("days") || 2) });
+        return sendJson(res, 200, { ok: true, ...result, dataSources: { action: "structured" } });
+      } catch (error) {
+        await structuredIntegration("META", "SYNC_CRON_ERROR", { error: error.message });
+        return sendJson(res, 400, { error: error.message });
+      }
+    }
+
+    return false;
+  } catch (error) {
+    mirrorStructuredError("fast-meta", error);
+    await structuredIntegration("META", "WEBHOOK_RUNTIME_ERROR", { path: url.pathname, error: error.message }).catch(() => {});
     sendJson(res, 500, { error: "Erro interno", detail: error.message });
     return true;
   }
@@ -7911,6 +8075,7 @@ async function routeApi(req, res, db) {
 async function handleRequest(req, res) {
   if (req.url.startsWith("/api/")) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    if (await fastStructuredMetaRoutes(req, res, url)) return;
     if (await fastStructuredAuthRoutes(req, res, url)) return;
     if (await fastStructuredUserPermissionRoutes(req, res, url)) return;
     if (await fastStructuredSettingsRoutes(req, res, url)) return;
