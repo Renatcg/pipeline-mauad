@@ -2898,8 +2898,15 @@ function samStatusToPipelineStatus(db, status) {
 }
 
 function samStatusToPipelineStatusFromList(pipelineStatuses, status) {
+  const definitions = (pipelineStatuses || []).map((item) => typeof item === "string" ? { status: item, samCodes: [] } : item);
   const raw = String(status || "").trim();
   const normalized = normalizeComparableText(raw).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  for (const definition of definitions) {
+    const codes = Array.isArray(definition.samCodes) ? definition.samCodes : [];
+    if (codes.some((code) => normalizeComparableText(code).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") === normalized)) {
+      return definition.status || definition.name || raw;
+    }
+  }
   const aliases = {
     reservation_created: "Reservado",
     contract_issued: "Contrato Emitido",
@@ -2917,7 +2924,7 @@ function samStatusToPipelineStatusFromList(pipelineStatuses, status) {
   };
   const desired = aliases[normalized] || raw;
   const desiredComparable = normalizeComparableText(desired);
-  return (pipelineStatuses || []).find((item) => normalizeComparableText(item) === desiredComparable) || desired;
+  return definitions.find((item) => normalizeComparableText(item.status || item.name) === desiredComparable)?.status || desired;
 }
 
 function isDuplicateSamEvent(db, eventId) {
@@ -3756,6 +3763,7 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_lead_tags (lead_id text NOT NULL, tag_id text NOT NULL, PRIMARY KEY (lead_id, tag_id))`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lead_favorites (lead_id text NOT NULL, user_id text NOT NULL, favorite boolean NOT NULL DEFAULT true, PRIMARY KEY (lead_id, user_id))`;
   await sql`CREATE TABLE IF NOT EXISTS crm_pipeline_statuses (status text PRIMARY KEY, position integer NOT NULL)`;
+  await sql`ALTER TABLE crm_pipeline_statuses ADD COLUMN IF NOT EXISTS payload jsonb NOT NULL DEFAULT '{}'::jsonb`;
   await sql`CREATE TABLE IF NOT EXISTS crm_projects (name text PRIMARY KEY, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
   await sql`ALTER TABLE crm_projects ADD COLUMN IF NOT EXISTS position integer NOT NULL DEFAULT 0`;
   await sql`CREATE TABLE IF NOT EXISTS crm_tag_definitions (id text PRIMARY KEY, name text, color text, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
@@ -4092,11 +4100,13 @@ async function processSamWebhookStructured(payload) {
   if (!eventType) return { ok: false, httpStatus: 400, error: "event_type obrigatório" };
   if (!email && !phone) return { ok: false, httpStatus: 400, error: "E-mail ou telefone obrigatório" };
   if (!unit) return { ok: false, httpStatus: 400, error: "Unidade obrigatória" };
-  const [lead, statuses] = await Promise.all([
+  const [lead, statuses, projectDefinitions] = await Promise.all([
     findStructuredSamLeadCandidate(sql, { email, phone }),
-    structuredPipelineStatuses(sql)
+    structuredStatusDefinitions(sql),
+    structuredProjectDefinitions(sql)
   ]);
   const nextStatus = samStatusToPipelineStatusFromList(statuses, eventType);
+  const project = projectNameForUnit(unit, projectDefinitions);
   const leadUnits = lead ? leadUnitsForMatch(lead) : [];
   const unitMatches = Boolean(lead && leadUnits.includes(unit));
   const event = {
@@ -4107,6 +4117,7 @@ async function processSamWebhookStructured(payload) {
     email,
     phone,
     unit,
+    project,
     nextStatus,
     status: unitMatches ? "matched" : lead ? "unit_mismatch" : "not_found",
     leadId: lead?.id || "",
@@ -4124,6 +4135,7 @@ async function processSamWebhookStructured(payload) {
     eventDatetime,
     leadId: event.leadId,
     unit,
+    project,
     nextStatus
   });
   return {
@@ -4137,7 +4149,7 @@ async function processSamWebhookStructured(payload) {
 
 async function applyStructuredSamEventToLead(sql, user, event, lead) {
   const previousStatus = lead.status || "";
-  const statuses = await structuredPipelineStatuses(sql);
+  const statuses = await structuredStatusDefinitions(sql);
   lead.status = event.nextStatus || samStatusToPipelineStatusFromList(statuses, event.eventType);
   lead.inPipeline = true;
   lead.samLastEvent = {
@@ -4559,8 +4571,8 @@ async function structuredBackupDb(sql) {
     sql`SELECT lead_id, payload FROM crm_lead_comments ORDER BY created_at DESC NULLS LAST`,
     sql`SELECT lead_id, tag_id FROM crm_lead_tags ORDER BY lead_id ASC, tag_id ASC`,
     sql`SELECT lead_id, user_id, favorite FROM crm_lead_favorites ORDER BY lead_id ASC, user_id ASC`,
-    sql`SELECT name FROM crm_projects ORDER BY position ASC, name ASC`,
-    sql`SELECT status FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`,
+    sql`SELECT name, position, payload FROM crm_projects ORDER BY position ASC, name ASC`,
+    sql`SELECT status, position, payload FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`,
     sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`,
     sql`SELECT name FROM crm_base_sources ORDER BY name ASC`,
     sql`SELECT payload FROM crm_meta_forms ORDER BY archived ASC, name ASC`,
@@ -4599,13 +4611,17 @@ async function structuredBackupDb(sql) {
   const forms = formRows.map((row) => row.payload || {}).filter((form) => form.id);
   const baseSources = sourceRows.map((row) => row.name).filter(Boolean);
   const permissions = structuredPermissionsFromRows(permissionRows);
+  const projectDefinitions = projectRows.map((row, index) => normalizeProjectDefinition({ ...(row.payload || {}), name: row.name }, Number(row.position ?? index))).filter((project) => project.name);
+  const statusDefinitions = statusRows.map((row, index) => normalizeStatusDefinition({ ...(row.payload || {}), status: row.status }, Number(row.position ?? index))).filter((status) => status.status);
   const db = {
     schemaVersion: APP_SCHEMA_VERSION,
     roles: ROLES,
     users: userRows.map(structuredUserFromAuthRow).filter((user) => user?.id),
     leads,
-    projects: projectRows.map((row) => row.name).filter(Boolean),
-    pipelineStatuses: statusRows.map((row) => row.status).filter(Boolean),
+    projects: projectDefinitions.map((project) => project.name),
+    projectDefinitions,
+    pipelineStatuses: statusDefinitions.map((status) => status.status),
+    statusDefinitions,
     tagDefinitions: tagDefinitionRows.map((row) => row.payload || {}).filter((tag) => tag.id),
     integrations: {
       ...(settings.integrations || {}),
@@ -4737,16 +4753,20 @@ async function syncRecentMetaLeadsStructured(sql, actor, { days = 7, limitPerFor
 
 async function replaceStructuredProjects(sql, projects) {
   await sql`DELETE FROM crm_projects`;
-  for (const [position, name] of projects.entries()) {
+  for (const [position, projectInput] of projects.entries()) {
+    const project = normalizeProjectDefinition(projectInput, position);
+    if (!project.name) continue;
     await sql`INSERT INTO crm_projects (name, position, payload)
-      VALUES (${name}, ${position}, ${JSON.stringify({ name, position })}::jsonb)`;
+      VALUES (${project.name}, ${position}, ${JSON.stringify(project)}::jsonb)`;
   }
 }
 
 async function replaceStructuredStatuses(sql, statuses) {
   await sql`DELETE FROM crm_pipeline_statuses`;
-  for (const [position, status] of statuses.entries()) {
-    await sql`INSERT INTO crm_pipeline_statuses (status, position) VALUES (${status}, ${position})`;
+  for (const [position, statusInput] of statuses.entries()) {
+    const definition = normalizeStatusDefinition(statusInput, position);
+    if (!definition.status) continue;
+    await sql`INSERT INTO crm_pipeline_statuses (status, position, payload) VALUES (${definition.status}, ${position}, ${JSON.stringify(definition)}::jsonb)`;
   }
 }
 
@@ -4932,18 +4952,19 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       const body = await readBody(req);
       const name = String(body.name || "").trim();
       if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
-      const projects = await structuredProjectNames(sql);
-      if (projects.some((project) => project.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Empreendimento já existe" });
-      projects.push(name);
-      await replaceStructuredProjects(sql, projects);
+      const projectDefinitions = await structuredProjectDefinitions(sql);
+      if (projectDefinitions.some((project) => project.name.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Empreendimento já existe" });
+      projectDefinitions.push(normalizeProjectDefinition({ name, unitPrefixes: body.unitPrefixes }, projectDefinitions.length));
+      await replaceStructuredProjects(sql, projectDefinitions);
       await structuredAudit(user, "CREATE_PROJECT", { name });
-      return sendJson(res, 201, { projects, dataSources: { action: "structured" } });
+      return sendJson(res, 201, { projects: projectDefinitions.map((project) => project.name), projectDefinitions, dataSources: { action: "structured" } });
     }
 
     const projectMatch = url.pathname.match(/^\/api\/projects\/(\d+)$/);
     if (projectMatch && method === "PATCH") {
       if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
-      const projects = await structuredProjectNames(sql);
+      const projectDefinitions = await structuredProjectDefinitions(sql);
+      const projects = projectDefinitions.map((project) => project.name);
       const index = Number(projectMatch[1]);
       const oldName = projects[index];
       if (!oldName) return notFound(res);
@@ -4953,8 +4974,8 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (projects.some((project, projectIndex) => projectIndex !== index && project.toLowerCase() === name.toLowerCase())) {
         return sendJson(res, 400, { error: "Empreendimento já existe" });
       }
-      projects[index] = name;
-      await replaceStructuredProjects(sql, projects);
+      projectDefinitions[index] = normalizeProjectDefinition({ ...projectDefinitions[index], name, unitPrefixes: body.unitPrefixes }, index);
+      await replaceStructuredProjects(sql, projectDefinitions);
       const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
         FROM crm_leads l
         LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
@@ -4976,16 +4997,18 @@ async function fastStructuredSettingsRoutes(req, res, url) {
           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, project = EXCLUDED.project, archived = EXCLUDED.archived, ad_url = EXCLUDED.ad_url, payload = EXCLUDED.payload`;
       }
       await structuredAudit(user, "UPDATE_PROJECT", { oldName, name });
-      return sendJson(res, 200, { projects, dataSources: { action: "structured" } });
+      return sendJson(res, 200, { projects: projectDefinitions.map((project) => project.name), projectDefinitions, dataSources: { action: "structured" } });
     }
 
     if (projectMatch && method === "DELETE") {
       if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
-      const projects = await structuredProjectNames(sql);
+      const projectDefinitions = await structuredProjectDefinitions(sql);
+      const projects = projectDefinitions.map((project) => project.name);
       const index = Number(projectMatch[1]);
-      const [deleted] = projects.splice(index, 1);
+      const [deletedDefinition] = projectDefinitions.splice(index, 1);
+      const deleted = deletedDefinition?.name;
       if (!deleted) return notFound(res);
-      await replaceStructuredProjects(sql, projects);
+      await replaceStructuredProjects(sql, projectDefinitions);
       const formRows = await sql`SELECT payload FROM crm_meta_forms WHERE project = ${deleted} OR payload->>'project' = ${deleted}`;
       for (const row of formRows) {
         const form = normalizeMetaFormPayload({ ...(row.payload || {}), project: "" });
@@ -4995,7 +5018,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, project = EXCLUDED.project, archived = EXCLUDED.archived, ad_url = EXCLUDED.ad_url, payload = EXCLUDED.payload`;
       }
       await structuredAudit(user, "DELETE_PROJECT", { name: deleted });
-      return sendJson(res, 200, { projects, dataSources: { action: "structured" } });
+      return sendJson(res, 200, { projects: projectDefinitions.map((project) => project.name), projectDefinitions, dataSources: { action: "structured" } });
     }
 
     if (url.pathname === "/api/statuses" && method === "POST") {
@@ -5003,12 +5026,12 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       const body = await readBody(req);
       const name = String(body.name || "").trim();
       if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
-      const statuses = await structuredPipelineStatuses(sql);
-      if (statuses.some((status) => status.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Status já existe" });
-      statuses.push(name);
-      await replaceStructuredStatuses(sql, statuses);
+      const statusDefinitions = await structuredStatusDefinitions(sql);
+      if (statusDefinitions.some((status) => status.status.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Status já existe" });
+      statusDefinitions.push(normalizeStatusDefinition({ status: name, samCodes: body.samCodes }, statusDefinitions.length));
+      await replaceStructuredStatuses(sql, statusDefinitions);
       await structuredAudit(user, "CREATE_STATUS", { name });
-      return sendJson(res, 201, { pipelineStatuses: statuses, dataSources: { action: "structured" } });
+      return sendJson(res, 201, { pipelineStatuses: statusDefinitions.map((status) => status.status), statusDefinitions, dataSources: { action: "structured" } });
     }
 
     if (url.pathname === "/api/statuses/reorder" && method === "PUT") {
@@ -5022,7 +5045,9 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       for (const status of currentStatuses) {
         if (!statuses.includes(status)) return sendJson(res, 400, { error: "Sequência inválida" });
       }
-      await replaceStructuredStatuses(sql, statuses);
+      const currentDefinitions = await structuredStatusDefinitions(sql);
+      const nextDefinitions = statuses.map((status, position) => normalizeStatusDefinition(currentDefinitions.find((item) => item.status === status) || { status }, position));
+      await replaceStructuredStatuses(sql, nextDefinitions);
       await structuredAudit(user, "REORDER_STATUS", { statuses });
       return sendJson(res, 200, { pipelineStatuses: statuses, dataSources: { action: "structured" } });
     }
@@ -5030,7 +5055,8 @@ async function fastStructuredSettingsRoutes(req, res, url) {
     const statusMatch = url.pathname.match(/^\/api\/statuses\/(\d+)$/);
     if (statusMatch && method === "PATCH") {
       if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
-      const statuses = await structuredPipelineStatuses(sql);
+      const statusDefinitions = await structuredStatusDefinitions(sql);
+      const statuses = statusDefinitions.map((status) => status.status);
       const index = Number(statusMatch[1]);
       const oldName = statuses[index];
       if (!oldName) return notFound(res);
@@ -5038,8 +5064,8 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       const name = String(body.name || "").trim();
       if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
       if (statuses.some((status, idx) => idx !== index && status.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Status já existe" });
-      statuses[index] = name;
-      await replaceStructuredStatuses(sql, statuses);
+      statusDefinitions[index] = normalizeStatusDefinition({ ...statusDefinitions[index], status: name, samCodes: body.samCodes }, index);
+      await replaceStructuredStatuses(sql, statusDefinitions);
       const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
         FROM crm_leads l
         LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
@@ -5052,21 +5078,22 @@ async function fastStructuredSettingsRoutes(req, res, url) {
         await saveStructuredLead(sql, lead);
       }
       await structuredAudit(user, "UPDATE_STATUS", { oldName, name });
-      return sendJson(res, 200, { pipelineStatuses: statuses, dataSources: { action: "structured" } });
+      return sendJson(res, 200, { pipelineStatuses: statusDefinitions.map((status) => status.status), statusDefinitions, dataSources: { action: "structured" } });
     }
 
     if (statusMatch && method === "DELETE") {
       if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
-      const statuses = await structuredPipelineStatuses(sql);
+      const statusDefinitions = await structuredStatusDefinitions(sql);
+      const statuses = statusDefinitions.map((item) => item.status);
       const index = Number(statusMatch[1]);
       const status = statuses[index];
       if (!status) return notFound(res);
       const rows = await sql`SELECT COUNT(*)::int AS count FROM crm_leads WHERE in_pipeline = true AND status = ${status}`;
       if (Number(rows[0]?.count || 0) > 0) return sendJson(res, 400, { error: "Não é possível excluir status usado por leads" });
-      statuses.splice(index, 1);
-      await replaceStructuredStatuses(sql, statuses);
+      statusDefinitions.splice(index, 1);
+      await replaceStructuredStatuses(sql, statusDefinitions);
       await structuredAudit(user, "DELETE_STATUS", { status });
-      return sendJson(res, 200, { pipelineStatuses: statuses, dataSources: { action: "structured" } });
+      return sendJson(res, 200, { pipelineStatuses: statusDefinitions.map((item) => item.status), statusDefinitions, dataSources: { action: "structured" } });
     }
 
     if (url.pathname === "/api/tags" && method === "POST") {
@@ -5577,8 +5604,8 @@ async function fastStructuredStateResponse(req, res, url) {
       settingsRows
     ] = await Promise.all([
       sql`SELECT * FROM crm_users ORDER BY name ASC, username ASC`,
-      sql`SELECT name FROM crm_projects ORDER BY position ASC, name ASC`,
-      sql`SELECT status FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`,
+      sql`SELECT name, position, payload FROM crm_projects ORDER BY position ASC, name ASC`,
+      sql`SELECT status, position, payload FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`,
       sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`,
       sql`SELECT name FROM crm_base_sources ORDER BY name ASC`,
       sql`SELECT payload FROM crm_meta_forms ORDER BY archived ASC, name ASC`,
@@ -5596,8 +5623,10 @@ async function fastStructuredStateResponse(req, res, url) {
     ]);
     const settings = Object.fromEntries(settingsRows.map((row) => [row.key, row.payload || {}]));
     const users = userRows.map((row) => publicUser(structuredUserFromAuthRow(row))).filter((item) => item.id);
-    const projects = projectRows.map((row) => row.name).filter(Boolean);
-    const pipelineStatuses = statusRows.map((row) => row.status).filter(Boolean);
+    const projectDefinitions = projectRows.map((row, index) => normalizeProjectDefinition({ ...(row.payload || {}), name: row.name }, Number(row.position ?? index))).filter((item) => item.name);
+    const statusDefinitions = statusRows.map((row, index) => normalizeStatusDefinition({ ...(row.payload || {}), status: row.status }, Number(row.position ?? index))).filter((item) => item.status);
+    const projects = projectDefinitions.map((item) => item.name);
+    const pipelineStatuses = statusDefinitions.map((item) => item.status);
     const tagDefinitions = tagRows.map((row) => row.payload || {}).filter((item) => item.id);
     const baseSources = sourceRows.map((row) => row.name).filter(Boolean);
     const forms = formRows.map((row) => row.payload || {}).filter((item) => item.id);
@@ -5635,7 +5664,9 @@ async function fastStructuredStateResponse(req, res, url) {
       user: publicUser(user),
       roles: ROLES,
       projects: stateDb.projects,
+      projectDefinitions,
       pipelineStatuses: stateDb.pipelineStatuses,
+      statusDefinitions,
       tagDefinitions: stateDb.tagDefinitions,
       users: stateDb.users,
       leads: [],
@@ -6236,6 +6267,54 @@ async function structuredPipelineStatuses(sql) {
   return rows.map((row) => row.status).filter(Boolean);
 }
 
+function normalizeListFromText(value) {
+  return String(value || "")
+    .split(/[,;\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeProjectDefinition(input, position = 0) {
+  const name = String(input?.name || input || "").trim();
+  const unitPrefixes = Array.isArray(input?.unitPrefixes)
+    ? input.unitPrefixes
+    : normalizeListFromText(input?.unitPrefixes);
+  return {
+    name,
+    position,
+    unitPrefixes: [...new Set(unitPrefixes.map((prefix) => normalizeUnitForMatch(prefix)).filter(Boolean))]
+  };
+}
+
+function normalizeStatusDefinition(input, position = 0) {
+  const status = String(input?.status || input?.name || input || "").trim();
+  const samCodes = Array.isArray(input?.samCodes)
+    ? input.samCodes
+    : normalizeListFromText(input?.samCodes);
+  return {
+    status,
+    position,
+    samCodes: [...new Set(samCodes.map((code) => String(code || "").trim()).filter(Boolean))]
+  };
+}
+
+async function structuredProjectDefinitions(sql) {
+  const rows = await sql`SELECT name, position, payload FROM crm_projects ORDER BY position ASC, name ASC`;
+  return rows.map((row, index) => normalizeProjectDefinition({ ...(row.payload || {}), name: row.name }, Number(row.position ?? index))).filter((item) => item.name);
+}
+
+function projectNameForUnit(unit, projectDefinitions = []) {
+  const normalizedUnit = normalizeUnitForMatch(unit);
+  if (!normalizedUnit) return "";
+  const match = projectDefinitions.find((project) => (project.unitPrefixes || []).some((prefix) => normalizedUnit.startsWith(normalizeUnitForMatch(prefix))));
+  return match?.name || "";
+}
+
+async function structuredStatusDefinitions(sql) {
+  const rows = await sql`SELECT status, position, payload FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`;
+  return rows.map((row, index) => normalizeStatusDefinition({ ...(row.payload || {}), status: row.status }, Number(row.position ?? index))).filter((item) => item.status);
+}
+
 async function structuredProjectNames(sql) {
   const rows = await sql`SELECT name FROM crm_projects ORDER BY position ASC, name ASC`;
   return rows.map((row) => row.name).filter(Boolean);
@@ -6352,7 +6431,9 @@ async function fastStructuredLeadsResponse(req, res, url) {
         LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
         WHERE (
             l.in_pipeline = false
-            OR l.source IN ('META', 'Stand', 'Lista RMeirelles')
+          OR l.source IN ('META', 'Stand', 'Lista RMeirelles')
+            OR COALESCE(l.base_source_before_pipeline, '') <> ''
+            OR COALESCE(l.previous_pipeline_source, '') <> ''
             OR l.payload->>'sourceStatus' IS NOT NULL
             OR l.payload->>'odysseiaStatus' IS NOT NULL
           )
@@ -6368,6 +6449,8 @@ async function fastStructuredLeadsResponse(req, res, url) {
           WHERE (
               l.in_pipeline = false
               OR l.source IN ('META', 'Stand', 'Lista RMeirelles')
+              OR COALESCE(l.base_source_before_pipeline, '') <> ''
+              OR COALESCE(l.previous_pipeline_source, '') <> ''
               OR l.payload->>'sourceStatus' IS NOT NULL
               OR l.payload->>'odysseiaStatus' IS NOT NULL
             )
@@ -6863,10 +6946,10 @@ async function mirrorStructuredProjects(db) {
   try {
     const sql = await structuredSqlForMirror();
     if (!sql) return;
-    await clearStructuredTable(sql, "crm_projects");
-    for (const [position, project] of (db.projects || []).entries()) {
-      await sql`INSERT INTO crm_projects (name, position, payload) VALUES (${project}, ${position}, ${JSON.stringify({ name: project, position })}::jsonb)`;
-    }
+    const definitions = Array.isArray(db.projectDefinitions) && db.projectDefinitions.length
+      ? db.projectDefinitions
+      : (db.projects || []).map((name, position) => ({ name, position }));
+    await replaceStructuredProjects(sql, definitions);
   } catch (error) {
     mirrorStructuredError("projects", error);
   }
@@ -6876,10 +6959,10 @@ async function mirrorStructuredStatuses(db) {
   try {
     const sql = await structuredSqlForMirror();
     if (!sql) return;
-    await clearStructuredTable(sql, "crm_pipeline_statuses");
-    for (const [position, status] of (db.pipelineStatuses || []).entries()) {
-      await sql`INSERT INTO crm_pipeline_statuses (status, position) VALUES (${status}, ${position})`;
-    }
+    const definitions = Array.isArray(db.statusDefinitions) && db.statusDefinitions.length
+      ? db.statusDefinitions
+      : (db.pipelineStatuses || []).map((status, position) => ({ status, position }));
+    await replaceStructuredStatuses(sql, definitions);
   } catch (error) {
     mirrorStructuredError("statuses", error);
   }
@@ -6932,13 +7015,23 @@ async function insertStructuredDataset(sql, db, key) {
       }
     }
   } else if (key === "statuses") {
-    for (const [position, status] of (db.pipelineStatuses || []).entries()) {
-      await sql`INSERT INTO crm_pipeline_statuses (status, position) VALUES (${status}, ${position})`;
+    const definitions = Array.isArray(db.statusDefinitions) && db.statusDefinitions.length
+      ? db.statusDefinitions
+      : (db.pipelineStatuses || []).map((status, position) => ({ status, position }));
+    for (const [position, statusInput] of definitions.entries()) {
+      const definition = normalizeStatusDefinition(statusInput, position);
+      if (!definition.status) continue;
+      await sql`INSERT INTO crm_pipeline_statuses (status, position, payload) VALUES (${definition.status}, ${position}, ${JSON.stringify(definition)}::jsonb)`;
       summary.statuses += 1;
     }
   } else if (key === "projects") {
-    for (const [position, project] of (db.projects || []).entries()) {
-      await sql`INSERT INTO crm_projects (name, position, payload) VALUES (${project}, ${position}, ${JSON.stringify({ name: project, position })}::jsonb)`;
+    const definitions = Array.isArray(db.projectDefinitions) && db.projectDefinitions.length
+      ? db.projectDefinitions
+      : (db.projects || []).map((name, position) => ({ name, position }));
+    for (const [position, projectInput] of definitions.entries()) {
+      const project = normalizeProjectDefinition(projectInput, position);
+      if (!project.name) continue;
+      await sql`INSERT INTO crm_projects (name, position, payload) VALUES (${project.name}, ${position}, ${JSON.stringify(project)}::jsonb)`;
       summary.projects += 1;
     }
   } else if (key === "baseSources") {
@@ -7083,12 +7176,22 @@ async function syncStructuredDb(db, actor) {
         summary.favorites += 1;
       }
     }
-    for (const [position, status] of (db.pipelineStatuses || []).entries()) {
-      await sql`INSERT INTO crm_pipeline_statuses (status, position) VALUES (${status}, ${position})`;
+    const statusDefinitions = Array.isArray(db.statusDefinitions) && db.statusDefinitions.length
+      ? db.statusDefinitions
+      : (db.pipelineStatuses || []).map((status, position) => ({ status, position }));
+    for (const [position, statusInput] of statusDefinitions.entries()) {
+      const definition = normalizeStatusDefinition(statusInput, position);
+      if (!definition.status) continue;
+      await sql`INSERT INTO crm_pipeline_statuses (status, position, payload) VALUES (${definition.status}, ${position}, ${JSON.stringify(definition)}::jsonb)`;
       summary.statuses += 1;
     }
-    for (const [position, project] of (db.projects || []).entries()) {
-      await sql`INSERT INTO crm_projects (name, position, payload) VALUES (${project}, ${position}, ${JSON.stringify({ name: project, position })}::jsonb)`;
+    const projectDefinitions = Array.isArray(db.projectDefinitions) && db.projectDefinitions.length
+      ? db.projectDefinitions
+      : (db.projects || []).map((name, position) => ({ name, position }));
+    for (const [position, projectInput] of projectDefinitions.entries()) {
+      const project = normalizeProjectDefinition(projectInput, position);
+      if (!project.name) continue;
+      await sql`INSERT INTO crm_projects (name, position, payload) VALUES (${project.name}, ${position}, ${JSON.stringify(project)}::jsonb)`;
       summary.projects += 1;
     }
     for (const tag of db.tagDefinitions || []) {

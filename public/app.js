@@ -9,6 +9,8 @@ const state = {
   roles: [],
   statuses: [],
   projects: [],
+  statusDefinitions: [],
+  projectDefinitions: [],
   tagDefinitions: [],
   users: [],
   leads: [],
@@ -407,6 +409,10 @@ function isAvailableBaseLead(lead) {
   return hasBaseHistory(lead) && !lead.assignedTo;
 }
 
+function baseSourcesForLead(lead) {
+  return [lead.source, lead.baseSourceBeforePipeline, lead.previousPipelineSource].filter(Boolean);
+}
+
 function baseSources() {
   const allowed = new Set(state.accessibleBaseSources || []);
   let sources = (state.user?.role === "Admin TI" ? (state.baseAccessSources || state.accessibleBaseSources || []) : [...allowed])
@@ -424,10 +430,11 @@ function baseLeads() {
   const sources = baseSources();
   if (!sources.includes(state.baseSource)) state.baseSource = sources[0] || "TODOS";
   return sortBaseLeads(filteredLeads().filter((lead) => {
-    if (state.baseSource === "META") return lead.source === "META";
-    if (MANUAL_BASE_SOURCES.includes(state.baseSource)) return lead.source === state.baseSource;
+    const sources = baseSourcesForLead(lead);
+    if (state.baseSource === "META") return sources.includes("META");
+    if (MANUAL_BASE_SOURCES.includes(state.baseSource)) return sources.includes(state.baseSource);
     if (!isAvailableBaseLead(lead)) return false;
-    return state.baseSource === "TODOS" || lead.source === state.baseSource;
+    return state.baseSource === "TODOS" || sources.includes(state.baseSource);
   }));
 }
 
@@ -682,6 +689,8 @@ async function loadState() {
   state.roles = data.roles;
   state.statuses = data.pipelineStatuses;
   state.projects = data.projects || ["Reserva Guinle", "Golf Club Resort"];
+  state.projectDefinitions = data.projectDefinitions || state.projects.map((name, position) => ({ name, position, unitPrefixes: [] }));
+  state.statusDefinitions = data.statusDefinitions || state.statuses.map((status, position) => ({ status, position, samCodes: [] }));
   state.tagDefinitions = data.tagDefinitions || [];
   state.users = data.users;
   if (Array.isArray(data.leads) && data.leads.length) {
@@ -4610,13 +4619,17 @@ function bindLevFinanceControls() {
 function renderProjectSettings() {
   const isCreating = state.settingsEditing === "new-project";
   const editIndex = state.settingsEditing?.startsWith("project:") ? Number(state.settingsEditing.replace("project:", "")) : null;
-  const formValue = editIndex != null ? state.projects[editIndex] || "" : "";
+  const editProject = editIndex != null ? (state.projectDefinitions || [])[editIndex] || { name: state.projects[editIndex] || "", unitPrefixes: [] } : null;
+  const formValue = editProject?.name || "";
+  const prefixValue = (editProject?.unitPrefixes || []).join(", ");
   const rows = (state.projects || []).map((project, index) => {
+    const definition = (state.projectDefinitions || []).find((item) => item.name === project) || {};
     const leadCount = state.leads.filter((lead) => lead.desiredProject === project).length;
     const formCount = (state.integrations?.metaForms?.forms || []).filter((form) => form.project === project).length;
     return `
       <tr>
         <td>${escapeHtml(project)}</td>
+        <td>${escapeHtml((definition.unitPrefixes || []).join(", ") || "-")}</td>
         <td>${leadCount}</td>
         <td>${formCount}</td>
         <td>${renderSettingsActionMenu(`project-${index}`, [
@@ -4634,12 +4647,13 @@ function renderProjectSettings() {
       </div>
       ${(isCreating || editIndex != null) ? `
         <form id="projectForm" class="form-grid editor">
-          <div class="field full"><label>Nome do empreendimento</label><input name="name" value="${escapeHtml(formValue)}" required></div>
+          <div class="field"><label>Nome do empreendimento</label><input name="name" value="${escapeHtml(formValue)}" required></div>
+          <div class="field"><label>Siglas das unidades</label><input name="unitPrefixes" value="${escapeHtml(prefixValue)}" placeholder="Ex.: GCR, RGL, RES"></div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Empreendimento</th><th>Leads usando</th><th>Forms Meta</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="empty">Nenhum empreendimento cadastrado</td></tr>'}</tbody></table>
+        <table><thead><tr><th>Empreendimento</th><th>Siglas</th><th>Leads usando</th><th>Forms Meta</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty">Nenhum empreendimento cadastrado</td></tr>'}</tbody></table>
       </div>
     </section>
   `);
@@ -4667,11 +4681,12 @@ function renderProjectSettings() {
   document.querySelector("#projectForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const payload = { name: form.get("name") };
+    const payload = { name: form.get("name"), unitPrefixes: form.get("unitPrefixes") };
     const data = editIndex != null
       ? await api(`/api/projects/${editIndex}`, { method: "PATCH", body: JSON.stringify(payload) })
       : await api("/api/projects", { method: "POST", body: JSON.stringify(payload) });
     state.projects = data.projects;
+    state.projectDefinitions = data.projectDefinitions || [];
     state.settingsEditing = null;
     await loadState();
     renderSettings();
@@ -4681,12 +4696,16 @@ function renderProjectSettings() {
 function renderStatusSettings() {
   const isCreating = state.settingsEditing === "new-status";
   const editIndex = state.settingsEditing?.startsWith("status:") ? Number(state.settingsEditing.replace("status:", "")) : null;
-  const formValue = editIndex != null ? state.statuses[editIndex] : "";
+  const editStatus = editIndex != null ? (state.statusDefinitions || [])[editIndex] || { status: state.statuses[editIndex] || "", samCodes: [] } : null;
+  const formValue = editStatus?.status || "";
+  const samCodesValue = (editStatus?.samCodes || []).join(", ");
   const rows = state.statuses.map((status, index) => {
+    const definition = (state.statusDefinitions || []).find((item) => item.status === status) || {};
     const count = state.leads.filter((lead) => lead.inPipeline && lead.status === status).length;
     return `
       <tr>
         <td>${escapeHtml(status)}</td>
+        <td>${escapeHtml((definition.samCodes || []).join(", ") || "-")}</td>
         <td>${index + 1}</td>
         <td>${count}</td>
         <td>${renderSettingsActionMenu(`status-${index}`, [
@@ -4704,12 +4723,13 @@ function renderStatusSettings() {
       </div>
       ${(isCreating || editIndex != null) ? `
         <form id="statusForm" class="form-grid editor">
-          <div class="field full"><label>Nome do status</label><input name="name" value="${escapeHtml(formValue)}" required></div>
+          <div class="field"><label>Nome do status</label><input name="name" value="${escapeHtml(formValue)}" required></div>
+          <div class="field"><label>Códigos recebidos do SAM</label><input name="samCodes" value="${escapeHtml(samCodesValue)}" placeholder="Ex.: reservation_created, reserva"></div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Status</th><th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="empty">Nenhum status cadastrado</td></tr>'}</tbody></table>
+        <table><thead><tr><th>Status</th><th>Códigos SAM</th><th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty">Nenhum status cadastrado</td></tr>'}</tbody></table>
       </div>
     </section>
   `);
@@ -4736,10 +4756,15 @@ function renderStatusSettings() {
   document.querySelector("#statusForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const payload = { name: form.get("name"), samCodes: form.get("samCodes") };
     if (editIndex != null) {
-      await api(`/api/statuses/${editIndex}`, { method: "PATCH", body: JSON.stringify({ name: form.get("name") }) });
+      const data = await api(`/api/statuses/${editIndex}`, { method: "PATCH", body: JSON.stringify(payload) });
+      state.statuses = data.pipelineStatuses || state.statuses;
+      state.statusDefinitions = data.statusDefinitions || state.statusDefinitions;
     } else {
-      await api("/api/statuses", { method: "POST", body: JSON.stringify({ name: form.get("name") }) });
+      const data = await api("/api/statuses", { method: "POST", body: JSON.stringify(payload) });
+      state.statuses = data.pipelineStatuses || state.statuses;
+      state.statusDefinitions = data.statusDefinitions || state.statusDefinitions;
     }
     state.settingsEditing = null;
     await loadState();
