@@ -4492,6 +4492,104 @@ async function structuredConfigDb(sql, { includeLeads = false } = {}) {
   return db;
 }
 
+async function structuredBackupDb(sql) {
+  const [
+    userRows,
+    leadRows,
+    commentRows,
+    tagRows,
+    favoriteRows,
+    projectRows,
+    statusRows,
+    tagDefinitionRows,
+    sourceRows,
+    formRows,
+    permissionRows,
+    auditRows,
+    integrationRows,
+    fupRows,
+    samRows,
+    articleRows,
+    settings,
+    finance
+  ] = await Promise.all([
+    sql`SELECT * FROM crm_users ORDER BY name ASC, username ASC`,
+    sql`SELECT * FROM crm_leads ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST`,
+    sql`SELECT lead_id, payload FROM crm_lead_comments ORDER BY created_at DESC NULLS LAST`,
+    sql`SELECT lead_id, tag_id FROM crm_lead_tags ORDER BY lead_id ASC, tag_id ASC`,
+    sql`SELECT lead_id, user_id, favorite FROM crm_lead_favorites ORDER BY lead_id ASC, user_id ASC`,
+    sql`SELECT name FROM crm_projects ORDER BY position ASC, name ASC`,
+    sql`SELECT status FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`,
+    sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`,
+    sql`SELECT name FROM crm_base_sources ORDER BY name ASC`,
+    sql`SELECT payload FROM crm_meta_forms ORDER BY archived ASC, name ASC`,
+    sql`SELECT owner_type, owner_id, resource_id, can_access, can_act FROM crm_permissions`,
+    sql`SELECT payload FROM crm_audit_logs ORDER BY at DESC NULLS LAST`,
+    sql`SELECT payload FROM crm_integration_logs ORDER BY at DESC NULLS LAST`,
+    sql`SELECT payload FROM crm_fup_lead_logs ORDER BY at DESC NULLS LAST`,
+    sql`SELECT * FROM crm_sam_events ORDER BY created_at DESC NULLS LAST`,
+    sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
+    structuredSettingsMap(sql),
+    structuredLevFinanceDb(sql)
+  ]);
+  const commentsByLead = new Map();
+  for (const row of commentRows) {
+    if (!commentsByLead.has(row.lead_id)) commentsByLead.set(row.lead_id, []);
+    const comment = row.payload || {};
+    if (comment.id) commentsByLead.get(row.lead_id).push(comment);
+  }
+  const tagsByLead = new Map();
+  for (const row of tagRows) {
+    if (!tagsByLead.has(row.lead_id)) tagsByLead.set(row.lead_id, []);
+    if (row.tag_id) tagsByLead.get(row.lead_id).push(row.tag_id);
+  }
+  const favoritesByLead = new Map();
+  for (const row of favoriteRows) {
+    if (!favoritesByLead.has(row.lead_id)) favoritesByLead.set(row.lead_id, {});
+    favoritesByLead.get(row.lead_id)[row.user_id] = row.favorite !== false;
+  }
+  const leads = leadRows.map((row) => {
+    const lead = structuredLeadFromRow(row, false, tagsByLead.get(row.id) || []);
+    lead.comments = commentsByLead.get(row.id) || lead.comments || [];
+    lead.favoritesByUser = favoritesByLead.get(row.id) || lead.favoritesByUser || {};
+    return lead;
+  }).filter((lead) => lead.id);
+  const forms = formRows.map((row) => row.payload || {}).filter((form) => form.id);
+  const baseSources = sourceRows.map((row) => row.name).filter(Boolean);
+  const permissions = structuredPermissionsFromRows(permissionRows);
+  const db = {
+    schemaVersion: APP_SCHEMA_VERSION,
+    roles: ROLES,
+    users: userRows.map(structuredUserFromAuthRow).filter((user) => user?.id),
+    leads,
+    projects: projectRows.map((row) => row.name).filter(Boolean),
+    pipelineStatuses: statusRows.map((row) => row.status).filter(Boolean),
+    tagDefinitions: tagDefinitionRows.map((row) => row.payload || {}).filter((tag) => tag.id),
+    integrations: {
+      ...(settings.integrations || {}),
+      metaForms: {
+        ...(settings.integrations?.metaForms || {}),
+        enabled: forms.length > 0,
+        forms
+      }
+    },
+    permissions,
+    baseAccess: structuredBaseAccessFromPermissions(permissions, baseSources),
+    baseAccessSources: baseSources,
+    knowledgeArticles: articleRows.map((row) => row.payload || {}).filter((article) => article.id),
+    knowledgeChatSessions: Array.isArray(settings.knowledgeChatSessions) ? settings.knowledgeChatSessions : [],
+    auditLog: auditRows.map((row) => row.payload || {}).filter((item) => item.at),
+    integrationLog: integrationRows.map((row) => row.payload || {}).filter((item) => item.at),
+    fupLeadLog: fupRows.map((row) => row.payload || {}).filter((item) => item.at),
+    accessLog: [],
+    samEvents: samRows.map(samEventFromRow).filter((event) => event.id),
+    levFinance: finance.levFinance,
+    importSummary: { origin: "STRUCTURED_BACKUP", leadCount: leads.length, inactiveBrokerCount: 0 }
+  };
+  ensurePermissions(db);
+  return db;
+}
+
 function metaLeadLocalId(leadgenId) {
   return `meta-${String(leadgenId || "").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
@@ -5228,6 +5326,55 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
   } catch (error) {
     mirrorStructuredError("fast-lev-finance", error);
     sendJson(res, 500, { error: "Erro interno", detail: error.message });
+    return true;
+  }
+}
+
+async function fastStructuredBackupRoutes(req, res, url) {
+  if (!DATABASE_URL || !["/api/admin/export-db", "/api/admin/import-db"].includes(url.pathname)) return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchema(sql);
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+
+    if (url.pathname === "/api/admin/export-db" && req.method === "GET") {
+      const exported = await structuredBackupDb(sql);
+      await structuredAudit(user, "EXPORT_STRUCTURED_DATABASE", { leads: exported.leads.length, users: exported.users.length });
+      return sendJson(res, 200, {
+        exportedAt: new Date().toISOString(),
+        source: "structured",
+        db: exported,
+        dataSources: { action: "structured" }
+      }, {
+        "Content-Disposition": `attachment; filename="pipeline-mauad-backup-${new Date().toISOString().slice(0, 10)}.json"`
+      });
+    }
+
+    if (url.pathname === "/api/admin/import-db" && req.method === "POST") {
+      const body = await readBody(req);
+      const incoming = body.db || body;
+      if (!incoming || !Array.isArray(incoming.users) || !Array.isArray(incoming.leads)) {
+        return sendJson(res, 400, { error: "Base inválida" });
+      }
+      const imported = migrateDb(structuredClone(incoming));
+      await syncStructuredDb(imported, user);
+      await structuredAudit(user, "IMPORT_STRUCTURED_DATABASE", { leads: imported.leads.length, users: imported.users.length });
+      return sendJson(res, 200, {
+        ok: true,
+        leads: imported.leads.length,
+        users: imported.users.length,
+        source: "structured",
+        dataSources: { action: "structured" }
+      });
+    }
+
+    return false;
+  } catch (error) {
+    mirrorStructuredError("fast-backup", error);
+    sendJson(res, 500, { error: "Erro interno no backup", detail: error.message });
     return true;
   }
 }
@@ -8434,6 +8581,7 @@ async function handleRequest(req, res) {
     if (await fastStructuredUserPermissionRoutes(req, res, url)) return;
     if (await fastStructuredSettingsRoutes(req, res, url)) return;
     if (await fastStructuredLevFinanceRoutes(req, res, url)) return;
+    if (await fastStructuredBackupRoutes(req, res, url)) return;
     if (await fastStructuredStateResponse(req, res, url)) return;
     if (await fastStructuredLeadsResponse(req, res, url)) return;
     if (await fastStructuredManualLeadRoutes(req, res, url)) return;
