@@ -11,7 +11,7 @@ const SEED_PATH = path.join(DATA_DIR, "seed.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const SESSION_TTL_MS = 1000 * 60 * 5;
 const PASSWORD_SETUP_TTL_MS = 1000 * 60 * 60 * 24;
-const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor", "Gerente Financeiro", "Auxiliar Financeiro"];
+const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor", "Gerente Financeiro", "Auxiliar Financeiro", "Gestor de Tráfego", "Coordenador de Marketing"];
 const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
 const PERMISSION_SCREENS = [
   { id: "screen:kanban", label: "Kanban", view: "kanban" },
@@ -55,7 +55,9 @@ function defaultScreenPermission(role, screen) {
     Diretoria: ["dashboard", "sheet", "odysseia", "kanban", "knowledge"],
     Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
     "Gerente Financeiro": ["finance", "settings", "knowledge"],
-    "Auxiliar Financeiro": ["finance", "settings", "knowledge"]
+    "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
+    "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"],
+    "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"]
   };
   const actionAccess = {
     "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "finance", "settings", "knowledge"],
@@ -63,7 +65,9 @@ function defaultScreenPermission(role, screen) {
     "Supervisor Comercial": ["kanban", "sheet", "odysseia", "knowledge"],
     Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
     "Gerente Financeiro": ["finance", "settings", "knowledge"],
-    "Auxiliar Financeiro": ["finance", "knowledge"]
+    "Auxiliar Financeiro": ["finance", "knowledge"],
+    "Gestor de Tráfego": ["knowledge"],
+    "Coordenador de Marketing": ["knowledge"]
   };
   const canAccess = (viewAccess[role] || []).includes(screen.view);
   return permissionCell(canAccess, canAccess && (actionAccess[role] || []).includes(screen.view));
@@ -5581,7 +5585,7 @@ async function fastStructuredStateResponse(req, res, url) {
       sql`SELECT owner_type, owner_id, resource_id, can_access, can_act FROM crm_permissions`,
       canManageSettings(user) ? sql`SELECT payload FROM crm_integration_logs ORDER BY at DESC NULLS LAST LIMIT 50` : Promise.resolve([]),
       canManageSettings(user) ? sql`SELECT payload FROM crm_audit_logs ORDER BY at DESC NULLS LAST LIMIT 25` : Promise.resolve([]),
-      canManageSettings(user) ? sql`SELECT payload FROM crm_access_logs ORDER BY at DESC NULLS LAST LIMIT 100` : Promise.resolve([]),
+      canManageSettings(user) ? sql`SELECT payload FROM crm_access_logs ORDER BY at DESC NULLS LAST LIMIT 1000` : Promise.resolve([]),
       canManageSettings(user) ? sql`SELECT payload FROM crm_fup_lead_logs ORDER BY at DESC NULLS LAST LIMIT 250` : Promise.resolve([]),
       canManageSettings(user) ? sql`SELECT * FROM crm_sam_events ORDER BY created_at DESC NULLS LAST LIMIT 500` : Promise.resolve([]),
       canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_sales ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),

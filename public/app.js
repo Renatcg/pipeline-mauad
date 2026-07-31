@@ -74,6 +74,9 @@ const state = {
   sheetSort: { key: "name", direction: "asc" },
   projectFilters: [],
   brokerFilters: [],
+  dateFilterStart: "",
+  dateFilterEnd: "",
+  frequencyFilters: [],
   favoriteRequests: {},
   brokerMenuBound: false,
   inactivityTimer: null,
@@ -88,7 +91,9 @@ const profileAccess = {
   Diretoria: ["dashboard", "sheet", "odysseia", "kanban", "knowledge"],
   Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
   "Gerente Financeiro": ["finance", "settings", "knowledge"],
-  "Auxiliar Financeiro": ["finance", "settings", "knowledge"]
+  "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
+  "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"],
+  "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"]
 };
 
 const routeByView = {
@@ -338,12 +343,53 @@ function filteredLeads() {
   });
 }
 
+function localDateOnly(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function leadMatchesDateFilter(lead) {
+  const leadDate = localDateOnly(lead.createdAt || lead.meta?.createdTime || lead.rescuedAt || lead.updatedAt);
+  if (!leadDate) return !state.dateFilterStart && !state.dateFilterEnd;
+  if (state.dateFilterStart && leadDate < state.dateFilterStart) return false;
+  if (state.dateFilterEnd && leadDate > state.dateFilterEnd) return false;
+  return true;
+}
+
+function interactionAgeDays(lead) {
+  const value = lead.lastInteractionAt || lead.updatedAt || lead.createdAt || lead.meta?.createdTime;
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return Infinity;
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24)));
+}
+
+function frequencyBucketForLead(lead) {
+  const days = interactionAgeDays(lead);
+  if (days <= 1) return "1";
+  if (days <= 7) return "7";
+  if (days <= 14) return "14";
+  if (days <= 30) return "30";
+  if (days <= 60) return "60";
+  return "60plus";
+}
+
+function leadMatchesFrequencyFilter(lead) {
+  return !state.frequencyFilters.length || state.frequencyFilters.includes(frequencyBucketForLead(lead));
+}
+
 function pipelineLeads() {
   return filteredLeads().filter((lead) => {
     if (!lead.inPipeline) return false;
     if (state.user?.role === "Corretor" && lead.assignedTo !== state.user.id) return false;
-    if (state.projectFilters.length && !state.projectFilters.includes(leadProjectValue(lead))) return false;
+    if (state.projectFilters.length && !state.projectFilters.includes(leadProjectValue(lead) || "__none__")) return false;
     if (state.brokerFilters.length && !state.brokerFilters.includes(lead.assignedTo || "__none__")) return false;
+    if (!leadMatchesDateFilter(lead)) return false;
+    if (!leadMatchesFrequencyFilter(lead)) return false;
     return true;
   });
 }
@@ -752,8 +798,11 @@ function renderShell(content) {
       <aside class="side">
         <div class="side-head">
           <div class="brand">
-            <strong>Pipeline Comercial</strong>
-            <span>Construtora Mauad</span>
+            <img src="/logo-mauad-branco.png" alt="Construtora Mauad">
+            <div>
+              <strong>Pipeline Comercial</strong>
+              <span>Construtora Mauad</span>
+            </div>
           </div>
           <button class="mobile-menu-button" type="button" data-mobile-menu aria-expanded="${state.mobileNavOpen ? "true" : "false"}">Menu</button>
         </div>
@@ -765,6 +814,7 @@ function renderShell(content) {
           ${navButton("finance", "▣", "Financeiro Lev")}
           ${navButton("settings", "⚙", "Configurações")}
           ${navButton("knowledge", "?", "Ajuda")}
+          <button id="logout" class="logout-nav" type="button"><span>↳</span>Sair</button>
         </nav>
       </aside>
       <section class="main">
@@ -772,7 +822,6 @@ function renderShell(content) {
           <div class="user-pill">
             <strong>${escapeHtml(state.user.name)}</strong>
             <span>${escapeHtml(state.user.role)}</span>
-            <button id="logout">Sair</button>
           </div>
         </header>
         <div class="content">
@@ -809,10 +858,10 @@ function renderViewHead(title, subtitle = "", options = {}) {
   const pipelineFilters = options.pipelineFilters ? renderPipelineFilterControls() : "";
   const filters = options.filters ? `
     <div class="page-filters ${showAddLead ? "with-add-lead" : ""}">
-      ${showAddLead ? '<button id="addLeadButton" class="primary add-lead-button">Adicionar Lead</button>' : ""}
       ${pipelineFilters}
       <input id="pageSearch" value="${escapeHtml(state.search)}" placeholder="Buscar lead, telefone, fase ou corretor">
       <button id="pageFavoriteToggle" class="${state.favoritesOnly ? "primary" : ""}" title="Filtrar favoritos">★</button>
+      ${showAddLead ? '<button id="addLeadButton" class="primary add-lead-button">Adicionar Lead</button>' : ""}
     </div>
   ` : "";
   const actions = options.actions ? `<div class="view-head-actions">${options.actions}</div>` : "";
@@ -867,6 +916,8 @@ function pipelineFilterBaseLeads(skipKey = "") {
     if (state.user?.role === "Corretor" && lead.assignedTo !== state.user.id) return false;
     if (skipKey !== "projectFilters" && state.projectFilters.length && !state.projectFilters.includes(leadProjectValue(lead) || "__none__")) return false;
     if (skipKey !== "brokerFilters" && state.brokerFilters.length && !state.brokerFilters.includes(lead.assignedTo || "__none__")) return false;
+    if (skipKey !== "dateFilters" && !leadMatchesDateFilter(lead)) return false;
+    if (skipKey !== "frequencyFilters" && !leadMatchesFrequencyFilter(lead)) return false;
     return true;
   });
 }
@@ -882,6 +933,7 @@ function countBy(items, getKey) {
 function renderPipelineFilterControls() {
   const projectCounts = countBy(pipelineFilterBaseLeads("projectFilters"), (lead) => leadProjectValue(lead));
   const brokerCounts = countBy(pipelineFilterBaseLeads("brokerFilters"), (lead) => lead.assignedTo);
+  const frequencyCounts = countBy(pipelineFilterBaseLeads("frequencyFilters"), (lead) => frequencyBucketForLead(lead));
   const projectOptions = state.projects
     .map((project) => ({ value: project, label: project, count: projectCounts[project] || 0 }))
     .filter((option) => option.value)
@@ -890,9 +942,29 @@ function renderPipelineFilterControls() {
     ...activeBrokers().map((broker) => ({ value: broker.id, label: broker.name, count: brokerCounts[broker.id] || 0 })),
     { value: "__none__", label: "Sem vínculo", count: brokerCounts.__none__ || 0 }
   ];
+  const frequencyOptions = [
+    { value: "1", label: "Com interação há 1 dia", count: frequencyCounts["1"] || 0 },
+    { value: "7", label: "Com interação há 7 dias", count: frequencyCounts["7"] || 0 },
+    { value: "14", label: "Com interação há 14 dias", count: frequencyCounts["14"] || 0 },
+    { value: "30", label: "Com interação há 30 dias", count: frequencyCounts["30"] || 0 },
+    { value: "60", label: "Com interação há 60 dias", count: frequencyCounts["60"] || 0 },
+    { value: "60plus", label: "Sem interação há +60 dias", count: frequencyCounts["60plus"] || 0 }
+  ];
   return `
-    ${renderMultiFilter("projectFilters", "Empreendimento", state.projectFilters, projectOptions)}
-    ${canManageLeads() ? renderMultiFilter("brokerFilters", "Corretor", state.brokerFilters, brokerOptions) : ""}
+    <div class="pipeline-filter-row">
+      ${renderMultiFilter("projectFilters", "Empreendimento", state.projectFilters, projectOptions)}
+      ${canManageLeads() ? renderMultiFilter("brokerFilters", "Corretor", state.brokerFilters, brokerOptions) : ""}
+    </div>
+    <div class="pipeline-filter-row secondary">
+      <div class="date-filter">
+        <span>Data</span>
+        <input id="dateFilterStart" type="date" value="${escapeHtml(state.dateFilterStart)}" aria-label="Data inicial">
+        <input id="dateFilterEnd" type="date" value="${escapeHtml(state.dateFilterEnd)}" aria-label="Data final">
+        <button type="button" class="tiny primary" data-date-filter-apply>Aplicar</button>
+        <button type="button" class="tiny" data-date-filter-clear>Limpar</button>
+      </div>
+      ${renderMultiFilter("frequencyFilters", "Frequência", state.frequencyFilters, frequencyOptions)}
+    </div>
   `;
 }
 
@@ -959,7 +1031,7 @@ function bindPageFilters() {
   document.querySelectorAll("[data-multi-filter-clear]").forEach((button) => {
     button.addEventListener("click", (event) => {
       const key = event.currentTarget.dataset.multiFilterClear;
-      if (!["projectFilters", "brokerFilters"].includes(key)) return;
+      if (!["projectFilters", "brokerFilters", "frequencyFilters"].includes(key)) return;
       document.querySelectorAll(`[data-multi-filter-option="${key}"]`).forEach((checkbox) => {
         checkbox.checked = false;
       });
@@ -970,12 +1042,22 @@ function bindPageFilters() {
   document.querySelectorAll("[data-multi-filter-apply]").forEach((button) => {
     button.addEventListener("click", (event) => {
       const key = event.currentTarget.dataset.multiFilterApply;
-      if (!["projectFilters", "brokerFilters"].includes(key)) return;
+      if (!["projectFilters", "brokerFilters", "frequencyFilters"].includes(key)) return;
       const options = [...document.querySelectorAll(`[data-multi-filter-option="${key}"]`)];
       const selectedValues = options.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
       state[key] = selectedValues.length === options.length ? [] : selectedValues;
       renderApp();
     });
+  });
+  document.querySelector("[data-date-filter-apply]")?.addEventListener("click", () => {
+    state.dateFilterStart = document.querySelector("#dateFilterStart")?.value || "";
+    state.dateFilterEnd = document.querySelector("#dateFilterEnd")?.value || "";
+    renderApp();
+  });
+  document.querySelector("[data-date-filter-clear]")?.addEventListener("click", () => {
+    state.dateFilterStart = "";
+    state.dateFilterEnd = "";
+    renderApp();
   });
   addLeadButton?.addEventListener("click", () => {
     state.creatingLead = true;
@@ -2773,8 +2855,9 @@ function renderUserAccessLogModal(userId) {
     LOGIN: "Login",
     VIEW: "Abertura de tela"
   };
+  const userKeys = new Set([selectedUser.id, selectedUser.username, selectedUser.name].filter(Boolean).map((value) => String(value).toLowerCase()));
   const rows = (state.accessLog || [])
-    .filter((item) => item.actor === selectedUser.username)
+    .filter((item) => [item.actor, item.actorName, item.userId].some((value) => userKeys.has(String(value || "").toLowerCase())))
     .map((item) => `
       <tr>
         <td>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))}</td>

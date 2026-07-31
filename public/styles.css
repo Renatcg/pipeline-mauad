@@ -519,6 +519,8 @@ textarea {
 
 .side {
   position: relative;
+  display: flex;
+  flex-direction: column;
   background: #101820;
   color: white;
   padding: 18px 14px;
@@ -530,14 +532,29 @@ textarea {
 
 .brand {
   display: grid;
-  gap: 4px;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
   padding: 6px 8px 18px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.16);
   margin-bottom: 14px;
 }
 
+.brand img {
+  width: 40px;
+  height: auto;
+  object-fit: contain;
+}
+
+.brand div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
 .brand strong {
   font-size: 18px;
+  line-height: 1.05;
 }
 
 .brand span {
@@ -570,6 +587,10 @@ textarea {
 .nav button:hover {
   background: rgba(255, 255, 255, 0.12);
   color: white;
+}
+
+.nav .logout-nav {
+  margin-top: 4px;
 }
 
 .main {
@@ -623,7 +644,7 @@ textarea {
 }
 
 .page-filters {
-  width: auto;
+  width: min(980px, 100%);
   display: flex;
   align-items: stretch;
   justify-content: flex-end;
@@ -636,7 +657,21 @@ textarea {
 }
 
 .page-filters input#pageSearch {
+  order: 2;
   width: 174px;
+}
+
+.pipeline-filter-row {
+  order: 1;
+  display: contents;
+}
+
+.pipeline-filter-row.secondary {
+  order: 5;
+  flex-basis: 100%;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .page-filters button {
@@ -645,11 +680,51 @@ textarea {
   font-size: 17px;
 }
 
+#pageFavoriteToggle {
+  order: 3;
+  min-width: 58px;
+  padding: 0 14px;
+}
+
 .page-filters .add-lead-button {
+  order: 4;
   padding: 0 13px;
   font-size: 13px;
   font-weight: 800;
   white-space: nowrap;
+}
+
+.date-filter {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.date-filter span {
+  padding: 0 4px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.date-filter input {
+  width: 132px;
+  min-height: 28px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.date-filter button {
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 12px;
 }
 
 .multi-filter {
@@ -2351,6 +2426,11 @@ th {
     justify-content: stretch;
   }
 
+  .pipeline-filter-row,
+  .pipeline-filter-row.secondary {
+    display: contents;
+  }
+
   .page-filters.with-add-lead {
     width: 100%;
   }
@@ -2361,6 +2441,21 @@ th {
 
   .page-filters input#pageSearch {
     flex: 1 1 180px;
+    width: auto;
+  }
+
+  #pageFavoriteToggle {
+    flex: 0 0 58px;
+  }
+
+  .date-filter {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    padding: 6px;
+  }
+
+  .date-filter input {
+    flex: 1 1 118px;
     width: auto;
   }
 
