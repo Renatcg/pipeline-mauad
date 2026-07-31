@@ -3993,6 +3993,7 @@ function structuredDbLabel(key) {
     metaForms: "Forms Meta",
     permissions: "Permissões",
     auditLogs: "Logs de auditoria",
+    accessLogs: "Logs de acesso",
     integrationLogs: "Eventos de integração",
     fupLeadLogs: "FUP Lead",
     samEvents: "Eventos SAM",
@@ -4038,7 +4039,6 @@ function renderStructuredDbSettings() {
       <td>${structuredDbRunLabel(diagnostics?.latestRuns?.[item.key])}</td>
       <td>
         <div class="row-actions">
-          <button class="compact-button structured-reset" type="button" data-dataset="${escapeHtml(item.key)}">Reiniciar</button>
           <button class="compact-button primary structured-sync" type="button" data-dataset="${escapeHtml(item.key)}">Sincronizar</button>
         </div>
       </td>
@@ -4053,7 +4053,7 @@ function renderStructuredDbSettings() {
         </div>
       </div>
       ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
-      <p class="muted-copy">Fase 1 da migração: cria e popula tabelas Postgres paralelas sem alterar o JSON atual, que continua sendo a fonte oficial do sistema.</p>
+      <p class="muted-copy">Banco estruturado ativo como fonte oficial. O JSON legado fica apenas como referência histórica e não recebe novas alterações operacionais.</p>
       <div class="info-card">
         <strong>Última atividade geral</strong>
         <span>${escapeHtml(structuredDbLatestLabel(latest))}</span>
@@ -4061,7 +4061,7 @@ function renderStructuredDbSettings() {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Dados</th><th>JSON atual</th><th>Banco estruturado</th><th>Status</th><th>Última sincronização</th><th>Ações</th></tr></thead>
+          <thead><tr><th>Dados</th><th>Base arquivada</th><th>Banco oficial</th><th>Status</th><th>Última sincronização</th><th>Ações</th></tr></thead>
           <tbody>${rows || '<tr><td colspan="6" class="empty">Clique em Diagnosticar para comparar os dados.</td></tr>'}</tbody>
         </table>
       </div>
@@ -4094,22 +4094,6 @@ function renderStructuredDbSettings() {
       state.settingsNotice = remaining > 0
         ? `${structuredDbLabel(dataset)} sincronizado parcialmente. Ainda faltam ${remaining.toLocaleString("pt-BR")} registro(s); clique em Sincronizar novamente para continuar.`
         : `${structuredDbLabel(dataset)} sincronizado.`;
-      renderSettings();
-    } catch (error) {
-      setButtonBusy(button, false);
-      alert(error.message);
-    }
-  }));
-  document.querySelectorAll(".structured-reset").forEach((button) => button.addEventListener("click", async (event) => {
-    const dataset = event.currentTarget.dataset.dataset;
-    if (!confirm(`Reiniciar ${structuredDbLabel(dataset)}? Isso zera apenas essa tabela estruturada, sem mexer no JSON atual.`)) return;
-    const button = event.currentTarget;
-    try {
-      setButtonBusy(button, true, "Reiniciando...");
-      const data = await api("/api/structured-db/reset", { method: "POST", body: JSON.stringify({ dataset }) });
-      state.structuredDbDiagnostics = data.diagnostics;
-      if (dataset === "leads") invalidateLeads();
-      state.settingsNotice = `${structuredDbLabel(dataset)} reiniciado.`;
       renderSettings();
     } catch (error) {
       setButtonBusy(button, false);
