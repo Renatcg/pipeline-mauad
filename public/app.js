@@ -1792,30 +1792,6 @@ function baseSourceLabel(source) {
   }[source] || source;
 }
 
-function canNormalizeCurrentBaseSource() {
-  return state.user?.role === "Admin TI"
-    && state.user?.username === "admin"
-    && ["RD Station", "Pipeline GDrive", "Vinhos na Serra"].includes(state.baseSource);
-}
-
-function renderBaseNormalizationActions() {
-  if (!canNormalizeCurrentBaseSource()) return "";
-  return `
-    <section class="panel compact-panel">
-      <div class="panel-head">
-        <div>
-          <h2>Normalizar ${escapeHtml(baseSourceLabel(state.baseSource))}</h2>
-          <p class="muted-copy">Ferramenta temporária para ajustar a origem desta base no banco estruturado.</p>
-        </div>
-        <div class="row-actions">
-          <button type="button" data-normalize-current-base="10">Testar 10 leads</button>
-          <button type="button" class="primary" data-normalize-current-base="0">Normalizar esta base</button>
-        </div>
-      </div>
-    </section>
-  `;
-}
-
 function renderLeadBases() {
   const sources = baseSources();
   const leads = baseLeads();
@@ -1832,7 +1808,6 @@ function renderLeadBases() {
   renderShell(`
     ${renderViewHead("Bases de Leads", "Bases importadas separadas do pipeline comercial", { filters: true })}
     ${sources.length ? renderBaseSources(sources) : ""}
-    ${renderBaseNormalizationActions()}
     <section class="metrics">
       <div class="metric"><span>Total da base</span><strong>${totalBase}</strong></div>
       <div class="metric"><span>A resgatar</span><strong>${pending}</strong></div>
@@ -1859,31 +1834,6 @@ function renderLeadBases() {
     } catch (error) {
       alert(error.message);
     }
-  });
-  document.querySelectorAll("[data-normalize-current-base]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const limit = Number(button.dataset.normalizeCurrentBase || 0);
-      const source = state.baseSource;
-      if (!limit && !confirm(`Normalizar a base ${baseSourceLabel(source)} agora?`)) return;
-      try {
-        setButtonBusy(button, true, limit ? "Testando..." : "Normalizando...");
-        const data = await api("/api/structured-db/normalize-bases", {
-          method: "POST",
-          body: JSON.stringify({ source, limit })
-        });
-        const summary = data.summary || {};
-        alert(limit
-          ? `Teste concluído em ${Number(summary.candidateCount || 0).toLocaleString("pt-BR")} lead(s): ${Number(summary.sourcesNormalized || 0).toLocaleString("pt-BR")} origem(ns) ajustada(s).`
-          : `${baseSourceLabel(source)} normalizada: ${Number(summary.sourcesNormalized || 0).toLocaleString("pt-BR")} origem(ns) ajustada(s), ${Number(summary.visibleBaseLeads || 0).toLocaleString("pt-BR")} lead(s) visíveis em Bases.`
-        );
-        invalidateLeads();
-        await loadLeads(false);
-        renderLeadBases();
-      } catch (error) {
-        setButtonBusy(button, false);
-        alert(error.message);
-      }
-    });
   });
   document.querySelectorAll("[data-rescue]").forEach((button) => {
     button.addEventListener("click", async () => {

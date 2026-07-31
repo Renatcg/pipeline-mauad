@@ -2782,6 +2782,20 @@ function canActBaseLead(db, user, lead) {
   return baseSourcesForLead(lead).some((source) => permissionForUser(db, user, basePermissionId(source)).action);
 }
 
+function structuredBaseSourceAliases(source) {
+  const value = String(source || "").trim();
+  const aliases = {
+    "Vinhos na Serra": ["Vinhos na Serra", "VINHOS NA SERRA"],
+    "Pipeline GDrive": ["Pipeline GDrive", "PIPELINE MAUAD"],
+    "RD Station": ["RD Station", "RD STATION"]
+  }[value] || [value];
+  return [...new Set(aliases.filter(Boolean))];
+}
+
+function structuredBaseSourceAliasesMany(sources = []) {
+  return [...new Set((sources || []).flatMap((source) => structuredBaseSourceAliases(source)))];
+}
+
 function visibleLeadsFromList(db, user, leads) {
   if (user.role === "Corretor") {
     return leads.filter((lead) => {
@@ -5489,7 +5503,7 @@ async function fastStructuredBackupRoutes(req, res, url) {
 
 async function fastStructuredOperationalRoutes(req, res, url) {
   if (!DATABASE_URL) return false;
-  const paths = new Set(["/api/access-log", "/api/logs/fup-lead", "/api/structured-db/diagnostics", "/api/structured-db/sync", "/api/structured-db/reset", "/api/structured-db/normalize-bases"]);
+  const paths = new Set(["/api/access-log", "/api/logs/fup-lead", "/api/structured-db/diagnostics", "/api/structured-db/sync", "/api/structured-db/reset"]);
   if (!paths.has(url.pathname)) return false;
   try {
     const sql = await getSql();
@@ -5534,17 +5548,6 @@ async function fastStructuredOperationalRoutes(req, res, url) {
       const runId = crypto.randomUUID();
       await sql`INSERT INTO crm_structured_sync_runs (id, status, finished_at, summary) VALUES (${runId}, 'success', now(), ${JSON.stringify(summary)}::jsonb)`;
       await structuredAudit(user, "CHECK_STRUCTURED_DATABASE", summary);
-      return sendJson(res, 200, { runId, summary, diagnostics: await structuredDbDiagnostics(null), dataSources: { action: "structured" } });
-    }
-
-    if (url.pathname === "/api/structured-db/normalize-bases" && req.method === "POST") {
-      if (!canManageSettings(user) || user.role !== "Admin TI" || user.username !== "admin") return sendJson(res, 403, { error: "Sem permissão" });
-      const body = await readBody(req);
-      const limit = Math.max(0, Math.min(10000, Number(body.limit || 0)));
-      const summary = await normalizeStructuredBaseColumns(sql, { limit, source: body.source });
-      const runId = crypto.randomUUID();
-      await sql`INSERT INTO crm_structured_sync_runs (id, status, finished_at, summary) VALUES (${runId}, 'success', now(), ${JSON.stringify({ dataset: "baseColumnNormalization", ...summary })}::jsonb)`;
-      await structuredAudit(user, "NORMALIZE_STRUCTURED_BASE_COLUMNS", summary);
       return sendJson(res, 200, { runId, summary, diagnostics: await structuredDbDiagnostics(null), dataSources: { action: "structured" } });
     }
 
@@ -6481,6 +6484,8 @@ async function fastStructuredLeadsResponse(req, res, url) {
       if (!allowedSources.length) return sendJson(res, 200, { leads: [], scope, dataSources: { leads: "structured" } });
       const sourceIsAll = sourceFilter === "TODOS" || !sourceFilter;
       const allowedIsAll = user.role === "Admin TI";
+      const sourceFilterAliases = sourceIsAll ? [""] : structuredBaseSourceAliases(sourceFilter);
+      const allowedSourceAliases = allowedIsAll ? [""] : structuredBaseSourceAliasesMany(allowedSources);
       const searchLike = `%${searchFilter}%`;
       const summaryRows = await sql`SELECT
           COUNT(*)::int AS total,
@@ -6497,14 +6502,14 @@ async function fastStructuredLeadsResponse(req, res, url) {
             OR COALESCE(l.odysseia_status, '') <> ''
           )
           AND (${sourceIsAll}
-            OR l.source = ${sourceFilter}
-            OR l.base_source_before_pipeline = ${sourceFilter}
-            OR l.previous_pipeline_source = ${sourceFilter}
+            OR l.source = ANY(${sourceFilterAliases})
+            OR l.base_source_before_pipeline = ANY(${sourceFilterAliases})
+            OR l.previous_pipeline_source = ANY(${sourceFilterAliases})
           )
           AND (${allowedIsAll}
-            OR l.source = ANY(${allowedSources})
-            OR l.base_source_before_pipeline = ANY(${allowedSources})
-            OR l.previous_pipeline_source = ANY(${allowedSources})
+            OR l.source = ANY(${allowedSourceAliases})
+            OR l.base_source_before_pipeline = ANY(${allowedSourceAliases})
+            OR l.previous_pipeline_source = ANY(${allowedSourceAliases})
           )
           AND (${!favoriteOnly} OR COALESCE(f.favorite, false) = true)
           AND (${!searchFilter} OR lower(concat_ws(' ', l.name, l.phone, l.email, l.assigned_name, l.source, l.status, l.assistant, l.external_id)) LIKE ${searchLike})`;
@@ -6522,14 +6527,14 @@ async function fastStructuredLeadsResponse(req, res, url) {
               OR COALESCE(l.odysseia_status, '') <> ''
             )
             AND (${sourceIsAll}
-              OR l.source = ${sourceFilter}
-              OR l.base_source_before_pipeline = ${sourceFilter}
-              OR l.previous_pipeline_source = ${sourceFilter}
+              OR l.source = ANY(${sourceFilterAliases})
+              OR l.base_source_before_pipeline = ANY(${sourceFilterAliases})
+              OR l.previous_pipeline_source = ANY(${sourceFilterAliases})
             )
             AND (${allowedIsAll}
-              OR l.source = ANY(${allowedSources})
-              OR l.base_source_before_pipeline = ANY(${allowedSources})
-              OR l.previous_pipeline_source = ANY(${allowedSources})
+              OR l.source = ANY(${allowedSourceAliases})
+              OR l.base_source_before_pipeline = ANY(${allowedSourceAliases})
+              OR l.previous_pipeline_source = ANY(${allowedSourceAliases})
             )
             AND (${!favoriteOnly} OR COALESCE(f.favorite, false) = true)
             AND (${!searchFilter} OR lower(concat_ws(' ', l.name, l.phone, l.email, l.assigned_name, l.source, l.status, l.assistant, l.external_id)) LIKE ${searchLike})
@@ -7397,152 +7402,6 @@ async function structuredDbDiagnostics(db) {
   }
   const comparisons = Object.keys(json).map((key) => ({ key, json: json[key] || 0, structured: structured[key] || 0, ok: (json[key] || 0) === (structured[key] || 0) }));
   return { json, structured, comparisons, latestRun: latestRun[0] || null, latestRuns, mode: db ? "legacy-comparison" : "structured-only" };
-}
-
-async function normalizeStructuredBaseColumns(sql, options = {}) {
-  await ensureStructuredSchemaOnce(sql);
-  const limit = Math.max(0, Math.min(10000, Number(options.limit || 0)));
-  const knownSources = ["ODYSSEIA", "RD Station", "OAB", "Vinhos na Serra", "Pipeline GDrive", "META", "Stand", "Lista RMeirelles"];
-  const allowedNormalizationSources = ["RD Station", "Pipeline GDrive", "Vinhos na Serra"];
-  const source = allowedNormalizationSources.includes(String(options.source || "")) ? String(options.source) : "";
-  if (!source) throw new Error("Informe uma base válida para normalizar.");
-  for (const knownSource of knownSources) {
-    await sql`INSERT INTO crm_base_sources (name) VALUES (${knownSource}) ON CONFLICT DO NOTHING`;
-  }
-  const sourcePattern = source === "Pipeline GDrive"
-    ? "%gdrive%"
-    : source === "RD Station"
-      ? "%rd station%"
-      : source === "Vinhos na Serra"
-        ? "%vinhos na serra%"
-        : "";
-  const targetRows = (limit || source)
-    ? await sql`SELECT id FROM crm_leads
-        WHERE (
-            (NULLIF(source, '') IS NULL AND COALESCE(NULLIF(payload->>'source', ''), NULLIF(payload->>'origem', ''), NULLIF(payload->>'origin', ''), NULLIF(payload->>'baseSource', ''), NULLIF(payload->>'base_source', ''), NULLIF(payload->>'sourceName', ''), NULLIF(payload->>'originName', ''), NULLIF(payload->>'baseName', '')) IS NOT NULL)
-            OR COALESCE(source, '') IN ('', 'IMPORTADO', 'Base', 'EMPTY')
-            OR lower(concat_ws(' ', source, base_source_before_pipeline, previous_pipeline_source, payload::text)) LIKE '%gdrive%'
-            OR lower(concat_ws(' ', source, base_source_before_pipeline, previous_pipeline_source, payload::text)) LIKE '%rd station%'
-            OR lower(concat_ws(' ', source, base_source_before_pipeline, previous_pipeline_source, payload::text)) LIKE '%vinhos na serra%'
-          )
-          AND (${!source}
-            OR source = ${source}
-            OR base_source_before_pipeline = ${source}
-            OR previous_pipeline_source = ${source}
-            OR (${Boolean(sourcePattern)} AND lower(concat_ws(' ', source, base_source_before_pipeline, previous_pipeline_source, payload::text)) LIKE ${sourcePattern})
-          )
-        ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id ASC
-        LIMIT ${limit || 100000}`
-    : [];
-  const targetIds = targetRows.map((row) => row.id);
-  const limited = limit > 0 || Boolean(source);
-
-  const enrichedRows = await sql`UPDATE crm_leads SET
-      source = COALESCE(NULLIF(source, ''), NULLIF(payload->>'source', ''), NULLIF(payload->>'origem', ''), NULLIF(payload->>'origin', ''), NULLIF(payload->>'baseSource', ''), NULLIF(payload->>'base_source', ''), NULLIF(payload->>'sourceName', ''), NULLIF(payload->>'originName', ''), NULLIF(payload->>'baseName', ''), ''),
-      base_source_before_pipeline = COALESCE(NULLIF(base_source_before_pipeline, ''), NULLIF(payload->>'baseSourceBeforePipeline', ''), NULLIF(payload->>'base_source_before_pipeline', ''), ''),
-      previous_pipeline_source = COALESCE(NULLIF(previous_pipeline_source, ''), NULLIF(payload->>'previousPipelineSource', ''), NULLIF(payload->>'previous_pipeline_source', ''), ''),
-      source_status = COALESCE(NULLIF(source_status, ''), NULLIF(payload->>'sourceStatus', ''), NULLIF(payload->>'source_status', ''), ''),
-      odysseia_status = COALESCE(NULLIF(odysseia_status, ''), NULLIF(payload->>'odysseiaStatus', ''), NULLIF(payload->>'odysseia_status', ''), ''),
-      assistant = COALESCE(NULLIF(assistant, ''), NULLIF(payload->>'assistant', ''), ''),
-      external_id = COALESCE(NULLIF(external_id, ''), NULLIF(payload->>'externalId', ''), NULLIF(payload->>'external_id', ''))
-    WHERE ((NULLIF(source, '') IS NULL AND COALESCE(NULLIF(payload->>'source', ''), NULLIF(payload->>'origem', ''), NULLIF(payload->>'origin', ''), NULLIF(payload->>'baseSource', ''), NULLIF(payload->>'base_source', ''), NULLIF(payload->>'sourceName', ''), NULLIF(payload->>'originName', ''), NULLIF(payload->>'baseName', '')) IS NOT NULL)
-      OR (NULLIF(base_source_before_pipeline, '') IS NULL AND COALESCE(NULLIF(payload->>'baseSourceBeforePipeline', ''), NULLIF(payload->>'base_source_before_pipeline', '')) IS NOT NULL)
-      OR (NULLIF(previous_pipeline_source, '') IS NULL AND COALESCE(NULLIF(payload->>'previousPipelineSource', ''), NULLIF(payload->>'previous_pipeline_source', '')) IS NOT NULL)
-      OR (NULLIF(source_status, '') IS NULL AND COALESCE(NULLIF(payload->>'sourceStatus', ''), NULLIF(payload->>'source_status', '')) IS NOT NULL)
-      OR (NULLIF(odysseia_status, '') IS NULL AND COALESCE(NULLIF(payload->>'odysseiaStatus', ''), NULLIF(payload->>'odysseia_status', '')) IS NOT NULL)
-      OR (NULLIF(assistant, '') IS NULL AND NULLIF(payload->>'assistant', '') IS NOT NULL)
-      OR (NULLIF(external_id, '') IS NULL AND COALESCE(NULLIF(payload->>'externalId', ''), NULLIF(payload->>'external_id', '')) IS NOT NULL))
-      AND (${!limited} OR id = ANY(${targetIds}))
-    RETURNING id`;
-
-  const sourceRows = await sql`WITH candidates AS (
-      SELECT id,
-        lower(concat_ws(' ',
-          source,
-          base_source_before_pipeline,
-          previous_pipeline_source,
-          payload->>'source',
-          payload->>'origem',
-          payload->>'origin',
-          payload->>'baseSource',
-          payload->>'base_source',
-          payload->>'sourceName',
-          payload->>'originName',
-          payload->>'baseName',
-          payload::text
-        )) AS haystack,
-        COALESCE(NULLIF(source, ''), NULLIF(payload->>'source', ''), NULLIF(payload->>'origem', ''), NULLIF(payload->>'origin', ''), NULLIF(payload->>'baseSource', ''), NULLIF(payload->>'base_source', ''), NULLIF(payload->>'sourceName', ''), NULLIF(payload->>'originName', ''), NULLIF(payload->>'baseName', ''), '') AS raw_source
-      FROM crm_leads
-      WHERE ${!limited} OR id = ANY(${targetIds})
-    ), normalized AS (
-      SELECT id,
-        CASE
-          WHEN haystack LIKE '%pipeline gdrive%' OR haystack LIKE '%gdrive%' THEN 'Pipeline GDrive'
-          WHEN haystack LIKE '%rd station%' OR haystack LIKE '%rd_station%' OR haystack LIKE '%rdstation%' THEN 'RD Station'
-          WHEN haystack LIKE '%vinhos na serra%' OR haystack LIKE '%vinhos_na_serra%' THEN 'Vinhos na Serra'
-          WHEN haystack LIKE '%odysseia%' OR haystack LIKE '%odisseia%' THEN 'ODYSSEIA'
-          WHEN haystack LIKE '%lista rmeirelles%' OR haystack LIKE '%lista rmeireles%' THEN 'Lista RMeirelles'
-          WHEN haystack LIKE '%stand%' THEN 'Stand'
-          WHEN haystack LIKE '%meta%' THEN 'META'
-          WHEN haystack LIKE '%oab%' THEN 'OAB'
-          WHEN lower(raw_source) IN ('pipeline gdrive', 'gdrive') THEN 'Pipeline GDrive'
-          WHEN lower(raw_source) IN ('rd', 'rd station') THEN 'RD Station'
-          WHEN lower(raw_source) IN ('vinhos', 'vinhos na serra') THEN 'Vinhos na Serra'
-          WHEN lower(raw_source) IN ('meta', 'meta lead ads') THEN 'META'
-          WHEN lower(raw_source) IN ('importado', 'base', 'empty', '') THEN ''
-          ELSE raw_source
-        END AS next_source
-      FROM candidates
-    )
-    UPDATE crm_leads l
-    SET source = n.next_source
-    FROM normalized n
-    WHERE l.id = n.id
-      AND n.next_source <> ''
-      AND COALESCE(NULLIF(l.source, ''), '') IS DISTINCT FROM n.next_source
-    RETURNING l.id`;
-
-  const rescuedSourceRows = await sql`UPDATE crm_leads
-    SET base_source_before_pipeline = source
-    WHERE in_pipeline = true
-      AND (${!limited} OR id = ANY(${targetIds}))
-      AND COALESCE(NULLIF(base_source_before_pipeline, ''), NULLIF(previous_pipeline_source, '')) IS NULL
-      AND source IN ('ODYSSEIA', 'RD Station', 'OAB', 'Vinhos na Serra', 'Pipeline GDrive')
-    RETURNING id`;
-
-  const sourceCounts = await sql`SELECT COALESCE(NULLIF(source, ''), 'Sem origem') AS source, COUNT(*)::int AS count
-    FROM crm_leads
-    GROUP BY COALESCE(NULLIF(source, ''), 'Sem origem')
-    ORDER BY count DESC, source ASC`;
-  const baseCounts = await sql`SELECT source_name AS source, COUNT(*)::int AS count FROM (
-      SELECT NULLIF(source, '') AS source_name FROM crm_leads
-      UNION ALL
-      SELECT NULLIF(base_source_before_pipeline, '') AS source_name FROM crm_leads
-      UNION ALL
-      SELECT NULLIF(previous_pipeline_source, '') AS source_name FROM crm_leads
-    ) sources
-    WHERE source_name IS NOT NULL
-    GROUP BY source_name
-    ORDER BY count DESC, source ASC`;
-  const visibleBaseRows = await sql`SELECT COUNT(*)::int AS count FROM crm_leads
-    WHERE in_pipeline = false
-      OR source IN ('META', 'Stand', 'Lista RMeirelles')
-      OR COALESCE(base_source_before_pipeline, '') <> ''
-      OR COALESCE(previous_pipeline_source, '') <> ''
-      OR COALESCE(source_status, '') <> ''
-      OR COALESCE(odysseia_status, '') <> ''`;
-
-  return {
-    tested: limit || null,
-    source: source || null,
-    candidateCount: limited ? targetIds.length : null,
-    enriched: enrichedRows.length,
-    sourcesNormalized: sourceRows.length,
-    rescuedSourcesNormalized: rescuedSourceRows.length,
-    visibleBaseLeads: Number(visibleBaseRows[0]?.count || 0),
-    sourceCounts,
-    baseCounts
-  };
 }
 
 function routeStatic(req, res) {
