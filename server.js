@@ -3736,8 +3736,10 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_pipeline_statuses (status text PRIMARY KEY, position integer NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_projects (name text PRIMARY KEY, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
   await sql`ALTER TABLE crm_projects ADD COLUMN IF NOT EXISTS position integer NOT NULL DEFAULT 0`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_tag_definitions (id text PRIMARY KEY, name text, color text, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_base_sources (name text PRIMARY KEY)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_meta_forms (id text PRIMARY KEY, name text, project text, archived boolean NOT NULL DEFAULT false, ad_url text, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_settings (key text PRIMARY KEY, payload jsonb NOT NULL DEFAULT '{}'::jsonb, updated_at timestamptz NOT NULL DEFAULT now())`;
   await sql`CREATE TABLE IF NOT EXISTS crm_permissions (owner_type text NOT NULL, owner_id text NOT NULL, resource_id text NOT NULL, can_access boolean NOT NULL DEFAULT false, can_act boolean NOT NULL DEFAULT false, PRIMARY KEY (owner_type, owner_id, resource_id))`;
   await sql`CREATE TABLE IF NOT EXISTS crm_audit_logs (id text PRIMARY KEY, at timestamptz, actor text, actor_name text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_integration_logs (id text PRIMARY KEY, at timestamptz, provider text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
@@ -3752,7 +3754,7 @@ async function ensureStructuredSchema(sql) {
 }
 
 const STRUCTURED_TABLES = [
-  "crm_lead_comments", "crm_lead_tags", "crm_lead_favorites", "crm_permissions", "crm_meta_forms",
+  "crm_lead_comments", "crm_lead_tags", "crm_lead_favorites", "crm_permissions", "crm_meta_forms", "crm_tag_definitions", "crm_settings",
   "crm_pipeline_statuses", "crm_projects", "crm_base_sources", "crm_audit_logs", "crm_integration_logs",
   "crm_fup_lead_logs", "crm_sam_events", "crm_lev_sales", "crm_lev_receipts", "crm_knowledge_articles", "crm_leads", "crm_users"
 ];
@@ -3762,11 +3764,13 @@ const STRUCTURED_DATASETS = [
   { key: "leads", tables: ["crm_leads"] },
   { key: "comments", tables: ["crm_lead_comments"] },
   { key: "tags", tables: ["crm_lead_tags"] },
+  { key: "tagDefinitions", tables: ["crm_tag_definitions"] },
   { key: "favorites", tables: ["crm_lead_favorites"] },
   { key: "statuses", tables: ["crm_pipeline_statuses"] },
   { key: "projects", tables: ["crm_projects"] },
   { key: "baseSources", tables: ["crm_base_sources"] },
   { key: "metaForms", tables: ["crm_meta_forms"] },
+  { key: "settings", tables: ["crm_settings"] },
   { key: "permissions", tables: ["crm_permissions"] },
   { key: "auditLogs", tables: ["crm_audit_logs"] },
   { key: "integrationLogs", tables: ["crm_integration_logs"] },
@@ -3791,6 +3795,8 @@ async function clearStructuredTable(sql, table) {
   if (table === "crm_lead_favorites") return sql`DELETE FROM crm_lead_favorites`;
   if (table === "crm_permissions") return sql`DELETE FROM crm_permissions`;
   if (table === "crm_meta_forms") return sql`DELETE FROM crm_meta_forms`;
+  if (table === "crm_tag_definitions") return sql`DELETE FROM crm_tag_definitions`;
+  if (table === "crm_settings") return sql`DELETE FROM crm_settings`;
   if (table === "crm_pipeline_statuses") return sql`DELETE FROM crm_pipeline_statuses`;
   if (table === "crm_projects") return sql`DELETE FROM crm_projects`;
   if (table === "crm_base_sources") return sql`DELETE FROM crm_base_sources`;
@@ -3821,10 +3827,12 @@ async function countStructuredTable(sql, table) {
   if (table === "crm_lead_comments") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lead_comments`)[0]?.count || 0;
   if (table === "crm_lead_tags") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lead_tags`)[0]?.count || 0;
   if (table === "crm_lead_favorites") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lead_favorites`)[0]?.count || 0;
+  if (table === "crm_tag_definitions") return (await sql`SELECT COUNT(*)::int AS count FROM crm_tag_definitions`)[0]?.count || 0;
   if (table === "crm_pipeline_statuses") return (await sql`SELECT COUNT(*)::int AS count FROM crm_pipeline_statuses`)[0]?.count || 0;
   if (table === "crm_projects") return (await sql`SELECT COUNT(*)::int AS count FROM crm_projects`)[0]?.count || 0;
   if (table === "crm_base_sources") return (await sql`SELECT COUNT(*)::int AS count FROM crm_base_sources`)[0]?.count || 0;
   if (table === "crm_meta_forms") return (await sql`SELECT COUNT(*)::int AS count FROM crm_meta_forms`)[0]?.count || 0;
+  if (table === "crm_settings") return (await sql`SELECT COUNT(*)::int AS count FROM crm_settings`)[0]?.count || 0;
   if (table === "crm_permissions") return (await sql`SELECT COUNT(*)::int AS count FROM crm_permissions`)[0]?.count || 0;
   if (table === "crm_audit_logs") return (await sql`SELECT COUNT(*)::int AS count FROM crm_audit_logs`)[0]?.count || 0;
   if (table === "crm_integration_logs") return (await sql`SELECT COUNT(*)::int AS count FROM crm_integration_logs`)[0]?.count || 0;
@@ -4156,6 +4164,148 @@ async function structuredConfigForState(db) {
   }
 }
 
+function structuredPermissionsFromRows(rows = []) {
+  const permissions = { roles: {}, users: {} };
+  for (const row of rows) {
+    const bucket = row.owner_type === "role" ? permissions.roles : row.owner_type === "user" ? permissions.users : null;
+    if (!bucket) continue;
+    if (!bucket[row.owner_id]) bucket[row.owner_id] = {};
+    bucket[row.owner_id][row.resource_id] = permissionCell(row.can_access, row.can_act);
+  }
+  return permissions;
+}
+
+function structuredBaseAccessFromPermissions(permissions = {}, sources = []) {
+  const baseAccess = { roles: {}, users: {} };
+  for (const role of ROLES) {
+    const allowed = sources.filter((source) => normalizePermissionCell(permissions.roles?.[role]?.[basePermissionId(source)]).access);
+    baseAccess.roles[role] = { enabled: allowed.length > 0, sources: allowed };
+  }
+  for (const [userId, rules] of Object.entries(permissions.users || {})) {
+    const allowed = sources.filter((source) => normalizePermissionCell(rules?.[basePermissionId(source)]).access);
+    if (allowed.length) baseAccess.users[userId] = { override: true, enabled: true, sources: allowed };
+  }
+  return baseAccess;
+}
+
+async function fastStructuredStateResponse(req, res, url) {
+  if (!DATABASE_URL || req.method !== "GET" || url.pathname !== "/api/state") return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchema(sql);
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+    const [
+      userRows,
+      projectRows,
+      statusRows,
+      tagRows,
+      sourceRows,
+      formRows,
+      permissionRows,
+      integrationRows,
+      auditRows,
+      fupRows,
+      samRows,
+      saleRows,
+      receiptRows,
+      articleRows,
+      settingsRows
+    ] = await Promise.all([
+      sql`SELECT * FROM crm_users ORDER BY name ASC, username ASC`,
+      sql`SELECT name FROM crm_projects ORDER BY position ASC, name ASC`,
+      sql`SELECT status FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`,
+      sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`,
+      sql`SELECT name FROM crm_base_sources ORDER BY name ASC`,
+      sql`SELECT payload FROM crm_meta_forms ORDER BY archived ASC, name ASC`,
+      sql`SELECT owner_type, owner_id, resource_id, can_access, can_act FROM crm_permissions`,
+      canManageSettings(user) ? sql`SELECT payload FROM crm_integration_logs ORDER BY at DESC NULLS LAST LIMIT 50` : Promise.resolve([]),
+      canManageSettings(user) ? sql`SELECT payload FROM crm_audit_logs ORDER BY at DESC NULLS LAST LIMIT 25` : Promise.resolve([]),
+      canManageSettings(user) ? sql`SELECT payload FROM crm_fup_lead_logs ORDER BY at DESC NULLS LAST LIMIT 250` : Promise.resolve([]),
+      canManageSettings(user) ? sql`SELECT * FROM crm_sam_events ORDER BY created_at DESC NULLS LAST LIMIT 500` : Promise.resolve([]),
+      canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_sales ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
+      canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_receipts ORDER BY paid_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
+      sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
+      sql`SELECT key, payload FROM crm_settings`
+    ]);
+    const settings = Object.fromEntries(settingsRows.map((row) => [row.key, row.payload || {}]));
+    const users = userRows.map((row) => publicUser(structuredUserFromAuthRow(row))).filter((item) => item.id);
+    const projects = projectRows.map((row) => row.name).filter(Boolean);
+    const pipelineStatuses = statusRows.map((row) => row.status).filter(Boolean);
+    const tagDefinitions = tagRows.map((row) => row.payload || {}).filter((item) => item.id);
+    const baseSources = sourceRows.map((row) => row.name).filter(Boolean);
+    const forms = formRows.map((row) => row.payload || {}).filter((item) => item.id);
+    const permissions = structuredPermissionsFromRows(permissionRows);
+    const integrations = {
+      ...(settings.integrations || {}),
+      metaForms: {
+        ...(settings.integrations?.metaForms || {}),
+        enabled: forms.length > 0,
+        forms
+      }
+    };
+    const stateDb = {
+      roles: ROLES,
+      users,
+      projects: projects.length ? projects : DEFAULT_PROJECTS,
+      pipelineStatuses,
+      tagDefinitions: tagDefinitions.length ? tagDefinitions : DEFAULT_TAG_DEFINITIONS,
+      leads: [],
+      integrations,
+      permissions,
+      baseAccess: structuredBaseAccessFromPermissions(permissions, baseSources.length ? baseSources : allBaseSources({ leads: [] })),
+      knowledgeArticles: articleRows.map((row) => row.payload || {}).filter((item) => item.id),
+      knowledgeChatSessions: Array.isArray(settings.knowledgeChatSessions) ? settings.knowledgeChatSessions : [],
+      levFinance: {
+        settings: settings.levFinanceSettings || {},
+        sales: saleRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit),
+        receipts: receiptRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit),
+        paidUnits: [],
+        settlements: []
+      }
+    };
+    ensurePermissions(stateDb);
+    return sendJson(res, 200, {
+      user: publicUser(user),
+      roles: ROLES,
+      projects: stateDb.projects,
+      pipelineStatuses: stateDb.pipelineStatuses,
+      tagDefinitions: stateDb.tagDefinitions,
+      users: stateDb.users,
+      leads: [],
+      integrations: canManageSettings(user) ? stateDb.integrations : null,
+      baseAccess: canManagePipelineSettings(user) ? stateDb.baseAccess : null,
+      permissions: canManagePipelineSettings(user) ? stateDb.permissions : null,
+      currentPermissions: stateDb.permissions.users?.[user.id] || {},
+      permissionResources: canManagePipelineSettings(user) ? permissionResources(stateDb) : [],
+      baseAccessSources: allBaseSources(stateDb),
+      accessibleBaseSources: accessibleBaseSources(stateDb, user),
+      actionableBaseSources: allBaseSources(stateDb).filter((source) => permissionForUser(stateDb, user, basePermissionId(source)).action),
+      knowledgeCategories: KNOWLEDGE_CATEGORIES,
+      knowledgeArticles: visibleKnowledgeArticles(stateDb, user),
+      knowledgeChatSessions: userKnowledgeChatSessions(stateDb, user),
+      canManageKnowledge: canManageKnowledge(user),
+      canCreateKnowledge: canCreateKnowledge(user),
+      integrationLog: integrationRows.map((row) => row.payload || {}).filter((item) => item.at),
+      auditLog: auditRows.map((row) => row.payload || {}).filter((item) => item.at),
+      samEvents: samRows.map(samEventFromRow).filter((event) => event.id),
+      accessLog: [],
+      fupLeadLog: fupRows.map((row) => row.payload || {}).filter((item) => item.at),
+      dataSources: {
+        state: "structured",
+        logs: "structured",
+        config: "structured"
+      },
+      levFinance: canAccessLevFinance(user) ? publicLevFinance(stateDb) : null
+    });
+  } catch (error) {
+    mirrorStructuredError("state", error);
+    sendJson(res, 500, { error: "Erro ao carregar estado estruturado", detail: error.message });
+    return true;
+  }
+}
+
 async function structuredLeadsForState(db, user, scope = "all") {
   const fallbackLeads = visibleLeads(db, user).filter((lead) => leadMatchesScope(lead, scope));
   const fallback = {
@@ -4197,8 +4347,8 @@ async function structuredUserFromSession(req, res, sql) {
     sendJson(res, 401, { error: "Login necessário" });
     return null;
   }
-  const rows = await sql`SELECT payload FROM crm_users WHERE id = ${session.userId} AND active = true LIMIT 1`;
-  const user = rows[0]?.payload;
+  const rows = await sql`SELECT * FROM crm_users WHERE id = ${session.userId} AND active = true LIMIT 1`;
+  const user = structuredUserFromAuthRow(rows[0]);
   if (!user?.id) {
     sendJson(res, 401, { error: "Usuário inativo" });
     return null;
@@ -5089,6 +5239,11 @@ async function insertStructuredDataset(sql, db, key) {
         summary.tags += 1;
       }
     }
+  } else if (key === "tagDefinitions") {
+    for (const tag of db.tagDefinitions || []) {
+      await sql`INSERT INTO crm_tag_definitions (id, name, color, payload) VALUES (${tag.id}, ${tag.name || ""}, ${tag.color || "#475467"}, ${JSON.stringify(tag)}::jsonb) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, color = EXCLUDED.color, payload = EXCLUDED.payload`;
+      summary.tagDefinitions += 1;
+    }
   } else if (key === "favorites") {
     for (const lead of db.leads || []) {
       for (const [userId, favorite] of Object.entries(lead.favoritesByUser || {})) {
@@ -5116,6 +5271,17 @@ async function insertStructuredDataset(sql, db, key) {
       if (!form.id) continue;
       await sql`INSERT INTO crm_meta_forms (id, name, project, archived, ad_url, payload) VALUES (${form.id}, ${form.name || ""}, ${form.project || ""}, ${Boolean(form.archived)}, ${form.adUrl || form.adURL || ""}, ${JSON.stringify(form)}::jsonb)`;
       summary.metaForms += 1;
+    }
+  } else if (key === "settings") {
+    const settings = {
+      integrations: db.integrations || {},
+      levFinanceSettings: db.levFinance?.settings || {},
+      baseAccess: db.baseAccess || {},
+      knowledgeChatSessions: db.knowledgeChatSessions || []
+    };
+    for (const [keyName, payload] of Object.entries(settings)) {
+      await sql`INSERT INTO crm_settings (key, payload, updated_at) VALUES (${keyName}, ${JSON.stringify(payload)}::jsonb, now()) ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`;
+      summary.settings += 1;
     }
   } else if (key === "permissions") {
     for (const [ownerType, owners] of Object.entries(db.permissions || {})) {
@@ -5208,7 +5374,7 @@ async function syncStructuredDb(db, actor) {
   await ensureStructuredSchema(sql);
   const runId = crypto.randomUUID();
   await sql`INSERT INTO crm_structured_sync_runs (id, status, summary) VALUES (${runId}, 'running', '{}'::jsonb)`;
-  const summary = { users: 0, leads: 0, comments: 0, tags: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, permissions: 0, auditLogs: 0, integrationLogs: 0, fupLeadLogs: 0, samEvents: 0, levSales: 0, levReceipts: 0, knowledgeArticles: 0 };
+  const summary = { users: 0, leads: 0, comments: 0, tags: 0, tagDefinitions: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, settings: 0, permissions: 0, auditLogs: 0, integrationLogs: 0, fupLeadLogs: 0, samEvents: 0, levSales: 0, levReceipts: 0, knowledgeArticles: 0 };
   try {
     ensurePermissions(db);
     await clearStructuredTables(sql);
@@ -5240,6 +5406,10 @@ async function syncStructuredDb(db, actor) {
       await sql`INSERT INTO crm_projects (name, position, payload) VALUES (${project}, ${position}, ${JSON.stringify({ name: project, position })}::jsonb)`;
       summary.projects += 1;
     }
+    for (const tag of db.tagDefinitions || []) {
+      await sql`INSERT INTO crm_tag_definitions (id, name, color, payload) VALUES (${tag.id}, ${tag.name || ""}, ${tag.color || "#475467"}, ${JSON.stringify(tag)}::jsonb) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, color = EXCLUDED.color, payload = EXCLUDED.payload`;
+      summary.tagDefinitions += 1;
+    }
     for (const source of allBaseSources(db)) {
       await sql`INSERT INTO crm_base_sources (name) VALUES (${source})`;
       summary.baseSources += 1;
@@ -5247,6 +5417,15 @@ async function syncStructuredDb(db, actor) {
     for (const form of db.integrations?.metaForms?.forms || []) {
       await sql`INSERT INTO crm_meta_forms (id, name, project, archived, ad_url, payload) VALUES (${form.id}, ${form.name || ""}, ${form.project || ""}, ${Boolean(form.archived)}, ${form.adUrl || form.adURL || ""}, ${JSON.stringify(form)}::jsonb)`;
       summary.metaForms += 1;
+    }
+    for (const [keyName, payload] of Object.entries({
+      integrations: db.integrations || {},
+      levFinanceSettings: db.levFinance?.settings || {},
+      baseAccess: db.baseAccess || {},
+      knowledgeChatSessions: db.knowledgeChatSessions || []
+    })) {
+      await sql`INSERT INTO crm_settings (key, payload, updated_at) VALUES (${keyName}, ${JSON.stringify(payload)}::jsonb, now()) ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`;
+      summary.settings += 1;
     }
     for (const [ownerType, owners] of Object.entries(db.permissions || {})) {
       if (!["roles", "users"].includes(ownerType) || !owners || typeof owners !== "object") continue;
@@ -5302,7 +5481,8 @@ async function structuredDbDiagnostics(db) {
   const structured = {
     users: await count("crm_users"), leads: await count("crm_leads"), comments: await count("crm_lead_comments"),
     tags: await count("crm_lead_tags"), favorites: await count("crm_lead_favorites"), statuses: await count("crm_pipeline_statuses"),
-    projects: await count("crm_projects"), baseSources: await count("crm_base_sources"), metaForms: await count("crm_meta_forms"),
+    tagDefinitions: await count("crm_tag_definitions"), projects: await count("crm_projects"), baseSources: await count("crm_base_sources"), metaForms: await count("crm_meta_forms"),
+    settings: await count("crm_settings"),
     permissions: await count("crm_permissions"), auditLogs: await count("crm_audit_logs"), integrationLogs: await count("crm_integration_logs"),
     fupLeadLogs: await count("crm_fup_lead_logs"), samEvents: await count("crm_sam_events"), levSales: await count("crm_lev_sales"), levReceipts: await count("crm_lev_receipts"),
     knowledgeArticles: await count("crm_knowledge_articles")
@@ -5313,11 +5493,13 @@ async function structuredDbDiagnostics(db) {
     leads: (db.leads || []).length,
     comments: (db.leads || []).reduce((total, lead) => total + (lead.comments || []).length, 0),
     tags: (db.leads || []).reduce((total, lead) => total + (lead.tags || lead.tagIds || []).length, 0),
+    tagDefinitions: (db.tagDefinitions || []).length,
     favorites: (db.leads || []).reduce((total, lead) => total + Object.keys(lead.favoritesByUser || {}).length, 0),
     statuses: (db.pipelineStatuses || []).length,
     projects: (db.projects || []).length,
     baseSources: allBaseSources(db).length,
     metaForms: (db.integrations?.metaForms?.forms || []).length,
+    settings: 4,
     permissions: Object.values(permissions.roles || {}).reduce((total, rules) => total + Object.keys(rules || {}).length, 0) + Object.values(permissions.users || {}).reduce((total, rules) => total + Object.keys(rules || {}).length, 0),
     auditLogs: (db.auditLog || []).length,
     integrationLogs: (db.integrationLog || []).length,
@@ -6821,6 +7003,7 @@ async function handleRequest(req, res) {
   if (req.url.startsWith("/api/")) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (await fastStructuredAuthRoutes(req, res, url)) return;
+    if (await fastStructuredStateResponse(req, res, url)) return;
     if (await fastStructuredLeadsResponse(req, res, url)) return;
     if (await fastStructuredManualLeadRoutes(req, res, url)) return;
     if (await fastStructuredSamWebhook(req, res, url)) return;
