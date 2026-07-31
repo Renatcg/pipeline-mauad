@@ -4155,6 +4155,8 @@ function renderStructuredDbSettings() {
         <h2>Banco estruturado</h2>
         <div class="row-actions">
           <button type="button" id="diagnoseStructuredDb">Diagnosticar</button>
+          <button type="button" id="testNormalizeBaseColumns">Testar 10 leads</button>
+          <button type="button" id="normalizeBaseColumns" class="primary">Normalizar bases</button>
         </div>
       </div>
       ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
@@ -4180,6 +4182,37 @@ function renderStructuredDbSettings() {
       const data = await api("/api/structured-db/diagnostics");
       state.structuredDbDiagnostics = data.diagnostics;
       state.settingsNotice = "Diagnóstico atualizado.";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+  document.querySelector("#testNormalizeBaseColumns")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Testando...");
+      const data = await api("/api/structured-db/normalize-bases", { method: "POST", body: JSON.stringify({ limit: 10 }) });
+      state.structuredDbDiagnostics = data.diagnostics;
+      const summary = data.summary || {};
+      state.settingsNotice = `Teste concluído em ${Number(summary.candidateCount || 0).toLocaleString("pt-BR")} lead(s): ${Number(summary.enriched || 0).toLocaleString("pt-BR")} enriquecido(s), ${Number(summary.sourcesNormalized || 0).toLocaleString("pt-BR")} origem(ns) normalizada(s).`;
+      invalidateLeads();
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+  document.querySelector("#normalizeBaseColumns")?.addEventListener("click", async (event) => {
+    if (!confirm("Normalizar as colunas das bases no banco estruturado agora?")) return;
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Normalizando...");
+      const data = await api("/api/structured-db/normalize-bases", { method: "POST", body: JSON.stringify({}) });
+      state.structuredDbDiagnostics = data.diagnostics;
+      const summary = data.summary || {};
+      state.settingsNotice = `Bases normalizadas: ${Number(summary.enriched || 0).toLocaleString("pt-BR")} enriquecido(s), ${Number(summary.sourcesNormalized || 0).toLocaleString("pt-BR")} origem(ns) ajustada(s), ${Number(summary.visibleBaseLeads || 0).toLocaleString("pt-BR")} lead(s) visíveis em Bases.`;
+      invalidateLeads();
       renderSettings();
     } catch (error) {
       setButtonBusy(button, false);
