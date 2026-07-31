@@ -3719,6 +3719,9 @@ function logRowId(prefix, item, index) {
 async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_structured_sync_runs (id text PRIMARY KEY, started_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz, status text NOT NULL, summary jsonb NOT NULL DEFAULT '{}'::jsonb, error text)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_users (id text PRIMARY KEY, username text, name text, role text, active boolean NOT NULL DEFAULT true, operates_as_broker boolean NOT NULL DEFAULT false, notifications jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz, updated_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS password_hash text`;
+  await sql`ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS password_setup jsonb`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_users_username_idx ON crm_users (lower(username))`;
   await sql`CREATE TABLE IF NOT EXISTS crm_leads (id text PRIMARY KEY, name text, email text, phone text, source text, status text, in_pipeline boolean NOT NULL DEFAULT false, assigned_to text, assigned_name text, project text, unit text, unit_value text, base_source_before_pipeline text, previous_pipeline_source text, created_at timestamptz, updated_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_source_idx ON crm_leads (source)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_pipeline_idx ON crm_leads (in_pipeline)`;
@@ -4202,6 +4205,95 @@ async function structuredUserFromSession(req, res, sql) {
   }
   res.setHeader("Set-Cookie", sessionCookie(user.id));
   return user;
+}
+
+function structuredUserFromAuthRow(row) {
+  if (!row) return null;
+  return {
+    ...(row.payload || {}),
+    id: row.id,
+    username: row.username || row.payload?.username || "",
+    name: row.name || row.payload?.name || "",
+    role: row.role || row.payload?.role || "",
+    active: row.active !== false,
+    operatesAsBroker: Boolean(row.operates_as_broker ?? row.payload?.operatesAsBroker),
+    notifications: row.notifications || row.payload?.notifications || {},
+    passwordHash: row.password_hash || "",
+    passwordSetup: row.password_setup || row.payload?.passwordSetup || null
+  };
+}
+
+async function structuredUserBySetupToken(sql, token) {
+  const tokenHash = hashToken(String(token || ""));
+  if (!tokenHash) return null;
+  const rows = await sql`SELECT * FROM crm_users WHERE password_setup->>'tokenHash' = ${tokenHash} LIMIT 1`;
+  const user = structuredUserFromAuthRow(rows[0]);
+  if (!user?.passwordSetup?.expiresAt) return null;
+  if (new Date(user.passwordSetup.expiresAt).getTime() <= Date.now()) return null;
+  return user;
+}
+
+async function fastStructuredAuthRoutes(req, res, url) {
+  if (!DATABASE_URL) return false;
+  const authPaths = new Set(["/api/login", "/api/logout", "/api/me", "/api/password/setup/validate", "/api/password/setup"]);
+  if (!authPaths.has(url.pathname)) return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchema(sql);
+
+    if (req.method === "POST" && url.pathname === "/api/login") {
+      const body = await readBody(req);
+      const login = String(body.username || "").trim().toLowerCase();
+      const rows = await sql`SELECT * FROM crm_users WHERE lower(username) = ${login} AND active = true LIMIT 1`;
+      const user = structuredUserFromAuthRow(rows[0]);
+      if (!user) return false;
+      if (!user.passwordHash && !user.passwordSetup) return false;
+      if (!user.passwordHash) return sendJson(res, 403, { error: "Senha ainda não cadastrada. Use o link enviado por e-mail." });
+      if (!verifyPassword(String(body.password || ""), user.passwordHash)) return sendJson(res, 401, { error: "Usuário ou senha inválidos" });
+      await structuredAudit(user, "LOGIN", { path: "/login", view: "Login", source: "structured" });
+      return sendJson(res, 200, { user: publicUser(user), dataSources: { auth: "structured" } }, {
+        "Set-Cookie": sessionCookie(user.id)
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/logout") {
+      return sendJson(res, 200, { ok: true }, { "Set-Cookie": "sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0" });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/me") {
+      const user = await structuredUserFromSession(req, res, sql);
+      if (!user) return true;
+      return sendJson(res, 200, { user: publicUser(user), dataSources: { auth: "structured" } });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/password/setup/validate") {
+      const body = await readBody(req);
+      const target = await structuredUserBySetupToken(sql, body.token);
+      if (!target) return false;
+      return sendJson(res, 200, { user: { name: target.name, username: target.username }, dataSources: { auth: "structured" } });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/password/setup") {
+      const body = await readBody(req);
+      const target = await structuredUserBySetupToken(sql, body.token);
+      if (!target) return false;
+      const password = String(body.password || "");
+      if (password !== String(body.confirmPassword || "")) return sendJson(res, 400, { error: "As senhas não conferem" });
+      const policyError = validatePasswordPolicy(password);
+      if (policyError) return sendJson(res, 400, { error: policyError });
+      target.passwordHash = hashPassword(password);
+      target.passwordSetup = null;
+      target.updatedAt = new Date().toISOString();
+      await saveStructuredUser(sql, target);
+      await structuredAudit(target, "SET_PASSWORD", { userId: target.id, source: "structured" });
+      return sendJson(res, 200, { ok: true, dataSources: { auth: "structured" } });
+    }
+    return false;
+  } catch (error) {
+    mirrorStructuredError("auth", error);
+    return false;
+  }
 }
 
 function publicStructuredLeadSummary(row, user) {
@@ -4915,12 +5007,16 @@ async function mirrorStructuredUser(user) {
   try {
     const sql = await structuredSqlForMirror();
     if (!sql) return;
-    await sql`INSERT INTO crm_users (id, username, name, role, active, operates_as_broker, notifications, created_at, updated_at, payload)
-      VALUES (${user.id}, ${user.username || ""}, ${user.name || ""}, ${user.role || ""}, ${user.active !== false}, ${Boolean(user.operatesAsBroker)}, ${JSON.stringify(user.notifications || {})}::jsonb, ${dbDate(user.createdAt)}, ${dbDate(user.updatedAt)}, ${JSON.stringify(publicUser(user))}::jsonb)
-      ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, name = EXCLUDED.name, role = EXCLUDED.role, active = EXCLUDED.active, operates_as_broker = EXCLUDED.operates_as_broker, notifications = EXCLUDED.notifications, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
+    await saveStructuredUser(sql, user);
   } catch (error) {
     mirrorStructuredError("user", error);
   }
+}
+
+async function saveStructuredUser(sql, user) {
+  await sql`INSERT INTO crm_users (id, username, name, role, active, operates_as_broker, notifications, password_hash, password_setup, created_at, updated_at, payload)
+    VALUES (${user.id}, ${user.username || ""}, ${user.name || ""}, ${user.role || ""}, ${user.active !== false}, ${Boolean(user.operatesAsBroker)}, ${JSON.stringify(user.notifications || {})}::jsonb, ${user.passwordHash || null}, ${JSON.stringify(user.passwordSetup || null)}::jsonb, ${dbDate(user.createdAt)}, ${dbDate(user.updatedAt)}, ${JSON.stringify(publicUser(user))}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, name = EXCLUDED.name, role = EXCLUDED.role, active = EXCLUDED.active, operates_as_broker = EXCLUDED.operates_as_broker, notifications = EXCLUDED.notifications, password_hash = EXCLUDED.password_hash, password_setup = EXCLUDED.password_setup, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
 }
 
 async function deleteStructuredUser(userId) {
@@ -4964,7 +5060,7 @@ async function insertStructuredDataset(sql, db, key) {
   ensurePermissions(db);
   if (key === "users") {
     for (const user of db.users || []) {
-      await sql`INSERT INTO crm_users (id, username, name, role, active, operates_as_broker, notifications, created_at, updated_at, payload) VALUES (${user.id}, ${user.username || ""}, ${user.name || ""}, ${user.role || ""}, ${user.active !== false}, ${Boolean(user.operatesAsBroker)}, ${JSON.stringify(user.notifications || {})}::jsonb, ${dbDate(user.createdAt)}, ${dbDate(user.updatedAt)}, ${JSON.stringify(publicUser(user))}::jsonb)`;
+      await saveStructuredUser(sql, user);
       summary.users += 1;
     }
   } else if (key === "leads") {
@@ -5117,7 +5213,7 @@ async function syncStructuredDb(db, actor) {
     ensurePermissions(db);
     await clearStructuredTables(sql);
     for (const user of db.users || []) {
-      await sql`INSERT INTO crm_users (id, username, name, role, active, operates_as_broker, notifications, created_at, updated_at, payload) VALUES (${user.id}, ${user.username || ""}, ${user.name || ""}, ${user.role || ""}, ${user.active !== false}, ${Boolean(user.operatesAsBroker)}, ${JSON.stringify(user.notifications || {})}::jsonb, ${dbDate(user.createdAt)}, ${dbDate(user.updatedAt)}, ${JSON.stringify(publicUser(user))}::jsonb)`;
+      await saveStructuredUser(sql, user);
       summary.users += 1;
     }
     for (const lead of db.leads || []) {
@@ -6724,6 +6820,7 @@ async function routeApi(req, res, db) {
 async function handleRequest(req, res) {
   if (req.url.startsWith("/api/")) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    if (await fastStructuredAuthRoutes(req, res, url)) return;
     if (await fastStructuredLeadsResponse(req, res, url)) return;
     if (await fastStructuredManualLeadRoutes(req, res, url)) return;
     if (await fastStructuredSamWebhook(req, res, url)) return;
