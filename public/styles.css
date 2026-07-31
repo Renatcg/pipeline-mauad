@@ -1388,6 +1388,44 @@ table {
   table-layout: fixed;
 }
 
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.table-pagination label,
+.pagination-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.table-pagination select {
+  min-height: 34px;
+  padding: 0 30px 0 10px;
+  font-size: 13px;
+}
+
+.pagination-actions button {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.pagination-actions span {
+  color: var(--ink);
+}
+
 .lead-col-favorite {
   width: 58px;
 }
@@ -2551,6 +2589,20 @@ th {
 
   .table-wrap {
     max-width: 100%;
+  }
+
+  .table-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .table-pagination label,
+  .pagination-actions {
+    flex-wrap: wrap;
+  }
+
+  .pagination-actions button {
+    flex: 1 1 96px;
   }
 
   table {

@@ -73,6 +73,8 @@ const state = {
   createLeadImpactPrompt: false,
   baseSource: "TODOS",
   baseSort: { key: "name", direction: "asc" },
+  basePageIndex: 0,
+  basePageSize: 25,
   sheetSort: { key: "name", direction: "asc" },
   projectFilters: [],
   brokerFilters: [],
@@ -413,6 +415,25 @@ function baseSourcesForLead(lead) {
   return [lead.source, lead.baseSourceBeforePipeline, lead.previousPipelineSource].filter(Boolean);
 }
 
+function baseSourceAliases(source) {
+  const value = String(source || "").trim();
+  const aliases = {
+    "Vinhos na Serra": ["Vinhos na Serra", "VINHOS NA SERRA"],
+    "VINHOS NA SERRA": ["Vinhos na Serra", "VINHOS NA SERRA"],
+    "Pipeline GDrive": ["Pipeline GDrive", "PIPELINE MAUAD"],
+    "PIPELINE MAUAD": ["Pipeline GDrive", "PIPELINE MAUAD"],
+    "RD Station": ["RD Station", "RD STATION"],
+    "RD STATION": ["RD Station", "RD STATION"]
+  }[value] || [value];
+  return [...new Set(aliases.filter(Boolean))];
+}
+
+function leadMatchesBaseSource(lead, source) {
+  if (source === "TODOS") return true;
+  const selected = baseSourceAliases(source);
+  return baseSourcesForLead(lead).some((leadSource) => selected.includes(leadSource));
+}
+
 function baseSources() {
   const allowed = new Set(state.accessibleBaseSources || []);
   let sources = (state.user?.role === "Admin TI" ? (state.baseAccessSources || state.accessibleBaseSources || []) : [...allowed])
@@ -430,11 +451,10 @@ function baseLeads() {
   const sources = baseSources();
   if (!sources.includes(state.baseSource)) state.baseSource = sources[0] || "TODOS";
   return sortBaseLeads(filteredLeads().filter((lead) => {
-    const sources = baseSourcesForLead(lead);
-    if (state.baseSource === "META") return sources.includes("META");
-    if (MANUAL_BASE_SOURCES.includes(state.baseSource)) return sources.includes(state.baseSource);
+    if (state.baseSource === "META") return leadMatchesBaseSource(lead, "META");
+    if (MANUAL_BASE_SOURCES.includes(state.baseSource)) return leadMatchesBaseSource(lead, state.baseSource);
     if (!isAvailableBaseLead(lead)) return false;
-    return state.baseSource === "TODOS" || sources.includes(state.baseSource);
+    return leadMatchesBaseSource(lead, state.baseSource);
   }));
 }
 
@@ -494,7 +514,7 @@ function baseLeadCount(source = "TODOS") {
   return state.leads.filter((lead) => {
     const sources = baseSourcesForTotal(lead);
     if (!sources.length) return false;
-    return source === "TODOS" ? sources.length > 0 : sources.includes(source);
+    return source === "TODOS" ? sources.length > 0 : leadMatchesBaseSource(lead, source);
   }).length;
 }
 
@@ -738,7 +758,9 @@ function leadQueryKeyForView(view = state.view) {
     source: state.baseSource || "TODOS",
     search: state.search || "",
     favoritesOnly: Boolean(state.favoritesOnly),
-    sort: state.baseSort || { key: "name", direction: "asc" }
+    sort: state.baseSort || { key: "name", direction: "asc" },
+    pageIndex: state.basePageIndex || 0,
+    pageSize: state.basePageSize || 25
   });
 }
 
@@ -764,11 +786,11 @@ async function loadLeads(force = false, options = {}) {
       params.set("favorite", state.favoritesOnly ? "1" : "0");
       params.set("sort", state.baseSort?.key || "name");
       params.set("direction", state.baseSort?.direction || "asc");
-      params.set("limit", String(state.leadsPage?.limit || 150));
-      params.set("offset", String(append ? state.leads.length : 0));
+      params.set("limit", String(state.basePageSize || 25));
+      params.set("offset", String((state.basePageIndex || 0) * (state.basePageSize || 25)));
     }
     const data = await api(`/api/leads?${params.toString()}`);
-    state.leads = append ? [...state.leads, ...(data.leads || [])] : (data.leads || []);
+    state.leads = data.leads || [];
     state.leadsScope = data.scope || scope;
     state.leadsQueryKey = queryKey;
     state.leadsPage = data.page || {
@@ -776,7 +798,7 @@ async function loadLeads(force = false, options = {}) {
       pending: 0,
       rescued: 0,
       hasMore: false,
-      limit: state.leadsPage?.limit || 150,
+      limit: state.basePageSize || 25,
       offset: state.leads.length
     };
     state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
@@ -792,7 +814,12 @@ function invalidateLeads() {
   state.leadsLoaded = false;
   state.leadsScope = "";
   state.leadsQueryKey = "";
-  state.leadsPage = { total: 0, pending: 0, rescued: 0, hasMore: false, limit: state.leadsPage?.limit || 150, offset: 0 };
+  state.leadsPage = { total: 0, pending: 0, rescued: 0, hasMore: false, limit: state.basePageSize || 25, offset: 0 };
+}
+
+function resetBasePagination() {
+  state.basePageIndex = 0;
+  invalidateLeads();
 }
 
 function navButton(view, icon, label) {
@@ -1015,10 +1042,12 @@ function bindPageFilters() {
   search?.addEventListener("compositionend", (event) => {
     composingSearch = false;
     state.search = event.target.value;
+    if (state.view === "odysseia") resetBasePagination();
     scheduleSearchRender();
   });
   search?.addEventListener("input", (event) => {
     state.search = event.target.value;
+    if (state.view === "odysseia") resetBasePagination();
     if (!composingSearch) scheduleSearchRender();
   });
   search?.addEventListener("keydown", (event) => {
@@ -1029,6 +1058,7 @@ function bindPageFilters() {
   });
   favoriteToggle?.addEventListener("click", () => {
     state.favoritesOnly = !state.favoritesOnly;
+    if (state.view === "odysseia") resetBasePagination();
     renderApp();
   });
   document.querySelectorAll(".multi-filter-menu").forEach((menu) => {
@@ -1068,17 +1098,20 @@ function bindPageFilters() {
       const options = [...document.querySelectorAll(`[data-multi-filter-option="${key}"]`)];
       const selectedValues = options.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
       state[key] = selectedValues.length === options.length ? [] : selectedValues;
+      if (state.view === "odysseia") resetBasePagination();
       renderApp();
     });
   });
   document.querySelector("[data-date-filter-apply]")?.addEventListener("click", () => {
     state.dateFilterStart = document.querySelector("#dateFilterStart")?.value || "";
     state.dateFilterEnd = document.querySelector("#dateFilterEnd")?.value || "";
+    if (state.view === "odysseia") resetBasePagination();
     renderApp();
   });
   document.querySelector("[data-date-filter-clear]")?.addEventListener("click", () => {
     state.dateFilterStart = "";
     state.dateFilterEnd = "";
+    if (state.view === "odysseia") resetBasePagination();
     renderApp();
   });
   addLeadButton?.addEventListener("click", () => {
@@ -1733,7 +1766,7 @@ function bindTableSortControls(renderFn) {
       };
       saveTableSortPreference(scope);
       if (scope === "base") {
-        invalidateLeads();
+        resetBasePagination();
         renderApp();
         return;
       }
@@ -1799,12 +1832,6 @@ function renderLeadBases() {
   const pending = Number(state.leadsPage?.pending ?? leads.filter((lead) => !lead.inPipeline).length);
   const rescued = Number(state.leadsPage?.rescued ?? leads.filter((lead) => lead.inPipeline).length);
   const totalBase = Number(state.leadsPage?.total ?? baseLeadCount(state.baseSource));
-  const shown = leads.length;
-  const loadMore = state.leadsPage?.hasMore ? `
-    <div class="load-more-row">
-      <button class="primary" data-load-more-bases ${state.leadsLoading ? "disabled" : ""}>${state.leadsLoading ? "Carregando..." : `Carregar mais (${shown}/${totalBase})`}</button>
-    </div>
-  ` : shown && totalBase > shown ? `<p class="muted-copy">Mostrando ${shown} de ${totalBase} registros.</p>` : "";
   renderShell(`
     ${renderViewHead("Bases de Leads", "Bases importadas separadas do pipeline comercial", { filters: true })}
     ${sources.length ? renderBaseSources(sources) : ""}
@@ -1815,25 +1842,17 @@ function renderLeadBases() {
       <div class="metric"><span>Origem</span><strong>${escapeHtml(baseSourceLabel(state.baseSource))}</strong></div>
     </section>
     ${renderLeadsTable(rows, { withRescue: true, sortable: true, sortScope: "base" })}
-    ${loadMore}
+    ${renderBasePagination(totalBase)}
   `);
   bindLeadActions();
   bindTableSortControls(renderLeadBases);
+  bindBasePagination();
   document.querySelectorAll("[data-base-source]").forEach((button) => {
     button.addEventListener("click", () => {
       state.baseSource = button.dataset.baseSource;
-      invalidateLeads();
+      resetBasePagination();
       renderApp();
     });
-  });
-  document.querySelector("[data-load-more-bases]")?.addEventListener("click", async (event) => {
-    try {
-      setButtonBusy(event.currentTarget, true, "Carregando...");
-      await loadLeads(true, { append: true });
-      renderLeadBases();
-    } catch (error) {
-      alert(error.message);
-    }
   });
   document.querySelectorAll("[data-rescue]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -1854,6 +1873,54 @@ function renderLeadBases() {
     });
   });
   bindRollbackControls(renderLeadBases);
+}
+
+function renderBasePagination(totalBase) {
+  const pageSize = Number(state.basePageSize || 25);
+  const pageCount = Math.max(1, Math.ceil(Number(totalBase || 0) / pageSize));
+  const pageIndex = Math.min(Number(state.basePageIndex || 0), pageCount - 1);
+  const from = totalBase ? pageIndex * pageSize + 1 : 0;
+  const to = Math.min((pageIndex + 1) * pageSize, Number(totalBase || 0));
+  return `
+    <div class="table-pagination">
+      <div class="pagination-summary">Mostrando ${from.toLocaleString("pt-BR")} a ${to.toLocaleString("pt-BR")} de ${Number(totalBase || 0).toLocaleString("pt-BR")} registros</div>
+      <label>
+        <span>Registros por página</span>
+        <select data-base-page-size>
+          ${[25, 50, 100, 200, 300].map((size) => `<option value="${size}" ${pageSize === size ? "selected" : ""}>${size}</option>`).join("")}
+        </select>
+      </label>
+      <div class="pagination-actions">
+        <button type="button" data-base-page="first" ${pageIndex <= 0 ? "disabled" : ""}>Primeira</button>
+        <button type="button" data-base-page="prev" ${pageIndex <= 0 ? "disabled" : ""}>Anterior</button>
+        <span>Página ${Number(pageIndex + 1).toLocaleString("pt-BR")} de ${Number(pageCount).toLocaleString("pt-BR")}</span>
+        <button type="button" data-base-page="next" ${pageIndex >= pageCount - 1 ? "disabled" : ""}>Próxima</button>
+        <button type="button" data-base-page="last" ${pageIndex >= pageCount - 1 ? "disabled" : ""}>Última</button>
+      </div>
+    </div>
+  `;
+}
+
+function bindBasePagination() {
+  document.querySelector("[data-base-page-size]")?.addEventListener("change", (event) => {
+    state.basePageSize = Number(event.currentTarget.value || 25);
+    resetBasePagination();
+    renderApp();
+  });
+  document.querySelectorAll("[data-base-page]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const totalBase = Number(state.leadsPage?.total || 0);
+      const pageSize = Number(state.basePageSize || 25);
+      const pageCount = Math.max(1, Math.ceil(totalBase / pageSize));
+      const action = button.dataset.basePage;
+      if (action === "first") state.basePageIndex = 0;
+      if (action === "prev") state.basePageIndex = Math.max(0, Number(state.basePageIndex || 0) - 1);
+      if (action === "next") state.basePageIndex = Math.min(pageCount - 1, Number(state.basePageIndex || 0) + 1);
+      if (action === "last") state.basePageIndex = pageCount - 1;
+      invalidateLeads();
+      renderApp();
+    });
+  });
 }
 
 function leadProjectValue(lead) {
