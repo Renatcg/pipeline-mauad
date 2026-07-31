@@ -956,13 +956,26 @@ function renderPipelineFilterControls() {
       ${canManageLeads() ? renderMultiFilter("brokerFilters", "Corretor", state.brokerFilters, brokerOptions) : ""}
     </div>
     <div class="pipeline-filter-row secondary">
-      <div class="date-filter">
-        <span>Data</span>
-        <input id="dateFilterStart" type="date" value="${escapeHtml(state.dateFilterStart)}" aria-label="Data inicial">
-        <input id="dateFilterEnd" type="date" value="${escapeHtml(state.dateFilterEnd)}" aria-label="Data final">
-        <button type="button" class="tiny primary" data-date-filter-apply>Aplicar</button>
-        <button type="button" class="tiny" data-date-filter-clear>Limpar</button>
-      </div>
+      <details class="date-filter">
+        <summary>
+          <span>Data</span>
+          <strong>${state.dateFilterStart || state.dateFilterEnd ? "Filtrada" : "Todos"}</strong>
+        </summary>
+        <div class="date-filter-menu">
+          <label>
+            <span>Início</span>
+            <input id="dateFilterStart" type="date" value="${escapeHtml(state.dateFilterStart)}" aria-label="Data inicial">
+          </label>
+          <label>
+            <span>Fim</span>
+            <input id="dateFilterEnd" type="date" value="${escapeHtml(state.dateFilterEnd)}" aria-label="Data final">
+          </label>
+          <div class="date-filter-actions">
+            <button type="button" class="tiny primary" data-date-filter-apply>Aplicar</button>
+            <button type="button" class="tiny" data-date-filter-clear>Limpar</button>
+          </div>
+        </div>
+      </details>
       ${renderMultiFilter("frequencyFilters", "Frequência", state.frequencyFilters, frequencyOptions)}
     </div>
   `;

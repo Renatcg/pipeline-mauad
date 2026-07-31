@@ -532,16 +532,14 @@ textarea {
 
 .brand {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 6px 8px 18px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.16);
   margin-bottom: 14px;
 }
 
 .brand img {
-  width: 40px;
+  width: 118px;
   height: auto;
   object-fit: contain;
 }
@@ -695,32 +693,75 @@ textarea {
 }
 
 .date-filter {
+  position: relative;
+}
+
+.date-filter summary {
   min-height: 36px;
+  min-width: 154px;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 6px;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fff;
-}
-
-.date-filter span {
-  padding: 0 4px;
   color: var(--text);
+  cursor: pointer;
+  list-style: none;
   font-size: 13px;
   font-weight: 800;
 }
 
+.date-filter summary::-webkit-details-marker {
+  display: none;
+}
+
+.date-filter summary strong {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.date-filter-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  width: 250px;
+  display: grid;
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.date-filter-menu label {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .date-filter input {
-  width: 132px;
-  min-height: 28px;
+  width: 100%;
+  min-height: 30px;
   padding: 4px 6px;
   border-radius: 6px;
   font-size: 12px;
 }
 
-.date-filter button {
+.date-filter-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.date-filter-actions button {
   min-height: 28px;
   padding: 0 9px;
   border-radius: 6px;
@@ -767,7 +808,7 @@ textarea {
   width: 240px;
   max-height: 260px;
   overflow: hidden;
-  padding: 8px;
+  padding: 6px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fff;
@@ -785,11 +826,11 @@ textarea {
 }
 
 .multi-filter-menu label {
-  min-height: 34px;
+  min-height: 26px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 3px 7px;
   border-radius: 6px;
   font-size: 13px;
   font-weight: 700;
@@ -2449,14 +2490,17 @@ th {
   }
 
   .date-filter {
-    flex: 1 1 100%;
-    flex-wrap: wrap;
-    padding: 6px;
+    flex: 1 1 160px;
   }
 
-  .date-filter input {
-    flex: 1 1 118px;
-    width: auto;
+  .date-filter summary {
+    min-width: 0;
+  }
+
+  .date-filter-menu {
+    right: auto;
+    left: 0;
+    width: min(250px, calc(100vw - 24px));
   }
 
   .multi-filter {
