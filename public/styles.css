@@ -23,7 +23,7 @@ body {
   color: var(--ink);
   font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 button,
@@ -512,13 +512,16 @@ textarea {
 }
 
 .shell {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   display: grid;
   grid-template-columns: 250px 1fr;
 }
 
 .side {
-  position: relative;
+  height: 100vh;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   background: #101820;
@@ -593,6 +596,7 @@ textarea {
 
 .main {
   min-width: 0;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto 1fr;
 }
@@ -610,13 +614,25 @@ textarea {
 
 .user-pill {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
   color: var(--muted);
+  line-height: 1.15;
+}
+
+.user-pill strong {
+  color: var(--muted);
+}
+
+.user-pill span {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .content {
   min-width: 0;
+  min-height: 0;
   padding: 22px;
   overflow-x: hidden;
   overflow-y: auto;
@@ -2363,12 +2379,15 @@ th {
 
   .shell {
     grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
   }
 
   .side {
     position: sticky;
     top: 0;
     z-index: 3;
+    height: auto;
+    overflow: visible;
     padding: 10px 12px;
   }
 
