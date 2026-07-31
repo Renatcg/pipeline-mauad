@@ -809,6 +809,7 @@ const DEFAULT_LEV_SETTLEMENTS = [
   }
 ];
 const DATABASE_URL = process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || "";
+const ENABLE_LEGACY_JSON_FALLBACK = process.env.ENABLE_LEGACY_JSON_FALLBACK === "true";
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const EMAIL_FROM = process.env.EMAIL_FROM || "Pipeline Mauad <onboarding@resend.dev>";
@@ -828,6 +829,7 @@ const APP_SCHEMA_VERSION = 2026072903;
 const DB_CACHE_TTL_MS = 3000;
 let sqlClientPromise = null;
 let structuredSchemaReady = false;
+let structuredSchemaPromise = null;
 let postgresInitialized = false;
 let dbCache = null;
 let dbCacheAt = 0;
@@ -995,11 +997,13 @@ async function ensurePostgresState() {
 }
 
 async function loadDb() {
+  if (!ENABLE_LEGACY_JSON_FALLBACK) throw new Error("Fallback JSON legado desativado.");
   if (DATABASE_URL) return ensurePostgresState();
   return buildDefaultDb();
 }
 
 async function saveDb(db) {
+  if (!ENABLE_LEGACY_JSON_FALLBACK) throw new Error("Gravação JSON/app_state legada desativada.");
   dbCache = db;
   dbCacheAt = Date.now();
   if (!DATABASE_URL) {
@@ -1016,6 +1020,7 @@ async function saveDb(db) {
 }
 
 async function saveAccessLog(db) {
+  if (!ENABLE_LEGACY_JSON_FALLBACK) throw new Error("Log legado em JSON/app_state desativado.");
   dbCache = db;
   dbCacheAt = Date.now();
   if (!DATABASE_URL) {
@@ -3768,6 +3773,22 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_knowledge_articles (id text PRIMARY KEY, title text, category text, published boolean NOT NULL DEFAULT false, updated_at timestamptz, payload jsonb NOT NULL)`;
 }
 
+async function ensureStructuredSchemaOnce(sql) {
+  if (structuredSchemaReady) return;
+  if (!structuredSchemaPromise) {
+    structuredSchemaPromise = ensureStructuredSchema(sql)
+      .then(() => {
+        structuredSchemaReady = true;
+      })
+      .catch((error) => {
+        structuredSchemaPromise = null;
+        structuredSchemaReady = false;
+        throw error;
+      });
+  }
+  await structuredSchemaPromise;
+}
+
 const STRUCTURED_TABLES = [
   "crm_lead_comments", "crm_lead_tags", "crm_lead_favorites", "crm_permissions", "crm_meta_forms", "crm_tag_definitions", "crm_settings",
   "crm_pipeline_statuses", "crm_projects", "crm_base_sources", "crm_audit_logs", "crm_access_logs", "crm_integration_logs",
@@ -3868,10 +3889,7 @@ async function countStructuredTable(sql, table) {
 async function structuredSqlForMirror() {
   const sql = await getSql();
   if (!sql) return null;
-  if (!structuredSchemaReady) {
-    await ensureStructuredSchema(sql);
-    structuredSchemaReady = true;
-  }
+  await ensureStructuredSchemaOnce(sql);
   return sql;
 }
 
@@ -4058,7 +4076,7 @@ async function structuredIntegration(provider, action, details = {}) {
 async function processSamWebhookStructured(payload) {
   const sql = await getSql();
   if (!sql) throw new Error("Postgres não está configurado neste ambiente.");
-  await ensureStructuredSchema(sql);
+  await ensureStructuredSchemaOnce(sql);
   const eventId = String(payload.event_id || payload.eventId || payload.id || "").trim();
   const eventType = String(payload.event_type || payload.eventType || payload.status || payload.event || payload.movimento || "").trim();
   const eventDatetime = String(payload.event_datetime || payload.eventDatetime || "").trim();
@@ -4746,7 +4764,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
   try {
     const sql = await getSql();
     if (!sql) return false;
-    await ensureStructuredSchema(sql);
+    await ensureStructuredSchemaOnce(sql);
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
 
@@ -5133,7 +5151,7 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
   try {
     const sql = await getSql();
     if (!sql) return false;
-    await ensureStructuredSchema(sql);
+    await ensureStructuredSchemaOnce(sql);
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
     if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
@@ -5355,7 +5373,7 @@ async function fastStructuredBackupRoutes(req, res, url) {
   try {
     const sql = await getSql();
     if (!sql) return false;
-    await ensureStructuredSchema(sql);
+    await ensureStructuredSchemaOnce(sql);
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
     if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
@@ -5406,7 +5424,7 @@ async function fastStructuredOperationalRoutes(req, res, url) {
   try {
     const sql = await getSql();
     if (!sql) return false;
-    await ensureStructuredSchema(sql);
+    await ensureStructuredSchemaOnce(sql);
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
 
@@ -5470,7 +5488,7 @@ async function fastStructuredMetaRoutes(req, res, url) {
   try {
     const sql = await getSql();
     if (!sql) return false;
-    await ensureStructuredSchema(sql);
+    await ensureStructuredSchemaOnce(sql);
 
     if (method === "GET" && url.pathname === "/api/webhooks/meta") {
       const mode = url.searchParams.get("hub.mode");
@@ -5532,7 +5550,7 @@ async function fastStructuredStateResponse(req, res, url) {
   try {
     const sql = await getSql();
     if (!sql) return false;
-    await ensureStructuredSchema(sql);
+    await ensureStructuredSchemaOnce(sql);
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
     const [
@@ -5733,7 +5751,7 @@ async function fastStructuredAuthRoutes(req, res, url) {
   try {
     const sql = await getSql();
     if (!sql) return false;
-    await ensureStructuredSchema(sql);
+    await ensureStructuredSchemaOnce(sql);
 
     if (req.method === "POST" && url.pathname === "/api/login") {
       const body = await readBody(req);
@@ -5751,8 +5769,10 @@ async function fastStructuredAuthRoutes(req, res, url) {
       if (!verifyPasswordSafe(password, user.passwordHash)) {
         return sendJson(res, 401, { error: "Usuário ou senha inválidos" });
       }
-      await structuredAudit(user, "LOGIN", { path: "/login", view: "Login", source: "structured" });
-      await structuredAccess(user, "LOGIN", { path: "/login", view: "Login", source: "structured" }, req);
+      void structuredAudit(user, "LOGIN", { path: "/login", view: "Login", source: "structured" })
+        .catch((error) => mirrorStructuredError("login-audit", error));
+      void structuredAccess(user, "LOGIN", { path: "/login", view: "Login", source: "structured" }, req)
+        .catch((error) => mirrorStructuredError("login-access", error));
       return sendJson(res, 200, { user: publicUser(user), dataSources: { auth: "structured" } }, {
         "Set-Cookie": sessionCookie(user.id)
       });
@@ -5811,7 +5831,7 @@ async function fastStructuredUserPermissionRoutes(req, res, url) {
   try {
     const sql = await getSql();
     if (!sql) return false;
-    await ensureStructuredSchema(sql);
+    await ensureStructuredSchemaOnce(sql);
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
 
@@ -6568,7 +6588,7 @@ async function fastStructuredSamEventAction(req, res, url) {
   try {
     const sql = await getSql();
     if (!sql) return false;
-    await ensureStructuredSchema(sql);
+    await ensureStructuredSchemaOnce(sql);
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
     if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão" });
@@ -6999,7 +7019,7 @@ async function syncStructuredDataset(db, actor, key, options = {}) {
   structuredDataset(key);
   const sql = await getSql();
   if (!sql) throw new Error("Postgres não está configurado neste ambiente.");
-  await ensureStructuredSchema(sql);
+  await ensureStructuredSchemaOnce(sql);
   const runId = crypto.randomUUID();
   const shouldReset = Boolean(options.reset);
   const startedSummary = { dataset: key, reset: shouldReset };
@@ -7020,7 +7040,7 @@ async function resetStructuredDataset(db, actor, key) {
   structuredDataset(key);
   const sql = await getSql();
   if (!sql) throw new Error("Postgres não está configurado neste ambiente.");
-  await ensureStructuredSchema(sql);
+  await ensureStructuredSchemaOnce(sql);
   await clearStructuredDataset(sql, key);
   const summary = { dataset: key, resetOnly: true };
   const runId = crypto.randomUUID();
@@ -7032,7 +7052,7 @@ async function resetStructuredDataset(db, actor, key) {
 async function syncStructuredDb(db, actor) {
   const sql = await getSql();
   if (!sql) throw new Error("Postgres não está configurado neste ambiente.");
-  await ensureStructuredSchema(sql);
+  await ensureStructuredSchemaOnce(sql);
   const runId = crypto.randomUUID();
   await sql`INSERT INTO crm_structured_sync_runs (id, status, summary) VALUES (${runId}, 'running', '{}'::jsonb)`;
   const summary = { users: 0, leads: 0, comments: 0, tags: 0, tagDefinitions: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, settings: 0, permissions: 0, auditLogs: 0, integrationLogs: 0, fupLeadLogs: 0, samEvents: 0, levSales: 0, levReceipts: 0, levSettlements: 0, knowledgeArticles: 0 };
@@ -7141,7 +7161,7 @@ async function syncStructuredDb(db, actor) {
 async function structuredDbDiagnostics(db) {
   const sql = await getSql();
   if (!sql) throw new Error("Postgres não está configurado neste ambiente.");
-  await ensureStructuredSchema(sql);
+  await ensureStructuredSchemaOnce(sql);
   const count = (table) => countStructuredTable(sql, table);
   const structured = {
     users: await count("crm_users"), leads: await count("crm_leads"), comments: await count("crm_lead_comments"),
@@ -8685,7 +8705,7 @@ async function handleRequest(req, res) {
     if (await fastStructuredSamWebhook(req, res, url)) return;
     if (await fastStructuredSamEventAction(req, res, url)) return;
     if (await fastStructuredLeadAction(req, res, url)) return;
-    if (DATABASE_URL) return notFound(res);
+    if (DATABASE_URL || !ENABLE_LEGACY_JSON_FALLBACK) return notFound(res);
     try {
       const db = await loadDb();
       return routeApi(req, res, db);
