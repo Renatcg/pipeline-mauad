@@ -76,6 +76,8 @@ const state = {
   mobileNavOpen: false,
   lastAccessLogKey: "",
   creatingLead: false,
+  editingOwnProfile: false,
+  profilePhotoDraft: null,
   createLeadDraft: null,
   createLeadDuplicate: null,
   createLeadImpactPrompt: false,
@@ -145,6 +147,48 @@ function renderChatText(value) {
   return escapeHtml(value)
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replaceAll("\n", "<br>");
+}
+
+function userInitials(user = state.user) {
+  const name = String(user?.name || user?.username || "U").trim();
+  const parts = name.split(/\s+/).filter(Boolean);
+  return (parts.length > 1 ? `${parts[0][0]}${parts[parts.length - 1][0]}` : name.slice(0, 2)).toUpperCase();
+}
+
+function userAvatarHtml(user = state.user, className = "user-avatar") {
+  if (user?.photoUrl) {
+    return `<span class="${escapeHtml(className)}"><img src="${escapeHtml(user.photoUrl)}" alt="${escapeHtml(user.name || "Usuário")}"></span>`;
+  }
+  return `<span class="${escapeHtml(className)}">${escapeHtml(userInitials(user))}</span>`;
+}
+
+function resizeProfilePhoto(file) {
+  return new Promise((resolve, reject) => {
+    if (!file?.type?.startsWith("image/")) {
+      reject(new Error("Envie uma imagem válida."));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = () => {
+        const size = 256;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        const scale = Math.max(size / image.width, size / image.height);
+        const width = image.width * scale;
+        const height = image.height * scale;
+        ctx.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      image.onerror = () => reject(new Error("Não foi possível ler a imagem."));
+      image.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("Não foi possível ler a imagem."));
+    reader.readAsDataURL(file);
+  });
 }
 
 async function api(path, options = {}) {
@@ -1040,15 +1084,18 @@ function renderShell(content) {
           ${navButton("finance", "▣", "Financeiro Lev")}
           ${navButton("settings", "⚙", "Configurações")}
           ${navButton("knowledge", "?", "Ajuda")}
-          <button id="logout" class="logout-nav" type="button"><span>↳</span>Sair</button>
+          <button id="logout" class="logout-nav" type="button">Sair</button>
         </nav>
       </aside>
       <section class="main">
         <header class="topbar">
-          <div class="user-pill">
-            <strong>${escapeHtml(state.user.name)}</strong>
-            <span>${escapeHtml(state.user.role)}</span>
-          </div>
+          <button class="user-pill user-pill-button" type="button" data-edit-own-profile title="Editar meu perfil">
+            ${userAvatarHtml(state.user)}
+            <span class="user-pill-text">
+              <strong>${escapeHtml(state.user.name)}</strong>
+              <em>${escapeHtml(state.user.role)}</em>
+            </span>
+          </button>
         </header>
         <div class="content">
           ${usesLegacyData ? '<div class="legacy-data-notice">Dados recuperados de base legada.</div>' : ""}
@@ -1057,6 +1104,7 @@ function renderShell(content) {
       </section>
     </section>
     ${state.creatingLead ? renderCreateLeadModal() : ""}
+    ${state.editingOwnProfile ? renderOwnProfileModal() : ""}
   `;
   document.body.classList.toggle("modal-open", Boolean(document.querySelector(".modal-backdrop")));
   document.querySelectorAll("[data-view]").forEach((button) => {
@@ -1071,12 +1119,109 @@ function renderShell(content) {
   });
   bindPageFilters();
   bindCreateLeadModal();
+  bindOwnProfileModal();
+  document.querySelector("[data-edit-own-profile]")?.addEventListener("click", () => {
+    state.profilePhotoDraft = null;
+    state.editingOwnProfile = true;
+    renderApp();
+  });
   document.querySelector("#logout").addEventListener("click", async () => {
     clearInactivityTimer();
     state.user = null;
     await api("/api/logout", { method: "POST" });
     history.pushState({}, "", "/login");
     renderLogin();
+  });
+}
+
+function renderOwnProfileModal() {
+  const user = state.user || {};
+  const notifications = user.notifications || {};
+  const photoUrl = state.profilePhotoDraft !== null ? state.profilePhotoDraft : user.photoUrl || "";
+  return `
+    <div class="modal-backdrop" data-own-profile-backdrop>
+      <section class="modal-card profile-modal" role="dialog" aria-modal="true" aria-labelledby="ownProfileTitle">
+        <div class="panel-head">
+          <h2 id="ownProfileTitle">Meu perfil</h2>
+          <button type="button" class="icon" data-close-own-profile title="Fechar">×</button>
+        </div>
+        <form id="ownProfileForm" class="form-grid">
+          <div class="field full">
+            <label>Foto de perfil</label>
+            <div class="profile-photo-row">
+              <div class="profile-photo-preview" data-profile-photo-preview>
+                ${photoUrl ? `<img src="${escapeHtml(photoUrl)}" alt="${escapeHtml(user.name || "Usuário")}">` : `<span>${escapeHtml(userInitials(user))}</span>`}
+              </div>
+              <div class="profile-photo-actions">
+                <input id="ownProfilePhoto" type="file" accept="image/*">
+                <button type="button" data-remove-own-photo>Retirar foto</button>
+              </div>
+            </div>
+          </div>
+          <div class="field full"><label>Nome de exibição</label><input name="name" value="${escapeHtml(user.name || "")}" required autofocus></div>
+          <div class="field full"><label>Número de WhatsApp</label><input name="whatsappNumber" value="${escapeHtml(notifications.whatsappNumber || "")}" placeholder="Ex.: 5521999999999"><small>Use DDD. Se não informar o código do país, o sistema considera Brasil (+55).</small></div>
+          <div class="field"><label>Notificação por e-mail</label><label class="checkline settings-check"><input type="checkbox" name="notifyEmail" ${notifications.email ? "checked" : ""}> Receber alertas</label></div>
+          <div class="field"><label>Notificação por WhatsApp</label><label class="checkline settings-check"><input type="checkbox" name="notifyWhatsapp" ${notifications.whatsapp ? "checked" : ""}> Receber alertas</label></div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-close-own-profile>Cancelar</button></div></div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function bindOwnProfileModal() {
+  if (!state.editingOwnProfile) return;
+  const close = () => {
+    state.editingOwnProfile = false;
+    state.profilePhotoDraft = null;
+    renderApp();
+  };
+  document.querySelectorAll("[data-close-own-profile]").forEach((button) => button.addEventListener("click", close));
+  document.querySelector("[data-own-profile-backdrop]")?.addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) close();
+  });
+  document.querySelector("#ownProfilePhoto")?.addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const photoUrl = await resizeProfilePhoto(file);
+      state.profilePhotoDraft = photoUrl;
+      const preview = document.querySelector("[data-profile-photo-preview]");
+      if (preview) preview.innerHTML = `<img src="${escapeHtml(photoUrl)}" alt="${escapeHtml(state.user?.name || "Usuário")}">`;
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+  document.querySelector("[data-remove-own-photo]")?.addEventListener("click", () => {
+    state.profilePhotoDraft = "";
+    const preview = document.querySelector("[data-profile-photo-preview]");
+    if (preview) preview.innerHTML = `<span>${escapeHtml(userInitials(state.user))}</span>`;
+  });
+  document.querySelector("#ownProfileForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+    const form = new FormData(event.currentTarget);
+    const payload = {
+      name: form.get("name"),
+      notifications: {
+        email: form.get("notifyEmail") === "on",
+        whatsapp: form.get("notifyWhatsapp") === "on",
+        whatsappNumber: form.get("whatsappNumber")
+      },
+      photoUrl: state.profilePhotoDraft !== null ? state.profilePhotoDraft : state.user?.photoUrl || ""
+    };
+    try {
+      setButtonBusy(submitButton, true, "Salvando...");
+      const data = await api("/api/profile", { method: "PATCH", body: JSON.stringify(payload) });
+      state.user = data.user;
+      state.users = (state.users || []).map((item) => item.id === data.user.id ? data.user : item);
+      state.editingOwnProfile = false;
+      state.profilePhotoDraft = null;
+      renderApp();
+    } catch (error) {
+      setButtonBusy(submitButton, false);
+      alert(error.message);
+    }
   });
 }
 
@@ -2002,7 +2147,7 @@ function renderSheet() {
 function renderBaseSources(sources) {
   return `
     <div class="tabs base-tabs">
-      ${sources.map((source) => `<button class="${state.baseSource === source ? "active" : ""}" data-base-source="${escapeHtml(source)}">${escapeHtml(baseSourceLabel(source))}</button>`).join("")}
+      ${sources.map((source) => `<button class="${state.baseSource === source ? "active" : ""}" data-base-source="${escapeHtml(source)}">${escapeHtml(baseSourceLabel(source).toLocaleUpperCase("pt-BR"))}</button>`).join("")}
     </div>
   `;
 }
@@ -2734,7 +2879,6 @@ function renderSalesReportView() {
         <div class="report-actions">
           <label class="compact-select"><span>Mês</span><input id="salesReportMonth" type="month" value="${escapeHtml(period.month)}"></label>
           <label class="compact-select"><span>Empreendimento</span><select id="salesReportProject"><option value="TODOS" ${state.salesReportProject === "TODOS" ? "selected" : ""}>Todos</option>${(state.projects || []).map((project) => `<option value="${escapeHtml(project)}" ${state.salesReportProject === project ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}</select></label>
-          <button class="primary" data-print-report>Gerar PDF</button>
         </div>
       `
     })}

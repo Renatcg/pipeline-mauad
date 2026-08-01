@@ -6376,6 +6376,7 @@ function structuredUserFromAuthRow(row) {
     active: row.active !== false,
     operatesAsBroker: Boolean(row.operates_as_broker ?? row.payload?.operatesAsBroker),
     notifications: row.notifications || row.payload?.notifications || {},
+    photoUrl: row.payload?.photoUrl || "",
     passwordHash: row.password_hash || "",
     passwordSetup: row.password_setup || row.payload?.passwordSetup || null
   };
@@ -6393,7 +6394,7 @@ async function structuredUserBySetupToken(sql, token) {
 
 async function fastStructuredAuthRoutes(req, res, url) {
   if (!DATABASE_URL) return false;
-  const authPaths = new Set(["/api/login", "/api/logout", "/api/me", "/api/password/setup/validate", "/api/password/setup"]);
+  const authPaths = new Set(["/api/login", "/api/logout", "/api/me", "/api/profile", "/api/password/setup/validate", "/api/password/setup"]);
   if (!authPaths.has(url.pathname)) return false;
   try {
     const sql = await getSql();
@@ -6433,6 +6434,33 @@ async function fastStructuredAuthRoutes(req, res, url) {
       const user = await structuredUserFromSession(req, res, sql);
       if (!user) return true;
       return sendJson(res, 200, { user: publicUser(user), dataSources: { auth: "structured" } });
+    }
+
+    if (req.method === "PATCH" && url.pathname === "/api/profile") {
+      const user = await structuredUserFromSession(req, res, sql);
+      if (!user) return true;
+      const targetRows = await sql`SELECT * FROM crm_users WHERE id = ${user.id} LIMIT 1`;
+      const target = structuredUserFromAuthRow(targetRows[0]);
+      if (!target) return notFound(res);
+      const body = await readBody(req);
+      if (Object.prototype.hasOwnProperty.call(body, "name")) {
+        const nextName = String(body.name || "").trim();
+        if (!nextName) return sendJson(res, 400, { error: "Nome de exibição é obrigatório" });
+        target.name = nextName;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "notifications")) {
+        target.notifications = normalizeNotificationPreferences(body.notifications);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "photoUrl")) {
+        const photoUrl = String(body.photoUrl || "");
+        if (photoUrl && !photoUrl.startsWith("data:image/")) return sendJson(res, 400, { error: "Foto inválida" });
+        if (photoUrl.length > 650000) return sendJson(res, 400, { error: "Foto muito grande" });
+        target.photoUrl = photoUrl;
+      }
+      target.updatedAt = new Date().toISOString();
+      await saveStructuredUser(sql, target);
+      await structuredAudit(user, "UPDATE_OWN_PROFILE", { userId: target.id });
+      return sendJson(res, 200, { user: publicUser(target), dataSources: { action: "structured" } });
     }
 
     if (req.method === "POST" && url.pathname === "/api/password/setup/validate") {
