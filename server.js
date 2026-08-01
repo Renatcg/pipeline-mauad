@@ -830,6 +830,7 @@ const META_PAGE_ACCESS_TOKEN = process.env.META_PAGE_ACCESS_TOKEN || "";
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 const META_DEFAULT_ASSIGNED_TO = process.env.META_DEFAULT_ASSIGNED_TO || "";
 const SAM_WEBHOOK_SECRET = process.env.SAM_WEBHOOK_SECRET || "";
+const BACKUP_SECRET = process.env.BACKUP_SECRET || process.env.CRON_SECRET || "";
 const APP_SCHEMA_VERSION = 2026072903;
 const DB_CACHE_TTL_MS = 3000;
 let sqlClientPromise = null;
@@ -1511,6 +1512,36 @@ async function sendEmailWithCc(to, cc, subject, html) {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({ from: EMAIL_FROM, to: recipients, cc: ccRecipients.length ? ccRecipients : undefined, subject, html })
+    });
+  } catch (error) {
+    return { sent: false, reason: externalFetchFailureReason("Resend", error) };
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return { sent: false, reason: data.message || "Falha no envio do Resend" };
+  return { sent: true, id: data.id };
+}
+
+async function sendEmailWithAttachments(to, cc, subject, html, attachments = []) {
+  if (!RESEND_API_KEY) return { sent: false, reason: "RESEND_API_KEY ausente" };
+  const recipients = String(to || "").split(",").map((item) => item.trim()).filter(Boolean);
+  const ccRecipients = String(cc || "").split(",").map((item) => item.trim()).filter(Boolean);
+  if (!recipients.length) return { sent: false, reason: "E-mail Para não configurado" };
+  let response;
+  try {
+    response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        from: EMAIL_FROM,
+        to: recipients,
+        cc: ccRecipients.length ? ccRecipients : undefined,
+        subject,
+        html,
+        attachments
+      })
     });
   } catch (error) {
     return { sent: false, reason: externalFetchFailureReason("Resend", error) };
@@ -5204,6 +5235,154 @@ async function structuredBackupDb(sql) {
   return db;
 }
 
+function normalizeBackupSettings(settings = {}) {
+  return {
+    enabled: settings.enabled !== false,
+    emailEnabled: Boolean(settings.emailEnabled),
+    emailTo: String(settings.emailTo || "").trim(),
+    emailCc: String(settings.emailCc || "").trim(),
+    driveEnabled: Boolean(settings.driveEnabled),
+    driveWebhookUrl: String(settings.driveWebhookUrl || "").trim(),
+    lastRun: settings.lastRun || null,
+    history: (Array.isArray(settings.history) ? settings.history : []).slice(0, 15)
+  };
+}
+
+function backupRecordCounts(db = {}) {
+  return {
+    users: Array.isArray(db.users) ? db.users.length : 0,
+    leads: Array.isArray(db.leads) ? db.leads.length : 0,
+    comments: Array.isArray(db.leads) ? db.leads.reduce((sum, lead) => sum + (Array.isArray(lead.comments) ? lead.comments.length : 0), 0) : 0,
+    auditLog: Array.isArray(db.auditLog) ? db.auditLog.length : 0,
+    integrationLog: Array.isArray(db.integrationLog) ? db.integrationLog.length : 0,
+    fupLeadLog: Array.isArray(db.fupLeadLog) ? db.fupLeadLog.length : 0,
+    levSales: Array.isArray(db.levFinance?.sales) ? db.levFinance.sales.length : 0,
+    samEvents: Array.isArray(db.samEvents) ? db.samEvents.length : 0,
+    knowledgeArticles: Array.isArray(db.knowledgeArticles) ? db.knowledgeArticles.length : 0
+  };
+}
+
+function validateStructuredBackupEnvelope(envelope = {}) {
+  const errors = [];
+  const warnings = [];
+  const db = envelope.db || {};
+  const requiredArrays = ["users", "leads", "projectDefinitions", "statusDefinitions", "tagDefinitions", "auditLog", "integrationLog", "fupLeadLog", "samEvents", "knowledgeArticles"];
+  if (!envelope.exportedAt) errors.push("Data de exportação ausente.");
+  if (envelope.source !== "structured") errors.push("Origem do backup inválida.");
+  if (!db || typeof db !== "object") errors.push("Bloco db ausente ou inválido.");
+  for (const key of requiredArrays) {
+    if (!Array.isArray(db[key])) errors.push(`Campo ${key} deve ser uma lista.`);
+  }
+  if (!Array.isArray(db.levFinance?.sales)) errors.push("Campo levFinance.sales deve ser uma lista.");
+  if (!Array.isArray(db.levFinance?.receipts)) errors.push("Campo levFinance.receipts deve ser uma lista.");
+  if (!Array.isArray(db.levFinance?.settlements)) errors.push("Campo levFinance.settlements deve ser uma lista.");
+  if (Array.isArray(db.users) && !db.users.some((user) => user.role === "Admin TI" && user.active !== false)) {
+    warnings.push("Nenhum Admin TI ativo encontrado no backup.");
+  }
+  if (Array.isArray(db.leads) && !db.leads.length) warnings.push("Backup sem leads.");
+  let json = "";
+  try {
+    json = JSON.stringify(envelope);
+    JSON.parse(json);
+  } catch (error) {
+    errors.push(`JSON inválido: ${error.message}`);
+  }
+  const bytes = Buffer.byteLength(json || "{}", "utf8");
+  const checksum = crypto.createHash("sha256").update(json || "{}").digest("hex");
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    bytes,
+    checksum,
+    counts: backupRecordCounts(db)
+  };
+}
+
+async function deliverBackupToDrive(settings, filename, envelope, validation) {
+  if (!settings.driveEnabled) return { skipped: true, reason: "Google Drive desativado" };
+  if (!settings.driveWebhookUrl) return { sent: false, reason: "URL/Webhook do Google Drive não configurado" };
+  try {
+    const response = await fetch(settings.driveWebhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename,
+        contentType: "application/json",
+        contentBase64: Buffer.from(JSON.stringify(envelope, null, 2), "utf8").toString("base64"),
+        validation,
+        generatedAt: envelope.exportedAt
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return { sent: false, reason: data.error || data.message || `HTTP ${response.status}` };
+    return { sent: true, id: data.id || data.fileId || "", url: data.url || data.webViewLink || "" };
+  } catch (error) {
+    return { sent: false, reason: externalFetchFailureReason("Google Drive", error) };
+  }
+}
+
+async function deliverBackupByEmail(settings, filename, envelope, validation) {
+  if (!settings.emailEnabled) return { skipped: true, reason: "E-mail desativado" };
+  const counts = validation.counts || {};
+  const html = `
+    <div style="font-family:Arial,sans-serif;color:#17202c">
+      <h2>Backup diário do Pipeline Mauad</h2>
+      <p>Backup gerado em <strong>${escapeHtml(envelope.exportedAt)}</strong> e validado com sucesso.</p>
+      <p><strong>Checksum SHA-256:</strong> ${escapeHtml(validation.checksum)}</p>
+      <p><strong>Registros:</strong> ${Number(counts.leads || 0).toLocaleString("pt-BR")} leads, ${Number(counts.users || 0).toLocaleString("pt-BR")} usuários, ${Number(counts.auditLog || 0).toLocaleString("pt-BR")} logs de auditoria.</p>
+      <p>O arquivo JSON está anexado a este e-mail.</p>
+    </div>
+  `;
+  return sendEmailWithAttachments(settings.emailTo, settings.emailCc, `Backup Pipeline Mauad - ${filename}`, html, [{
+    filename,
+    content: Buffer.from(JSON.stringify(envelope, null, 2), "utf8").toString("base64")
+  }]);
+}
+
+async function runStructuredBackup(sql, actor = { username: "backup-cron", name: "Backup Cron" }, options = {}) {
+  const settingsRows = await sql`SELECT payload FROM crm_settings WHERE key = 'backupSettings' LIMIT 1`;
+  const settings = normalizeBackupSettings(settingsRows[0]?.payload || {});
+  if (options.scheduled && !settings.enabled) {
+    return { ok: true, skipped: true, reason: "Backup diário desativado", settings };
+  }
+  const exportedAt = new Date().toISOString();
+  const filename = `pipeline-mauad-backup-${exportedAt.slice(0, 10)}.json`;
+  const envelope = {
+    exportedAt,
+    source: "structured",
+    schemaVersion: APP_SCHEMA_VERSION,
+    db: await structuredBackupDb(sql)
+  };
+  const validation = validateStructuredBackupEnvelope(envelope);
+  const deliveries = {};
+  if (validation.ok) {
+    deliveries.email = await deliverBackupByEmail(settings, filename, envelope, validation);
+    deliveries.googleDrive = await deliverBackupToDrive(settings, filename, envelope, validation);
+  }
+  const run = {
+    id: `backup-${crypto.randomUUID()}`,
+    at: exportedAt,
+    status: validation.ok ? "success" : "failed",
+    filename,
+    validation,
+    deliveries
+  };
+  const nextSettings = normalizeBackupSettings({
+    ...settings,
+    lastRun: run,
+    history: [run, ...(settings.history || [])].slice(0, 15)
+  });
+  await saveStructuredSetting(sql, "backupSettings", nextSettings);
+  await structuredAudit(actor, validation.ok ? "BACKUP_GENERATED" : "BACKUP_FAILED", {
+    filename,
+    validation,
+    deliveries,
+    scheduled: Boolean(options.scheduled)
+  });
+  return { ok: validation.ok, filename, validation, deliveries, settings: nextSettings };
+}
+
 function metaLeadLocalId(leadgenId) {
   return `meta-${String(leadgenId || "").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
@@ -6010,22 +6189,88 @@ async function fastStructuredSalesReportRoutes(req, res, url) {
 }
 
 async function fastStructuredBackupRoutes(req, res, url) {
-  if (!DATABASE_URL || !["/api/admin/export-db", "/api/admin/import-db"].includes(url.pathname)) return false;
+  const backupPaths = new Set([
+    "/api/admin/export-db",
+    "/api/admin/import-db",
+    "/api/admin/backup-settings",
+    "/api/admin/backup/run",
+    "/api/admin/backup/validate",
+    "/api/cron/daily-backup"
+  ]);
+  if (!DATABASE_URL || !backupPaths.has(url.pathname)) return false;
   try {
     const sql = await getSql();
     if (!sql) return false;
     await ensureStructuredSchemaOnce(sql);
+
+    if (url.pathname === "/api/cron/daily-backup") {
+      const auth = req.headers.authorization || "";
+      if (!BACKUP_SECRET) return sendJson(res, 500, { error: "BACKUP_SECRET/CRON_SECRET ausente" });
+      if (auth !== `Bearer ${BACKUP_SECRET}`) return sendJson(res, 401, { error: "Não autorizado" });
+      if (req.method !== "GET" && req.method !== "POST") return false;
+      const result = await runStructuredBackup(sql, { username: "backup-cron", name: "Backup Cron", role: "Sistema" }, { scheduled: true });
+      return sendJson(res, result.ok ? 200 : 500, { ...result, dataSources: { action: "structured" } });
+    }
+
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
     if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
 
-    if (url.pathname === "/api/admin/export-db" && req.method === "GET") {
-      const exported = await structuredBackupDb(sql);
-      await structuredAudit(user, "EXPORT_STRUCTURED_DATABASE", { leads: exported.leads.length, users: exported.users.length });
+    if (url.pathname === "/api/admin/backup-settings" && req.method === "GET") {
+      const settingsRows = await sql`SELECT payload FROM crm_settings WHERE key = 'backupSettings' LIMIT 1`;
       return sendJson(res, 200, {
+        backupSettings: normalizeBackupSettings(settingsRows[0]?.payload || {}),
+        dataSources: { action: "structured" }
+      });
+    }
+
+    if (url.pathname === "/api/admin/backup-settings" && req.method === "PATCH") {
+      const body = await readBody(req);
+      const currentRows = await sql`SELECT payload FROM crm_settings WHERE key = 'backupSettings' LIMIT 1`;
+      const nextSettings = normalizeBackupSettings({
+        ...(currentRows[0]?.payload || {}),
+        ...body
+      });
+      await saveStructuredSetting(sql, "backupSettings", nextSettings);
+      await structuredAudit(user, "UPDATE_BACKUP_SETTINGS", {
+        enabled: nextSettings.enabled,
+        emailEnabled: nextSettings.emailEnabled,
+        driveEnabled: nextSettings.driveEnabled
+      });
+      return sendJson(res, 200, { backupSettings: nextSettings, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/admin/backup/validate" && req.method === "GET") {
+      const envelope = {
         exportedAt: new Date().toISOString(),
         source: "structured",
-        db: exported,
+        schemaVersion: APP_SCHEMA_VERSION,
+        db: await structuredBackupDb(sql)
+      };
+      const validation = validateStructuredBackupEnvelope(envelope);
+      await structuredAudit(user, validation.ok ? "BACKUP_VALIDATED" : "BACKUP_VALIDATION_FAILED", { validation });
+      return sendJson(res, validation.ok ? 200 : 500, { validation, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/admin/backup/run" && req.method === "POST") {
+      const result = await runStructuredBackup(sql, user, { scheduled: false });
+      return sendJson(res, result.ok ? 200 : 500, { ...result, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/admin/export-db" && req.method === "GET") {
+      const exported = await structuredBackupDb(sql);
+      const envelope = {
+        exportedAt: new Date().toISOString(),
+        source: "structured",
+        schemaVersion: APP_SCHEMA_VERSION,
+        db: exported
+      };
+      const validation = validateStructuredBackupEnvelope(envelope);
+      if (!validation.ok) return sendJson(res, 500, { error: "Backup inválido", validation });
+      await structuredAudit(user, "EXPORT_STRUCTURED_DATABASE", { leads: exported.leads.length, users: exported.users.length });
+      return sendJson(res, 200, {
+        ...envelope,
+        validation,
         dataSources: { action: "structured" }
       }, {
         "Content-Disposition": `attachment; filename="pipeline-mauad-backup-${new Date().toISOString().slice(0, 10)}.json"`
@@ -6305,6 +6550,7 @@ async function fastStructuredStateResponse(req, res, url) {
         config: "structured"
       },
       commercialSettings: stateDb.commercialSettings,
+      backupSettings: canManageSettings(user) ? normalizeBackupSettings(settings.backupSettings || {}) : null,
       levFinance: (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? publicLevFinance(stateDb) : null
     });
   } catch (error) {

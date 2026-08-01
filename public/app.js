@@ -66,6 +66,7 @@ const state = {
   levFinanceTab: "pending",
   levFinanceExtraction: null,
   levFinanceModal: null,
+  backupSettings: null,
   dashboardStart: "",
   dashboardEnd: "",
   dashboardProject: "TODOS",
@@ -964,6 +965,7 @@ async function loadState() {
   state.fupLeadLog = data.fupLeadLog || [];
   state.levFinance = data.levFinance || null;
   state.commercialSettings = data.commercialSettings || {};
+  state.backupSettings = data.backupSettings || state.backupSettings || null;
   state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
   state.knowledgeCategories = data.knowledgeCategories || [];
   state.knowledgeArticles = data.knowledgeArticles || [];
@@ -4933,19 +4935,55 @@ function readFileAsText(file) {
 }
 
 function renderBackupSettings() {
+  const settings = state.backupSettings || {};
+  const lastRun = settings.lastRun || null;
+  const validation = lastRun?.validation || {};
+  const deliveries = lastRun?.deliveries || {};
+  const bytes = Number(validation.bytes || 0);
+  const bytesLabel = bytes ? `${(bytes / 1024 / 1024).toLocaleString("pt-BR", { maximumFractionDigits: 2 })} MB` : "-";
   settingsLayout(`
     <section class="panel">
       <div class="panel-head">
-        <h2>Backup</h2>
-      </div>
-      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
-      <div class="form-grid editor">
-        <div class="field full">
-          <label>Baixar backup completo</label>
-          <small>Gera um arquivo JSON com leads, usuários, configurações, logs e dados financeiros.</small>
-          <div class="row-actions"><button class="primary" type="button" id="downloadBackupButton">Baixar backup</button></div>
+        <div>
+          <h2>Backup diário</h2>
+          <p class="muted-copy">Gera, valida e envia uma cópia completa do banco estruturado.</p>
+        </div>
+        <div class="row-actions">
+          <button type="button" id="validateBackupButton">Testar integridade</button>
+          <button class="primary" type="button" id="runBackupButton">Gerar backup agora</button>
         </div>
       </div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
+      <form id="backupSettingsForm" class="form-grid editor">
+        <div class="field full"><label class="checkline settings-check"><input type="checkbox" name="enabled" ${settings.enabled !== false ? "checked" : ""}> Backup diário ativo</label><small>Na Vercel, o agendamento roda uma vez por dia em produção.</small></div>
+        <div class="field"><label>Enviar por e-mail</label><label class="checkline settings-check"><input type="checkbox" name="emailEnabled" ${settings.emailEnabled ? "checked" : ""}> Ativar envio</label></div>
+        <div class="field"><label>Enviar para Google Drive</label><label class="checkline settings-check"><input type="checkbox" name="driveEnabled" ${settings.driveEnabled ? "checked" : ""}> Ativar envio</label></div>
+        <div class="field"><label>E-mails Para</label><input name="emailTo" value="${escapeHtml(settings.emailTo || "")}" placeholder="admin@empresa.com, diretoria@empresa.com"></div>
+        <div class="field"><label>E-mails Cc</label><input name="emailCc" value="${escapeHtml(settings.emailCc || "")}" placeholder="Opcional"></div>
+        <div class="field full"><label>Webhook / URL do Google Drive</label><input name="driveWebhookUrl" value="${escapeHtml(settings.driveWebhookUrl || "")}" placeholder="URL do Apps Script ou endpoint que grava no Drive"><small>O sistema envia o arquivo JSON em base64 para esta URL. Use um Apps Script/endpoint autorizado a gravar no Drive.</small></div>
+        <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar política</button><button type="button" id="downloadBackupButton">Baixar backup</button></div></div>
+      </form>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Último backup</h2>
+      </div>
+      ${lastRun ? `
+        <div class="backup-status-grid">
+          <div><strong>Status</strong><span class="${lastRun.status === "success" ? "status-active" : "chip-warning"}">${lastRun.status === "success" ? "OK" : "Falha"}</span></div>
+          <div><strong>Gerado em</strong><span>${escapeHtml(dateTimeLabel(lastRun.at))}</span></div>
+          <div><strong>Arquivo</strong><span>${escapeHtml(lastRun.filename || "-")}</span></div>
+          <div><strong>Tamanho</strong><span>${escapeHtml(bytesLabel)}</span></div>
+          <div><strong>Leads</strong><span>${Number(validation.counts?.leads || 0).toLocaleString("pt-BR")}</span></div>
+          <div><strong>Checksum</strong><span class="mono-text">${escapeHtml(String(validation.checksum || "").slice(0, 18))}${validation.checksum ? "..." : ""}</span></div>
+        </div>
+        <div class="backup-delivery-list">
+          <p><strong>E-mail:</strong> ${escapeHtml(deliveries.email?.sent ? "enviado" : deliveries.email?.reason || "não enviado")}</p>
+          <p><strong>Google Drive:</strong> ${escapeHtml(deliveries.googleDrive?.sent ? "enviado" : deliveries.googleDrive?.reason || "não enviado")}</p>
+          ${(validation.errors || []).length ? `<p class="error"><strong>Erros:</strong> ${escapeHtml(validation.errors.join(" | "))}</p>` : ""}
+          ${(validation.warnings || []).length ? `<p class="muted-copy"><strong>Avisos:</strong> ${escapeHtml(validation.warnings.join(" | "))}</p>` : ""}
+        </div>
+      ` : '<p class="muted-copy">Nenhum backup executado ainda.</p>'}
     </section>
     <section class="panel">
       <div class="panel-head">
@@ -4958,6 +4996,55 @@ function renderBackupSettings() {
     </section>
   `);
   bindSettingsCommon();
+  document.querySelector("#backupSettingsForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button[type='submit']");
+    const form = new FormData(event.currentTarget);
+    const payload = {
+      enabled: form.get("enabled") === "on",
+      emailEnabled: form.get("emailEnabled") === "on",
+      driveEnabled: form.get("driveEnabled") === "on",
+      emailTo: form.get("emailTo"),
+      emailCc: form.get("emailCc"),
+      driveWebhookUrl: form.get("driveWebhookUrl")
+    };
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const data = await api("/api/admin/backup-settings", { method: "PATCH", body: JSON.stringify(payload) });
+      state.backupSettings = data.backupSettings;
+      state.settingsNotice = "Política de backup salva.";
+      renderBackupSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+  document.querySelector("#validateBackupButton")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Testando...");
+      const data = await api("/api/admin/backup/validate");
+      const counts = data.validation?.counts || {};
+      state.settingsNotice = `Backup íntegro: ${Number(counts.leads || 0).toLocaleString("pt-BR")} lead(s), checksum ${String(data.validation?.checksum || "").slice(0, 12)}...`;
+      renderBackupSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+  document.querySelector("#runBackupButton")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Gerando...");
+      const data = await api("/api/admin/backup/run", { method: "POST", body: JSON.stringify({}) });
+      state.backupSettings = data.settings;
+      state.settingsNotice = `Backup gerado e validado: ${data.filename}.`;
+      renderBackupSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
   document.querySelector("#downloadBackupButton")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     try {

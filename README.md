@@ -87,6 +87,7 @@ Configure as variaveis no projeto da Vercel:
 - `META_PAGE_ACCESS_TOKEN`: token da pagina com permissao para leitura dos leads.
 - `META_GRAPH_VERSION`: opcional, padrao `v25.0`.
 - `CRON_SECRET`: segredo para permitir sincronizacao automatica protegida.
+- `BACKUP_SECRET`: opcional; se ausente, o backup diario usa `CRON_SECRET`.
 
 No Meta Developers, use a URL de callback:
 
@@ -112,3 +113,14 @@ Authorization: Bearer SEU_CRON_SECRET
 Nao existe job rodando dentro do processo: essa rota espera ser chamada de fora. Sem `CRON_SECRET` definido o endpoint responde **500**, nao 401. Na VPS, agende pelo cron do EasyPanel ou por um agendador externo.
 
 Na Vercel Hobby, cron nativo roda no maximo uma vez por dia. Para sincronizacao frequente, use Vercel Pro ou um agendador externo chamando essa URL protegida.
+
+## Backup diario
+
+O projeto possui um cron diario na Vercel:
+
+```text
+GET https://seu-dominio.com.br/api/cron/daily-backup
+Authorization: Bearer SEU_BACKUP_SECRET_OU_CRON_SECRET
+```
+
+O backup exporta o banco estruturado em JSON, valida integridade, calcula checksum SHA-256 e registra o resultado em `Configuracoes > Backup`. Pela tela, o Admin TI pode ativar envio por e-mail e/ou enviar o arquivo para uma URL autorizada a gravar no Google Drive.

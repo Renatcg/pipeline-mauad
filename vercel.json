@@ -9,5 +9,11 @@
       "source": "/:path*",
       "destination": "/api/index.js"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/daily-backup",
+      "schedule": "0 6 * * *"
+    }
   ]
 }
