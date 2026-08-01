@@ -2038,7 +2038,7 @@ function bindDragDrop() {
       else if (belowLead) nextOrder = Math.max(Date.now(), belowOrder + 1000);
       const result = await api(`/api/leads/${lead.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ status, order: nextOrder, ...(manualSamStatusDate ? { manualSamStatusDate } : {}) })
+        body: JSON.stringify({ status, order: nextOrder, movementSource: "kanban", ...(manualSamStatusDate ? { manualSamStatusDate } : {}) })
       });
       Object.assign(lead, result.lead);
       renderApp();
@@ -2182,7 +2182,7 @@ function bindRollbackControls(renderFn) {
       if (!confirm("Enviar este lead para a base Pipeline GDrive?")) return;
       try {
         setButtonBusy(button, true, "Voltando...");
-        const result = await api(`/api/leads/${button.dataset.rollback}/rollback`, { method: "POST" });
+        const result = await api(`/api/leads/${button.dataset.rollback}/rollback`, { method: "POST", body: JSON.stringify({ movementSource: "base" }) });
         const lead = state.leads.find((item) => item.id === result.lead.id);
         Object.assign(lead, result.lead);
         renderFn();
@@ -2263,7 +2263,7 @@ function renderLeadBases() {
         if (["Head Comercial", "Supervisor Comercial"].includes(state.user?.role) && currentUserCanOperateAsBroker()) {
           assignToSelf = confirm("Deseja resgatar este lead vinculado a você como corretor?\n\nOK: resgatar vinculado a você.\nCancelar: resgatar sem corretor para vincular depois.");
         }
-        const result = await api(`/api/leads/${button.dataset.rescue}/rescue`, { method: "POST", body: JSON.stringify({ assignToSelf }) });
+        const result = await api(`/api/leads/${button.dataset.rescue}/rescue`, { method: "POST", body: JSON.stringify({ assignToSelf, movementSource: "base" }) });
         const lead = state.leads.find((item) => item.id === result.lead.id);
         Object.assign(lead, result.lead);
         renderLeadBases();
@@ -2566,7 +2566,7 @@ function renderLeadDetail() {
     const button = event.currentTarget;
     try {
       setButtonBusy(button, true, "Salvando...");
-      const result = await patchLead(lead.id, { status: lead.status, manualSamStatusDate });
+      const result = await patchLead(lead.id, { status: lead.status, manualSamStatusDate, movementSource: "lead_detail" });
       Object.assign(lead, result.lead);
       alert("Data histórica SAM salva com sucesso.");
       renderLeadDetail();
@@ -2613,6 +2613,7 @@ function renderLeadDetail() {
         payload.manualSamStatusDate = manualSamStatusDate;
       }
     }
+    payload.movementSource = "lead_detail";
     await patchLead(lead.id, payload);
     alert("Detalhes do lead salvos com sucesso.");
     renderLeadDetail();

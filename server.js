@@ -3657,6 +3657,22 @@ async function importMetaLeadById(db, actor, leadgenId, webhookValue = {}) {
   const created = createMetaLead(db, id, metaLead, webhookValue);
   if (created.status === "created") {
     await mirrorStructuredLead(created.lead);
+    await mirrorStructuredLeadStatusMovement({
+      actor,
+      lead: created.lead,
+      fromStatus: "",
+      toStatus: created.lead.status,
+      movementType: "meta_create",
+      source: "meta",
+      screen: actor?.username === "meta-webhook" ? "meta_webhook" : actor?.username === "meta-cron" ? "meta_cron" : "meta_manual_import",
+      statusAt: created.lead.createdAt || created.lead.meta?.createdTime,
+      details: {
+        leadgenId: id,
+        formId: created.lead.meta?.formId || "",
+        adId: created.lead.meta?.adId || "",
+        project: created.lead.desiredProject || ""
+      }
+    });
     audit(db, actor, "CREATE_META_LEAD", { leadId: created.lead.id, leadgenId: id });
     integrationEvent(db, "META", "LEAD_IMPORTED", {
       leadId: created.lead.id,
@@ -3931,6 +3947,28 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_access_logs (id text PRIMARY KEY, at timestamptz, actor text, actor_name text, role text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, ip text, user_agent text, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_integration_logs (id text PRIMARY KEY, at timestamptz, provider text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_fup_lead_logs (id text PRIMARY KEY, at timestamptz, lead_id text, lead_name text, actor text, actor_name text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_lead_status_movements (
+    id text PRIMARY KEY,
+    lead_id text NOT NULL,
+    lead_name text,
+    from_status text,
+    to_status text NOT NULL,
+    moved_at timestamptz NOT NULL DEFAULT now(),
+    status_at timestamptz,
+    actor_id text,
+    actor_username text,
+    actor_name text,
+    actor_role text,
+    movement_type text NOT NULL,
+    source text,
+    screen text,
+    sam_event_id text,
+    details jsonb NOT NULL DEFAULT '{}'::jsonb,
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb
+  )`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_lead_status_movements_lead_idx ON crm_lead_status_movements (lead_id, moved_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_lead_status_movements_status_idx ON crm_lead_status_movements (to_status, moved_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_lead_status_movements_actor_idx ON crm_lead_status_movements (actor_id, moved_at DESC)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sam_events (id text PRIMARY KEY, event_id text, event_type text, event_datetime text, email text, phone text, unit text, next_status text, status text, lead_id text, lead_name text, created_at timestamptz, resolved_at timestamptz, resolved_by text, payload jsonb NOT NULL)`;
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS crm_sam_events_event_id_idx ON crm_sam_events (event_id) WHERE event_id IS NOT NULL AND event_id <> ''`;
   await sql`CREATE INDEX IF NOT EXISTS crm_sam_events_status_idx ON crm_sam_events (status)`;
@@ -3960,7 +3998,7 @@ async function ensureStructuredSchemaOnce(sql) {
 const STRUCTURED_TABLES = [
   "crm_lead_comments", "crm_lead_tags", "crm_lead_favorites", "crm_permissions", "crm_meta_forms", "crm_tag_definitions", "crm_settings",
   "crm_pipeline_statuses", "crm_projects", "crm_base_sources", "crm_audit_logs", "crm_access_logs", "crm_integration_logs",
-  "crm_fup_lead_logs", "crm_sam_events", "crm_lev_sales", "crm_lev_receipts", "crm_lev_settlements", "crm_knowledge_articles", "crm_leads", "crm_users"
+  "crm_fup_lead_logs", "crm_lead_status_movements", "crm_sam_events", "crm_lev_sales", "crm_lev_receipts", "crm_lev_settlements", "crm_knowledge_articles", "crm_leads", "crm_users"
 ];
 
 const STRUCTURED_DATASETS = [
@@ -3980,6 +4018,7 @@ const STRUCTURED_DATASETS = [
   { key: "accessLogs", tables: ["crm_access_logs"] },
   { key: "integrationLogs", tables: ["crm_integration_logs"] },
   { key: "fupLeadLogs", tables: ["crm_fup_lead_logs"] },
+  { key: "leadStatusMovements", tables: ["crm_lead_status_movements"] },
   { key: "samEvents", tables: ["crm_sam_events"] },
   { key: "levSales", tables: ["crm_lev_sales"] },
   { key: "levReceipts", tables: ["crm_lev_receipts"] },
@@ -4010,6 +4049,7 @@ async function clearStructuredTable(sql, table) {
   if (table === "crm_access_logs") return sql`DELETE FROM crm_access_logs`;
   if (table === "crm_integration_logs") return sql`DELETE FROM crm_integration_logs`;
   if (table === "crm_fup_lead_logs") return sql`DELETE FROM crm_fup_lead_logs`;
+  if (table === "crm_lead_status_movements") return sql`DELETE FROM crm_lead_status_movements`;
   if (table === "crm_sam_events") return sql`DELETE FROM crm_sam_events`;
   if (table === "crm_lev_sales") return sql`DELETE FROM crm_lev_sales`;
   if (table === "crm_lev_receipts") return sql`DELETE FROM crm_lev_receipts`;
@@ -4046,6 +4086,7 @@ async function countStructuredTable(sql, table) {
   if (table === "crm_access_logs") return (await sql`SELECT COUNT(*)::int AS count FROM crm_access_logs`)[0]?.count || 0;
   if (table === "crm_integration_logs") return (await sql`SELECT COUNT(*)::int AS count FROM crm_integration_logs`)[0]?.count || 0;
   if (table === "crm_fup_lead_logs") return (await sql`SELECT COUNT(*)::int AS count FROM crm_fup_lead_logs`)[0]?.count || 0;
+  if (table === "crm_lead_status_movements") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lead_status_movements`)[0]?.count || 0;
   if (table === "crm_sam_events") return (await sql`SELECT COUNT(*)::int AS count FROM crm_sam_events`)[0]?.count || 0;
   if (table === "crm_lev_sales") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_sales`)[0]?.count || 0;
   if (table === "crm_lev_receipts") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_receipts`)[0]?.count || 0;
@@ -4581,6 +4622,18 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
   await saveStructuredLead(sql, lead);
   const levSale = await upsertStructuredLevSaleFromSam(sql, lead, event, fields);
   await saveStructuredSamEvent(sql, event);
+  await recordStructuredLeadStatusMovement(sql, {
+    actor: user,
+    lead,
+    fromStatus: previousStatus,
+    toStatus: lead.status,
+    movementType: "sam",
+    source: "sam",
+    screen: "sam_review",
+    statusAt: event.eventDatetime || lead.updatedAt,
+    samEventId: event.id,
+    details: { eventId: event.eventId, appliedFields, levSaleId: levSale?.id || "" }
+  });
   await structuredIntegration("SAM", "LINKED_TO_LEAD", { eventId: event.eventId, samEventId: event.id, leadId: lead.id, from: previousStatus, to: lead.status, levSaleId: levSale?.id || "" });
   await structuredFup(user, lead, "SAM_STATUS_LINKED", { eventId: event.eventId, from: previousStatus, to: lead.status, appliedFields, levSaleId: levSale?.id || "" });
   return { previousStatus, nextStatus: lead.status, appliedFields, levSale };
@@ -5238,6 +5291,7 @@ async function structuredBackupDb(sql) {
     accessRows,
     integrationRows,
     fupRows,
+    movementRows,
     samRows,
     articleRows,
     settings,
@@ -5258,6 +5312,7 @@ async function structuredBackupDb(sql) {
     sql`SELECT payload FROM crm_access_logs ORDER BY at DESC NULLS LAST`,
     sql`SELECT payload FROM crm_integration_logs ORDER BY at DESC NULLS LAST`,
     sql`SELECT payload FROM crm_fup_lead_logs ORDER BY at DESC NULLS LAST`,
+    sql`SELECT payload FROM crm_lead_status_movements ORDER BY moved_at DESC NULLS LAST`,
     sql`SELECT * FROM crm_sam_events ORDER BY created_at DESC NULLS LAST`,
     sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
     structuredSettingsMap(sql),
@@ -5317,6 +5372,7 @@ async function structuredBackupDb(sql) {
     accessLog: accessRows.map((row) => row.payload || {}).filter((item) => item.at),
     integrationLog: integrationRows.map((row) => row.payload || {}).filter((item) => item.at),
     fupLeadLog: fupRows.map((row) => row.payload || {}).filter((item) => item.at),
+    leadStatusMovements: movementRows.map((row) => row.payload || {}).filter((item) => item.id),
     samEvents: samRows.map(samEventFromRow).filter((event) => event.id),
     levFinance: finance.levFinance,
     importSummary: { origin: "STRUCTURED_BACKUP", leadCount: leads.length, inactiveBrokerCount: 0 }
@@ -5346,6 +5402,7 @@ function backupRecordCounts(db = {}) {
     auditLog: Array.isArray(db.auditLog) ? db.auditLog.length : 0,
     integrationLog: Array.isArray(db.integrationLog) ? db.integrationLog.length : 0,
     fupLeadLog: Array.isArray(db.fupLeadLog) ? db.fupLeadLog.length : 0,
+    leadStatusMovements: Array.isArray(db.leadStatusMovements) ? db.leadStatusMovements.length : 0,
     levSales: Array.isArray(db.levFinance?.sales) ? db.levFinance.sales.length : 0,
     samEvents: Array.isArray(db.samEvents) ? db.samEvents.length : 0,
     knowledgeArticles: Array.isArray(db.knowledgeArticles) ? db.knowledgeArticles.length : 0
@@ -7195,6 +7252,62 @@ async function saveStructuredLead(sql, lead) {
     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, source = EXCLUDED.source, source_status = EXCLUDED.source_status, odysseia_status = EXCLUDED.odysseia_status, assistant = EXCLUDED.assistant, external_id = EXCLUDED.external_id, status = EXCLUDED.status, in_pipeline = EXCLUDED.in_pipeline, assigned_to = EXCLUDED.assigned_to, assigned_name = EXCLUDED.assigned_name, project = EXCLUDED.project, unit = EXCLUDED.unit, unit_value = EXCLUDED.unit_value, base_source_before_pipeline = EXCLUDED.base_source_before_pipeline, previous_pipeline_source = EXCLUDED.previous_pipeline_source, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
 }
 
+async function recordStructuredLeadStatusMovement(sql, {
+  actor = {},
+  lead,
+  fromStatus = "",
+  toStatus = "",
+  movementType = "manual",
+  source = "",
+  screen = "",
+  movedAt = "",
+  statusAt = "",
+  samEventId = "",
+  details = {}
+} = {}) {
+  if (!lead?.id || !toStatus) return null;
+  const recordedAt = movedAt || new Date().toISOString();
+  const entry = {
+    id: `status-move-${crypto.randomUUID()}`,
+    leadId: lead.id,
+    leadName: lead.name || "",
+    fromStatus: String(fromStatus || ""),
+    toStatus: String(toStatus || ""),
+    movedAt: recordedAt,
+    statusAt: statusAt || recordedAt,
+    actorId: actor.id || "",
+    actorUsername: actor.username || "",
+    actorName: actor.name || actor.username || "",
+    actorRole: actor.role || "",
+    movementType,
+    source,
+    screen,
+    samEventId,
+    details: details || {}
+  };
+  await sql`INSERT INTO crm_lead_status_movements (
+    id, lead_id, lead_name, from_status, to_status, moved_at, status_at,
+    actor_id, actor_username, actor_name, actor_role, movement_type, source, screen,
+    sam_event_id, details, payload
+  ) VALUES (
+    ${entry.id}, ${entry.leadId}, ${entry.leadName}, ${entry.fromStatus}, ${entry.toStatus},
+    ${dbDate(entry.movedAt)}, ${dbDate(entry.statusAt)}, ${entry.actorId}, ${entry.actorUsername},
+    ${entry.actorName}, ${entry.actorRole}, ${entry.movementType}, ${entry.source}, ${entry.screen},
+    ${entry.samEventId}, ${JSON.stringify(entry.details)}::jsonb, ${JSON.stringify(entry)}::jsonb
+  )`;
+  return entry;
+}
+
+async function mirrorStructuredLeadStatusMovement(params) {
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return;
+    await recordStructuredLeadStatusMovement(sql, params);
+  } catch (error) {
+    mirrorStructuredError("lead-status-movement", error);
+  }
+}
+
 async function structuredAudit(actor, action, details) {
   await mirrorStructuredAuditLog({ at: new Date().toISOString(), actor: actor.username, actorName: actor.name, action, details });
 }
@@ -7563,6 +7676,7 @@ async function fastStructuredManualLeadRoutes(req, res, url) {
           ? await activeStructuredBroker(sql, body.lead.assignedTo)
           : null;
       if (body.lead?.assignedTo && user.role !== "Corretor" && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
+      const duplicatePreviousStatus = duplicate.status || duplicate.sourceStatus || duplicate.odysseiaStatus || "";
       if (mode === "overwrite") {
         duplicate.name = payload.name;
         duplicate.phone = payload.phone;
@@ -7584,6 +7698,17 @@ async function fastStructuredManualLeadRoutes(req, res, url) {
       duplicate.updatedAt = duplicate.rescuedAt;
       duplicate.manualDuplicateResolution = mode;
       await saveStructuredLead(sql, duplicate);
+      await recordStructuredLeadStatusMovement(sql, {
+        actor: user,
+        lead: duplicate,
+        fromStatus: duplicatePreviousStatus,
+        toStatus: duplicate.status,
+        movementType: "rescue",
+        source: "manual_duplicate_resolution",
+        screen: "manual_lead_modal",
+        statusAt: duplicate.rescuedAt,
+        details: { mode, assignedTo: duplicate.assignedName || "", source: duplicate.source }
+      });
       await structuredAudit(user, "RESOLVE_MANUAL_DUPLICATE_LEAD", { leadId: duplicate.id, mode, source: duplicate.source });
       await structuredFup(user, duplicate, "RESCUE_BASE_LEAD", { source: duplicate.source, mode, assignedTo: duplicate.assignedName || "" });
       if (assignedUser) await notifyLeadAssignment(await structuredNotificationDb(sql), duplicate, assignedUser, false);
@@ -7636,6 +7761,17 @@ async function fastStructuredManualLeadRoutes(req, res, url) {
       updatedAt: now
     };
     await saveStructuredLead(sql, lead);
+    await recordStructuredLeadStatusMovement(sql, {
+      actor: user,
+      lead,
+      fromStatus: "",
+      toStatus: lead.status,
+      movementType: "create",
+      source: "manual",
+      screen: "manual_lead_modal",
+      statusAt: now,
+      details: { source: lead.source, assignedTo: lead.assignedName || "" }
+    });
     await sql`INSERT INTO crm_base_sources (name) VALUES (${lead.source}) ON CONFLICT DO NOTHING`;
     await structuredAudit(user, "CREATE_LEAD", { leadId: lead.id, source: lead.source });
     await structuredFup(user, lead, "CREATE_LEAD", { source: lead.source, assignedTo: lead.assignedName || "" });
@@ -7754,6 +7890,7 @@ async function fastStructuredLeadAction(req, res, url) {
       if (!firstStatus) return sendJson(res, 400, { error: "Cadastre o primeiro status do pipeline antes de resgatar leads" });
       rememberLeadBaseOrigin(lead);
       const body = await readBody(req);
+      const previousStatus = lead.status || lead.sourceStatus || lead.odysseiaStatus || "";
       lead.inPipeline = true;
       lead.status = firstStatus;
       if (user.role === "Corretor" || (canOperateAsBroker(user) && body.assignToSelf)) {
@@ -7764,6 +7901,17 @@ async function fastStructuredLeadAction(req, res, url) {
       lead.rescuedAt = new Date().toISOString();
       lead.updatedAt = lead.rescuedAt;
       await saveStructuredLead(sql, lead);
+      await recordStructuredLeadStatusMovement(sql, {
+        actor: user,
+        lead,
+        fromStatus: previousStatus,
+        toStatus: lead.status,
+        movementType: "rescue",
+        source: "base",
+        screen: String(body.movementSource || "base"),
+        statusAt: lead.rescuedAt,
+        details: { source: lead.source, assignedTo: lead.assignedName || "" }
+      });
       await structuredAudit(user, "RESCUE_BASE_LEAD", { leadId: lead.id, source: lead.source });
       await structuredFup(user, lead, "RESCUE_BASE_LEAD", { source: lead.source, assignedTo: lead.assignedName || "" });
       return sendJson(res, 200, { lead: publicLead(lead, user), dataSources: { action: "structured" } });
@@ -7772,9 +7920,11 @@ async function fastStructuredLeadAction(req, res, url) {
     if (rollbackMatch && req.method === "POST") {
       if (!canManageLeads(user) && !(user.role === "Corretor" && lead.assignedTo === user.id)) return sendJson(res, 403, { error: "Sem permissão" });
       if (!lead.inPipeline) return sendJson(res, 400, { error: "Este lead já está apenas na base" });
+      const body = await readBody(req);
       const pipelineSource = lead.source || "";
       const previousSource = lead.baseSourceBeforePipeline || lead.previousPipelineSource || lead.source || "Pipeline GDrive";
       const previousStatus = lead.baseStatusBeforePipeline || lead.sourceStatus || lead.odysseiaStatus || lead.status || "Base";
+      const pipelineStatus = lead.status || "";
       lead.inPipeline = false;
       lead.source = previousSource;
       lead.sourceStatus = previousStatus;
@@ -7785,6 +7935,17 @@ async function fastStructuredLeadAction(req, res, url) {
       lead.rolledBackAt = new Date().toISOString();
       lead.updatedAt = lead.rolledBackAt;
       await saveStructuredLead(sql, lead);
+      await recordStructuredLeadStatusMovement(sql, {
+        actor: user,
+        lead,
+        fromStatus: pipelineStatus,
+        toStatus: lead.status,
+        movementType: "rollback",
+        source: "base",
+        screen: String(body.movementSource || "base"),
+        statusAt: lead.rolledBackAt,
+        details: { source: lead.source, previousSource }
+      });
       await structuredAudit(user, "ROLLBACK_BASE_LEAD", { leadId: lead.id, source: lead.source, previousSource });
       await structuredFup(user, lead, "ROLLBACK_BASE_LEAD", { source: lead.source, previousSource });
       return sendJson(res, 200, { lead: publicLead(lead, user), dataSources: { action: "structured" } });
@@ -7908,8 +8069,30 @@ async function fastStructuredLeadAction(req, res, url) {
         }
       }
       if (Object.prototype.hasOwnProperty.call(body, "status") && lead.status !== previousStatus) {
+        await recordStructuredLeadStatusMovement(sql, {
+          actor: user,
+          lead,
+          fromStatus: previousStatus,
+          toStatus: lead.status,
+          movementType: manualSamStatusAt ? "historical_manual" : "manual",
+          source: manualSamStatusAt ? "manual_sam_history" : "user",
+          screen: String(body.movementSource || (Object.prototype.hasOwnProperty.call(body, "order") ? "kanban" : "lead_detail")),
+          statusAt: manualSamStatusAt || lead.updatedAt,
+          details: { manualSamStatusAt, order: Object.prototype.hasOwnProperty.call(body, "order") ? Number(lead.order || 0) : undefined }
+        });
         await structuredFup(user, lead, manualSamStatusAt ? "CHANGE_STATUS_SAM_HISTORICAL" : "CHANGE_STATUS", { from: previousStatus, to: lead.status, manualSamStatusAt });
       } else if (manualSamStatusAt) {
+        await recordStructuredLeadStatusMovement(sql, {
+          actor: user,
+          lead,
+          fromStatus: lead.status,
+          toStatus: lead.status,
+          movementType: "historical_date",
+          source: "manual_sam_history",
+          screen: String(body.movementSource || "lead_detail"),
+          statusAt: manualSamStatusAt,
+          details: { manualSamStatusAt }
+        });
         await structuredFup(user, lead, "SET_SAM_STATUS_DATE", { status: lead.status, manualSamStatusAt });
       }
       if (Object.prototype.hasOwnProperty.call(body, "order") && Number(lead.order || 0) !== previousOrder) {
@@ -8149,6 +8332,28 @@ async function insertStructuredDataset(sql, db, key) {
       await sql`INSERT INTO crm_fup_lead_logs (id, at, lead_id, lead_name, actor, actor_name, action, details, payload) VALUES (${logRowId("fup", item, index)}, ${dbDate(item.at)}, ${item.leadId || ""}, ${item.leadName || ""}, ${item.actor || ""}, ${item.actorName || ""}, ${item.action || ""}, ${JSON.stringify(item.details || {})}::jsonb, ${JSON.stringify(item)}::jsonb)`;
       summary.fupLeadLogs += 1;
     }
+  } else if (key === "leadStatusMovements") {
+    for (const item of db.leadStatusMovements || []) {
+      await recordStructuredLeadStatusMovement(sql, {
+        actor: {
+          id: item.actorId || "",
+          username: item.actorUsername || "",
+          name: item.actorName || "",
+          role: item.actorRole || ""
+        },
+        lead: { id: item.leadId, name: item.leadName || "" },
+        fromStatus: item.fromStatus || "",
+        toStatus: item.toStatus || "",
+        movementType: item.movementType || "imported",
+        source: item.source || "backup",
+        screen: item.screen || "",
+        movedAt: item.movedAt || "",
+        statusAt: item.statusAt || item.movedAt || "",
+        samEventId: item.samEventId || "",
+        details: item.details || {}
+      });
+      summary.leadStatusMovements += 1;
+    }
   } else if (key === "samEvents") {
     for (const item of db.samEvents || []) {
       await saveStructuredSamEvent(sql, item);
@@ -8220,7 +8425,7 @@ async function syncStructuredDb(db, actor) {
   await ensureStructuredSchemaOnce(sql);
   const runId = crypto.randomUUID();
   await sql`INSERT INTO crm_structured_sync_runs (id, status, summary) VALUES (${runId}, 'running', '{}'::jsonb)`;
-  const summary = { users: 0, leads: 0, comments: 0, tags: 0, tagDefinitions: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, settings: 0, permissions: 0, auditLogs: 0, integrationLogs: 0, fupLeadLogs: 0, samEvents: 0, levSales: 0, levReceipts: 0, levSettlements: 0, knowledgeArticles: 0 };
+  const summary = { users: 0, leads: 0, comments: 0, tags: 0, tagDefinitions: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, settings: 0, permissions: 0, auditLogs: 0, integrationLogs: 0, fupLeadLogs: 0, leadStatusMovements: 0, samEvents: 0, levSales: 0, levReceipts: 0, levSettlements: 0, knowledgeArticles: 0 };
   try {
     ensurePermissions(db);
     await clearStructuredTables(sql);
@@ -8305,6 +8510,27 @@ async function syncStructuredDb(db, actor) {
       await sql`INSERT INTO crm_fup_lead_logs (id, at, lead_id, lead_name, actor, actor_name, action, details, payload) VALUES (${logRowId("fup", item, index)}, ${dbDate(item.at)}, ${item.leadId || ""}, ${item.leadName || ""}, ${item.actor || ""}, ${item.actorName || ""}, ${item.action || ""}, ${JSON.stringify(item.details || {})}::jsonb, ${JSON.stringify(item)}::jsonb)`;
       summary.fupLeadLogs += 1;
     }
+    for (const item of db.leadStatusMovements || []) {
+      await recordStructuredLeadStatusMovement(sql, {
+        actor: {
+          id: item.actorId || "",
+          username: item.actorUsername || "",
+          name: item.actorName || "",
+          role: item.actorRole || ""
+        },
+        lead: { id: item.leadId, name: item.leadName || "" },
+        fromStatus: item.fromStatus || "",
+        toStatus: item.toStatus || "",
+        movementType: item.movementType || "imported",
+        source: item.source || "backup",
+        screen: item.screen || "",
+        movedAt: item.movedAt || "",
+        statusAt: item.statusAt || item.movedAt || "",
+        samEventId: item.samEventId || "",
+        details: item.details || {}
+      });
+      summary.leadStatusMovements += 1;
+    }
     for (const item of db.samEvents || []) {
       await saveStructuredSamEvent(sql, item);
       summary.samEvents += 1;
@@ -8345,7 +8571,7 @@ async function structuredDbDiagnostics(db) {
     tagDefinitions: await count("crm_tag_definitions"), projects: await count("crm_projects"), baseSources: await count("crm_base_sources"), metaForms: await count("crm_meta_forms"),
     settings: await count("crm_settings"),
     permissions: await count("crm_permissions"), auditLogs: await count("crm_audit_logs"), accessLogs: await count("crm_access_logs"), integrationLogs: await count("crm_integration_logs"),
-    fupLeadLogs: await count("crm_fup_lead_logs"), samEvents: await count("crm_sam_events"), levSales: await count("crm_lev_sales"), levReceipts: await count("crm_lev_receipts"), levSettlements: await count("crm_lev_settlements"),
+    fupLeadLogs: await count("crm_fup_lead_logs"), leadStatusMovements: await count("crm_lead_status_movements"), samEvents: await count("crm_sam_events"), levSales: await count("crm_lev_sales"), levReceipts: await count("crm_lev_receipts"), levSettlements: await count("crm_lev_settlements"),
     knowledgeArticles: await count("crm_knowledge_articles")
   };
   let json = { ...structured };
@@ -8368,6 +8594,7 @@ async function structuredDbDiagnostics(db) {
       accessLogs: (db.accessLog || []).length,
       integrationLogs: (db.integrationLog || []).length,
       fupLeadLogs: (db.fupLeadLog || []).length,
+      leadStatusMovements: (db.leadStatusMovements || []).length,
       samEvents: (db.samEvents || []).length,
       levSales: (db.levFinance?.sales || []).length,
       levReceipts: (db.levFinance?.receipts || []).length,
