@@ -451,6 +451,11 @@ function saleProjectName(sale) {
   return match?.name || "Sem empreendimento";
 }
 
+function isContractSignedStatus(status) {
+  const normalized = normalizeText(status).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return ["contrato_assinado", "contrato_100_assinado", "venda_finalizada", "contract_signed", "sale_completed"].includes(normalized);
+}
+
 function allCommercialSales() {
   const byUnit = new Map();
   const add = (sale) => {
@@ -1004,6 +1009,7 @@ function renderShell(content) {
     </section>
     ${state.creatingLead ? renderCreateLeadModal() : ""}
   `;
+  document.body.classList.toggle("modal-open", Boolean(document.querySelector(".modal-backdrop")));
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => {
       state.mobileNavOpen = false;
@@ -2238,6 +2244,7 @@ function renderLeadDetail() {
       </div>
       <div class="actions">
         <button data-back-lead>Voltar</button>
+        ${canAccessLevFinance() && isContractSignedStatus(lead.status) ? `<button class="primary" data-send-lead-lev="${escapeHtml(lead.id)}">Enviar ao Financeiro Lev</button>` : ""}
         ${canManageLeads() ? `<button class="danger-button" data-delete-lead="${escapeHtml(lead.id)}">Excluir lead</button>` : ""}
         <button class="icon favorite ${lead.favorite ? "primary" : ""}" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button>
       </div>
@@ -2273,6 +2280,21 @@ function renderLeadDetail() {
   `);
 
   document.querySelector("[data-back-lead]")?.addEventListener("click", () => routeTo(state.previousView || "kanban"));
+  document.querySelector("[data-send-lead-lev]")?.addEventListener("click", async (event) => {
+    if (!confirm("Enviar este lead para as pendências do Financeiro Lev?")) return;
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Enviando...");
+      const data = await api(`/api/leads/${encodeURIComponent(lead.id)}/send-to-lev-finance`, { method: "POST" });
+      if (data.levFinance) state.levFinance = data.levFinance;
+      Object.assign(lead, data.lead || {});
+      alert("Lead enviado para as pendências do Financeiro Lev.");
+      renderLeadDetail();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
   document.querySelector("[data-delete-lead]")?.addEventListener("click", async (event) => {
     if (!confirm("Excluir este lead definitivamente?")) return;
     const button = event.currentTarget;
@@ -2384,6 +2406,12 @@ function renderDashboard() {
     </section>
     ${state.dashboardFunnelStatus ? renderDashboardFunnelModal(leads) : ""}
   `);
+  if (state.dashboardFunnelStatus && Number.isFinite(state.dashboardModalScrollTop)) {
+    requestAnimationFrame(() => {
+      const content = document.querySelector(".content");
+      if (content) content.scrollTop = state.dashboardModalScrollTop;
+    });
+  }
   bindDashboardControls(leads);
 }
 
@@ -2447,12 +2475,14 @@ function renderMonthlySalesChart(sales) {
   const months = Array.from({ length: 12 }, (_, index) => ({ index, label: new Date(year, index, 1).toLocaleDateString("pt-BR", { month: "short" }).replace(".", "") }));
   const totals = months.map(({ index }) => sales.filter((sale) => parseFlexibleDate(saleSignedAt(sale))?.getFullYear() === year && parseFlexibleDate(saleSignedAt(sale))?.getMonth() === index));
   const maxValue = Math.max(...totals.map((items) => items.reduce((sum, sale) => sum + saleContractValue(sale), 0)), 1);
+  const hasRealSales = sales.some((sale) => saleContractValue(sale) > 0 && parseFlexibleDate(saleSignedAt(sale)));
   return `
     <section class="panel sales-chart-panel">
       <div class="panel-title-row">
-        <h2>Vendas mês a mês</h2>
+        <h2>Curva de Vendas</h2>
         <span>${escapeHtml(String(year))}</span>
       </div>
+      ${hasRealSales ? `
       <div class="sales-chart">
         ${months.map((month, monthIndex) => {
           const monthSales = totals[monthIndex];
@@ -2474,6 +2504,7 @@ function renderMonthlySalesChart(sales) {
         }).join("")}
       </div>
       <div class="chart-legend">${projects.map((project, index) => `<span><i style="background:${["#0f766e", "#2563eb", "#c2410c", "#7c3aed"][index % 4]}"></i>${escapeHtml(project)}</span>`).join("")}</div>
+      ` : '<div class="empty">Nenhuma venda assinada registrada no período para montar a curva.</div>'}
     </section>
   `;
 }
@@ -2517,6 +2548,7 @@ function bindDashboardControls(leads) {
   });
   document.querySelectorAll("[data-dashboard-funnel]").forEach((button) => {
     button.addEventListener("click", () => {
+      state.dashboardModalScrollTop = document.querySelector(".content")?.scrollTop || 0;
       state.dashboardFunnelStatus = button.dataset.dashboardFunnel;
       renderDashboard();
     });
@@ -2603,6 +2635,10 @@ function renderSalesReportView() {
   const salesByBroker = groupRows(sales, (sale) => brokerForSale(sale)?.name || "Sem corretor");
   const salesByProjectCount = groupRows(sales, (sale) => saleProjectName(sale));
   const salesByProjectValue = groupRows(sales, (sale) => saleProjectName(sale), (sale) => saleContractValue(sale));
+  const leadsByOrigin = groupRows(leads, (lead) => lead.source || "Não informado");
+  const leadsByStatus = groupRows(leads, (lead) => lead.status || "Não informado");
+  const leadsByWeekday = groupRows(leads, (lead) => weekdayLabel(lead.createdAt || lead.meta?.createdTime));
+  const interactionsByWeekday = groupRows(interactions, (log) => weekdayLabel(log.at));
   const monthLabel = parseFlexibleDate(`${period.month}-01`)?.toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) || period.month;
   renderShell(`
     ${renderViewHead("Relatório Comercial de Vendas", "Estatísticas comerciais do mês selecionado", {
@@ -2627,12 +2663,18 @@ function renderSalesReportView() {
         <div class="metric"><span>Vendas</span><strong>${numberPt(sales.length)}</strong></div>
         <div class="metric"><span>Valor vendido</span><strong>${escapeHtml(brl(totalSalesValue))}</strong></div>
       </section>
+      <section class="report-charts">
+        ${renderReportBarChart("Leads por origem", leadsByOrigin)}
+        ${renderReportBarChart("Leads por status", leadsByStatus)}
+        ${renderReportBarChart("Cadastros por dia da semana", leadsByWeekday)}
+        ${renderReportBarChart("Vendas por empreendimento", salesByProjectValue, { money: true })}
+      </section>
       <section class="report-grid">
-        <div class="panel nested-panel"><h3>Leads por origem</h3>${renderSmallRanking(groupRows(leads, (lead) => lead.source || "Não informado"))}</div>
-        <div class="panel nested-panel"><h3>Leads por status</h3>${renderSmallRanking(groupRows(leads, (lead) => lead.status || "Não informado"))}</div>
-        <div class="panel nested-panel"><h3>Cadastros por dia da semana</h3>${renderSmallRanking(groupRows(leads, (lead) => weekdayLabel(lead.createdAt || lead.meta?.createdTime)))}</div>
+        <div class="panel nested-panel"><h3>Leads por origem</h3>${renderSmallRanking(leadsByOrigin)}</div>
+        <div class="panel nested-panel"><h3>Leads por status</h3>${renderSmallRanking(leadsByStatus)}</div>
+        <div class="panel nested-panel"><h3>Cadastros por dia da semana</h3>${renderSmallRanking(leadsByWeekday)}</div>
         <div class="panel nested-panel"><h3>Cadastros por corretor</h3>${renderSmallRanking(brokerLeadRows)}</div>
-        <div class="panel nested-panel"><h3>Interações por dia da semana</h3>${renderSmallRanking(groupRows(interactions, (log) => weekdayLabel(log.at)))}</div>
+        <div class="panel nested-panel"><h3>Interações por dia da semana</h3>${renderSmallRanking(interactionsByWeekday)}</div>
         <div class="panel nested-panel"><h3>Interações por corretor</h3>${renderSmallRanking(brokerInteractionRows)}</div>
         <div class="panel nested-panel"><h3>Ranking de vendas por corretor</h3>${renderBrokerSalesRanking(salesByBroker)}</div>
         <div class="panel nested-panel"><h3>Ranking de vendas por empreendimento</h3>${renderSmallRanking(salesByProjectCount)}</div>
@@ -2641,6 +2683,27 @@ function renderSalesReportView() {
     </section>
   `);
   bindSalesReportControls();
+}
+
+function renderReportBarChart(title, rows, options = {}) {
+  const max = Math.max(...rows.map(([, value]) => Number(value || 0)), 1);
+  return `
+    <div class="panel nested-panel report-bar-card">
+      <h3>${escapeHtml(title)}</h3>
+      <div class="report-bars">
+        ${rows.slice(0, 8).map(([label, value], index) => {
+          const width = Math.max(4, (Number(value || 0) / max) * 100);
+          return `
+            <div class="report-bar-row">
+              <span>${escapeHtml(label)}</span>
+              <div class="report-bar"><i style="width:${width}%; background:${["#0f766e", "#2563eb", "#c2410c", "#7c3aed", "#0891b2", "#be123c"][index % 6]}"></i></div>
+              <strong>${options.money ? escapeHtml(brl(value)) : numberPt(value)}</strong>
+            </div>
+          `;
+        }).join("") || '<div class="empty">Sem dados no período.</div>'}
+      </div>
+    </div>
+  `;
 }
 
 function renderBrokerSalesRanking(rows) {
@@ -4717,6 +4780,7 @@ function levFinanceRow(item, options = {}) {
   const statusKey = options.statusKey || state.levFinanceTab || "pending";
   const actions = [
     `<button type="button" data-lev-action="edit" data-lev-key="${escapeHtml(recordKey)}">Editar</button>`,
+    canAccessLevFinance() && statusKey === "pending" ? `<button type="button" data-lev-action="pipeline" data-lev-key="${escapeHtml(recordKey)}">Criar lead em contrato assinado</button>` : "",
     statusKey === "pending" || statusKey === "ignored" ? `<button type="button" data-lev-action="confirm" data-lev-key="${escapeHtml(recordKey)}">Confirmar</button>` : "",
     statusKey === "pending" || statusKey === "ignored" ? `<button type="button" data-lev-action="invoice" data-lev-key="${escapeHtml(recordKey)}">Alterar para NF Emitida</button>` : "",
     statusKey === "pending" || statusKey === "nf" ? `<button type="button" data-lev-action="paid" data-lev-key="${escapeHtml(recordKey)}">Alterar para NF Paga</button>` : "",
@@ -5020,6 +5084,19 @@ function bindLevFinanceControls() {
       if (["edit", "invoice", "paid"].includes(action)) {
         state.levFinanceModal = { type: action, key };
         renderLevFinanceView();
+        return;
+      }
+      if (action === "pipeline") {
+        if (!confirm("Criar ou atualizar um lead do pipeline na etapa Contrato Assinado a partir deste registro?")) return;
+        try {
+          const data = await api(`/api/lev-finance/records/${encodeURIComponent(key)}`, { method: "PATCH", body: JSON.stringify({ action: "create_pipeline_lead" }) });
+          state.levFinance = data.levFinance;
+          if (data.lead) upsertLeadInState(data.lead);
+          alert("Lead criado/atualizado na etapa Contrato Assinado.");
+          renderLevFinanceView();
+        } catch (error) {
+          alert(error.message);
+        }
         return;
       }
       if (action === "delete") {

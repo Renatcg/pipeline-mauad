@@ -4173,6 +4173,135 @@ async function mirrorLevSaleToStructuredLead(sql, sale) {
   }
 }
 
+function contractSignedStatusFromDefinitions(statusDefinitions = []) {
+  return statusDefinitions.find((item) => isContractSignedPipelineStatus(item.status))?.status
+    || statusDefinitions.find((item) => normalizeComparableText(item.status).includes("contrato") && normalizeComparableText(item.status).includes("assinado"))?.status
+    || "Contrato Assinado";
+}
+
+function filledFinanceValue(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+async function upsertStructuredLeadFromLevSale(sql, user, sale) {
+  const unit = normalizeLevUnit(sale?.unit || "");
+  if (!unit) throw new Error("Unidade obrigatória");
+  const [projects, statusDefinitions] = await Promise.all([
+    structuredProjectDefinitions(sql),
+    structuredStatusDefinitions(sql)
+  ]);
+  const project = projectNameForUnit(unit, projects);
+  const contractSignedStatus = contractSignedStatusFromDefinitions(statusDefinitions);
+  const rows = await sql`SELECT l.*, false AS favorite, '{}'::text[] AS tags
+    FROM crm_leads l
+    WHERE l.unit = ${unit} OR l.payload->>'desiredUnit' = ${unit} OR l.payload->>'unit' = ${unit}
+    ORDER BY l.updated_at DESC NULLS LAST
+    LIMIT 1`;
+  const now = new Date().toISOString();
+  const existing = rows[0] ? structuredLeadFromRow(rows[0], false, []) : null;
+  const lead = existing || {
+    id: `lev-${unit.toLowerCase()}-${crypto.randomUUID()}`,
+    name: filledFinanceValue(sale.client, unit),
+    email: "",
+    phone: "",
+    source: "FINANCEIRO LEV",
+    sourceStatus: "",
+    odysseiaStatus: "",
+    assistant: "Financeiro Lev",
+    externalId: filledFinanceValue(sale.sourceId, sale.id),
+    status: contractSignedStatus,
+    inPipeline: true,
+    assignedTo: null,
+    assignedName: "",
+    createdAt: now,
+    comments: [],
+    tags: [],
+    favoritesByUser: {}
+  };
+  const updates = {
+    name: filledFinanceValue(sale.client, lead.name),
+    externalId: filledFinanceValue(sale.sourceId, sale.id, lead.externalId),
+    source: filledFinanceValue(lead.source, "FINANCEIRO LEV"),
+    assistant: filledFinanceValue(lead.assistant, "Financeiro Lev"),
+    status: contractSignedStatus,
+    inPipeline: true,
+    unit,
+    desiredUnit: unit,
+    project: project || lead.project || "",
+    desiredProject: project || lead.desiredProject || "",
+    unitValue: Number(sale.contractValue || 0) > 0 ? String(sale.contractValue) : lead.unitValue,
+    levFinanceSaleId: sale.id || "",
+    levFinanceStatus: sale.status || "",
+    updatedAt: now
+  };
+  for (const [key, value] of Object.entries(updates)) {
+    if (value !== "" && value !== null && value !== undefined) lead[key] = value;
+  }
+  await saveStructuredLead(sql, lead);
+  await structuredAudit(user, "CREATE_LEAD_FROM_LEV_FINANCE", { leadId: lead.id, unit });
+  await structuredFup(user, lead, existing ? "UPDATE_LEAD_FROM_LEV_FINANCE" : "CREATE_LEAD_FROM_LEV_FINANCE", { unit, saleId: sale.id || "" });
+  return lead;
+}
+
+async function upsertStructuredLevFinanceFromLead(sql, user, lead) {
+  const unit = normalizeLevUnit(filledFinanceValue(lead.unit, lead.desiredUnit));
+  if (!unit || !isLikelyLevUnit(unit)) throw new Error("Informe uma unidade válida no lead antes de enviar ao Financeiro Lev");
+  const stateDb = await structuredLevFinanceDb(sql);
+  const commissionPercent = Number(stateDb.levFinance.settings?.commissionPercent || 0);
+  const contractValue = parseMoney(filledFinanceValue(lead.unitValue, lead.value));
+  const existing = stateDb.levFinance.sales.find((item) => normalizeLevUnit(item.unit) === unit);
+  const now = new Date().toISOString();
+  const sale = existing || {
+    id: `lev-sale-lead-${unit}`,
+    sourceId: lead.id,
+    unit,
+    createdAt: now
+  };
+  const updates = {
+    sourceId: filledFinanceValue(sale.sourceId, lead.id),
+    unit,
+    client: filledFinanceValue(lead.name, sale.client, unit),
+    contractValue: contractValue || Number(sale.contractValue || 0),
+    signedAt: filledFinanceValue(lead.samLastEvent?.eventDatetime, lead.contractSignedAt, lead.updatedAt, lead.createdAt, sale.signedAt, now),
+    status: "Assinado",
+    table: sale.table || "",
+    realEstate: sale.realEstate || "",
+    eligible: Boolean(sale.eligible),
+    confirmedAt: sale.confirmedAt || "",
+    confirmedBy: sale.confirmedBy || "",
+    provisionDate: sale.provisionDate || "",
+    provisionEmailSentAt: sale.provisionEmailSentAt || "",
+    invoiceNumber: sale.invoiceNumber || "",
+    invoiceIssuedAt: sale.invoiceIssuedAt || "",
+    paidAt: sale.paidAt || "",
+    commissionPercent,
+    commissionValue: (contractValue || Number(sale.contractValue || 0)) * (commissionPercent / 100),
+    leadId: lead.id,
+    leadName: lead.name || "",
+    updatedAt: now
+  };
+  for (const [key, value] of Object.entries(updates)) {
+    if (value !== "" && value !== null && value !== undefined) sale[key] = value;
+  }
+  if (!existing) stateDb.levFinance.sales.unshift(sale);
+  upsertLevSettlement(stateDb, sale, "Extraída, aguardando confirmação", "Lead enviado para Financeiro Lev");
+  lead.unit = unit;
+  lead.desiredUnit = unit;
+  if (contractValue) lead.unitValue = String(contractValue);
+  lead.levFinanceSaleId = sale.id;
+  lead.updatedAt = now;
+  await saveStructuredLead(sql, lead);
+  await persistStructuredLevFinance(sql, stateDb.levFinance);
+  await structuredAudit(user, "SEND_LEAD_TO_LEV_FINANCE", { leadId: lead.id, unit, saleId: sale.id });
+  await structuredFup(user, lead, "SEND_LEAD_TO_LEV_FINANCE", { unit, saleId: sale.id });
+  return { stateDb, sale, lead };
+}
+
 async function saveStructuredSamEvent(sql, event) {
   if (!event?.id) return;
   if (event.eventId) {
@@ -5540,6 +5669,17 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
             createdBy: user.username
           });
         }
+      } else if (action === "create_pipeline_lead") {
+        targetSale = targetSale || saleFromSettlement(stateDb, settlement);
+        if (!targetSale) return sendJson(res, 400, { error: "Registro financeiro inválido" });
+        const lead = await upsertStructuredLeadFromLevSale(sql, user, targetSale);
+        targetSale.leadId = lead.id;
+        targetSale.leadName = lead.name || "";
+        targetSale.updatedAt = new Date().toISOString();
+        upsertLevSettlement(stateDb, targetSale, targetSale.status || "Extraída, aguardando confirmação", "Lead criado a partir do Financeiro Lev");
+        await persistStructuredLevFinance(sql, stateDb.levFinance);
+        await structuredAudit(user, "CREATE_PIPELINE_LEAD_FROM_LEV_RECORD", { leadId: lead.id, unit: normalizeLevUnit(targetSale.unit || unit) });
+        return sendJson(res, 200, { lead: publicLead(lead, user), levFinance: publicLevFinance(stateDb), dataSources: { action: "structured" } });
       } else {
         return sendJson(res, 400, { error: "Ação inválida" });
       }
@@ -6934,15 +7074,16 @@ async function fastStructuredLeadAction(req, res, url) {
   const leadMatch = url.pathname.match(/^\/api\/leads\/([^/]+)$/);
   const rescueMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rescue$/);
   const rollbackMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rollback$/);
+  const sendToLevFinanceMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/send-to-lev-finance$/);
   const commentMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments$/);
   const commentDeleteMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments\/([^/]+)$/);
-  if (!leadMatch && !rescueMatch && !rollbackMatch && !commentMatch && !commentDeleteMatch) return false;
+  if (!leadMatch && !rescueMatch && !rollbackMatch && !sendToLevFinanceMatch && !commentMatch && !commentDeleteMatch) return false;
   try {
     const sql = await getSql();
     if (!sql) return false;
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
-    const leadId = decodeURIComponent(leadMatch?.[1] || rescueMatch?.[1] || rollbackMatch?.[1] || commentMatch?.[1] || commentDeleteMatch?.[1] || "");
+    const leadId = decodeURIComponent(leadMatch?.[1] || rescueMatch?.[1] || rollbackMatch?.[1] || sendToLevFinanceMatch?.[1] || commentMatch?.[1] || commentDeleteMatch?.[1] || "");
     const lead = await structuredLeadById(sql, leadId, user);
     if (!lead) {
       notFound(res);
@@ -6997,6 +7138,22 @@ async function fastStructuredLeadAction(req, res, url) {
 
     if (leadMatch && req.method === "GET") {
       return sendJson(res, 200, { lead: publicLead(lead, user) });
+    }
+
+    if (sendToLevFinanceMatch && req.method === "POST") {
+      if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      if (!isContractSignedPipelineStatus(lead.status)) return sendJson(res, 400, { error: "O lead precisa estar em Contrato Assinado" });
+      try {
+        const result = await upsertStructuredLevFinanceFromLead(sql, user, lead);
+        return sendJson(res, 200, {
+          lead: publicLead(result.lead, user),
+          levFinance: publicLevFinance(result.stateDb),
+          sale: result.sale,
+          dataSources: { action: "structured" }
+        });
+      } catch (error) {
+        return sendJson(res, 400, { error: error.message || "Não foi possível enviar ao Financeiro Lev" });
+      }
     }
 
     if (leadMatch && req.method === "DELETE") {
