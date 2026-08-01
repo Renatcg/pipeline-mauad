@@ -1506,6 +1506,230 @@ th {
   gap: 14px;
 }
 
+.dashboard-controls,
+.report-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.compact-select {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  font-weight: 800;
+}
+
+.compact-select span {
+  color: var(--text);
+}
+
+.compact-select select,
+.compact-select input {
+  min-height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  outline: none;
+}
+
+.sales-chart-panel {
+  margin-bottom: 14px;
+}
+
+.panel-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.panel-title-row h2,
+.panel-title-row p {
+  margin: 0;
+}
+
+.panel-title-row span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.sales-chart {
+  min-height: 260px;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(64px, 1fr));
+  align-items: end;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 8px 4px 4px;
+}
+
+.sales-month {
+  display: grid;
+  gap: 6px;
+  min-width: 64px;
+  text-align: center;
+}
+
+.sales-bars {
+  position: relative;
+  height: 170px;
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  gap: 3px;
+  padding: 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sales-bars span {
+  width: 12px;
+  height: var(--bar-height);
+  border-radius: 4px 4px 0 0;
+  background: var(--bar-color);
+}
+
+.sales-line-dot {
+  position: absolute;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #111827;
+  border-radius: 999px;
+  background: white;
+  transform: translateX(-50%);
+}
+
+.sales-month strong {
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.sales-month em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.wide-modal {
+  width: min(920px, calc(100vw - 32px));
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.nested-panel {
+  background: #fbfcfd;
+}
+
+.nested-panel h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.nested-panel.wide {
+  grid-column: 1 / -1;
+}
+
+.compact-table table {
+  min-width: 0;
+}
+
+.compact-table th,
+.compact-table td {
+  padding: 7px 10px;
+}
+
+.broker-ranking {
+  display: grid;
+  gap: 8px;
+}
+
+.broker-rank-row {
+  display: grid;
+  grid-template-columns: 24px 36px 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.broker-rank-row img,
+.broker-rank-row i {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #e8f3f0;
+  color: var(--brand);
+  font-style: normal;
+  font-weight: 900;
+  object-fit: cover;
+}
+
+.broker-rank-row em {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 800;
+}
+
+@media print {
+  .side,
+  .topbar,
+  .view-head-actions,
+  .legacy-data-notice {
+    display: none !important;
+  }
+
+  .shell,
+  .main,
+  .content {
+    display: block;
+    margin: 0;
+    padding: 0;
+    background: white;
+  }
+
+  .panel {
+    break-inside: avoid;
+  }
+}
+
 .panel {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1986,6 +2210,14 @@ th {
   color: white;
   clip-path: polygon(7% 0, 93% 0, 100% 100%, 0 100%);
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.funnel-bar:hover {
+  filter: brightness(1.03);
+  transform: translateY(-1px);
 }
 
 .funnel-bar span {
@@ -2485,6 +2717,7 @@ th {
 
   .metrics,
   .dashboard-grid,
+  .report-grid,
   .lead-detail,
   .duplicate-compare,
   .meta-grid,

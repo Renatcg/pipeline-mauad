@@ -65,6 +65,12 @@ const state = {
   levFinanceTab: "pending",
   levFinanceExtraction: null,
   levFinanceModal: null,
+  dashboardStart: "",
+  dashboardEnd: "",
+  dashboardProject: "TODOS",
+  dashboardFunnelStatus: "",
+  salesReportMonth: "",
+  salesReportProject: "TODOS",
   mobileNavOpen: false,
   lastAccessLogKey: "",
   creatingLead: false,
@@ -84,20 +90,21 @@ const state = {
   favoriteRequests: {},
   brokerMenuBound: false,
   inactivityTimer: null,
+  loginMessage: "",
   favoritesOnly: false,
   search: ""
 };
 
 const profileAccess = {
-  "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "finance", "settings", "knowledge"],
-  "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "settings", "knowledge"],
-  "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"],
-  Diretoria: ["dashboard", "sheet", "odysseia", "kanban", "knowledge"],
+  "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
+  "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
+  "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
+  Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "kanban", "knowledge"],
   Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
   "Gerente Financeiro": ["finance", "settings", "knowledge"],
   "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
-  "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"],
-  "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"]
+  "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
+  "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"]
 };
 
 const routeByView = {
@@ -105,6 +112,7 @@ const routeByView = {
   sheet: "/planilha",
   odysseia: "/bases",
   dashboard: "/dashboard",
+  salesReport: "/relatorio-comercial",
   finance: "/financeiro-lev",
   settings: "/configuracoes",
   knowledge: "/ajuda"
@@ -116,6 +124,7 @@ const viewByRoute = {
   "/planilha": "sheet",
   "/bases": "odysseia",
   "/dashboard": "dashboard",
+  "/relatorio-comercial": "salesReport",
   "/financeiro-lev": "finance",
   "/configuracoes": "settings",
   "/ajuda": "knowledge"
@@ -152,6 +161,7 @@ function allowedViews() {
     sheet: "screen:sheet",
     odysseia: "screen:bases",
     dashboard: "screen:dashboard",
+    salesReport: "screen:salesReport",
     finance: "screen:finance",
     settings: "screen:settings",
     knowledge: "screen:knowledge"
@@ -164,6 +174,7 @@ function allowedViews() {
     ? Object.entries(screenByView).filter(([, resourceId]) => userRules[resourceId]?.access).map(([view]) => view)
     : roleViews;
   return views.filter((view) => {
+    if (view === "salesReport") return canAccessCommercialSalesReport();
     if (view === "finance") return canAccessLevFinance();
     if (view === "odysseia") return canAccessBases();
     return true;
@@ -180,11 +191,13 @@ function resetInactivityTimer() {
   clearInactivityTimer();
   state.inactivityTimer = setTimeout(async () => {
     state.user = null;
+    state.loginMessage = "Sessão expirada por inatividade.";
+    invalidateLeads();
     try {
       await api("/api/logout", { method: "POST" });
     } catch {}
-    history.pushState({}, "", "/login");
-    renderLogin("Sessão expirada por inatividade.");
+    history.replaceState({}, "", "/login");
+    renderLogin("", state.loginMessage);
   }, INACTIVITY_LIMIT_MS);
 }
 
@@ -221,6 +234,11 @@ function canEditUserEmail() {
 function canAccessLevFinance() {
   return (state.user?.role === "Admin TI" && String(state.user?.username || "").toLowerCase() === "admin")
     || ["Gerente Financeiro", "Auxiliar Financeiro"].includes(state.user?.role);
+}
+
+function canAccessCommercialSalesReport() {
+  return canAccessLevFinance()
+    || ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Gestor de Tráfego", "Coordenador de Marketing"].includes(state.user?.role);
 }
 
 function canResetLevFinance() {
@@ -317,6 +335,7 @@ function currentViewLabel() {
     sheet: "Planilha",
     odysseia: "Bases",
     dashboard: "Dashboard",
+    salesReport: "Relatório Comercial",
     finance: "Financeiro Lev",
     settings: "Configurações",
     knowledge: "Ajuda",
@@ -355,6 +374,120 @@ function localDateOnly(value) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function currentMonthBounds(date = new Date()) {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  return {
+    start: localDateOnly(new Date(year, month, 1)),
+    end: localDateOnly(new Date(year, month + 1, 0)),
+    month: `${year}-${String(month + 1).padStart(2, "0")}`
+  };
+}
+
+function ensureReportDefaults() {
+  const bounds = currentMonthBounds();
+  if (!state.dashboardStart) state.dashboardStart = bounds.start;
+  if (!state.dashboardEnd) state.dashboardEnd = bounds.end;
+  if (!state.salesReportMonth) state.salesReportMonth = bounds.month;
+}
+
+function parseFlexibleDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const text = String(value).trim();
+  if (!text) return null;
+  const direct = new Date(text);
+  if (!Number.isNaN(direct.getTime())) return direct;
+  const match = text.match(/^(\d{2})\/(\d{2})\/(\d{2,4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if (!match) return null;
+  const year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
+  const date = new Date(year, Number(match[2]) - 1, Number(match[1]), Number(match[4] || 0), Number(match[5] || 0), Number(match[6] || 0));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function brl(value) {
+  return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function numberPt(value) {
+  return Number(value || 0).toLocaleString("pt-BR");
+}
+
+function dateIsInRange(value, start, end) {
+  const date = localDateOnly(parseFlexibleDate(value) || value);
+  if (!date) return false;
+  if (start && date < start) return false;
+  if (end && date > end) return false;
+  return true;
+}
+
+function monthRange(monthValue) {
+  const [yearText, monthText] = String(monthValue || currentMonthBounds().month).split("-");
+  const year = Number(yearText);
+  const month = Number(monthText) - 1;
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return currentMonthBounds();
+  return {
+    start: localDateOnly(new Date(year, month, 1)),
+    end: localDateOnly(new Date(year, month + 1, 0)),
+    month: `${year}-${String(month + 1).padStart(2, "0")}`
+  };
+}
+
+function saleSignedAt(sale) {
+  return sale?.signedAt || sale?.signatureDate || sale?.contractSignedAt || sale?.payload?.signedAt || "";
+}
+
+function saleContractValue(sale) {
+  return Number(sale?.contractValue || sale?.value || sale?.valorContrato || 0);
+}
+
+function saleProjectName(sale) {
+  const direct = sale?.project || sale?.desiredProject || "";
+  if (direct) return direct;
+  const unit = String(sale?.unit || "");
+  const match = (state.projectDefinitions || []).find((project) => (project.unitPrefixes || []).some((prefix) => unit.toUpperCase().startsWith(String(prefix || "").toUpperCase())));
+  return match?.name || "Sem empreendimento";
+}
+
+function allCommercialSales() {
+  const byUnit = new Map();
+  const add = (sale) => {
+    if (!sale) return;
+    const unit = String(sale.unit || sale.id || "").trim();
+    if (!unit) return;
+    const current = byUnit.get(unit) || {};
+    const merged = { ...current };
+    for (const [key, value] of Object.entries(sale)) {
+      if (value !== "" && value !== null && value !== undefined) merged[key] = value;
+    }
+    byUnit.set(unit, merged);
+  };
+  (state.levFinance?.sales || []).forEach(add);
+  (state.levFinance?.settlements || []).forEach(add);
+  return [...byUnit.values()].filter((sale) => saleSignedAt(sale));
+}
+
+function salesInRange(start, end, project = "TODOS") {
+  return allCommercialSales().filter((sale) => {
+    if (!dateIsInRange(saleSignedAt(sale), start, end)) return false;
+    if (project !== "TODOS" && saleProjectName(sale) !== project) return false;
+    return true;
+  });
+}
+
+function leadForSale(sale) {
+  const unit = String(sale?.unit || "").toUpperCase();
+  return state.leads.find((lead) => sale.leadId && lead.id === sale.leadId)
+    || state.leads.find((lead) => unit && [lead.unit, lead.desiredUnit].some((value) => String(value || "").toUpperCase() === unit))
+    || null;
+}
+
+function weekdayLabel(value) {
+  const date = parseFlexibleDate(value);
+  if (!date) return "Sem data";
+  return ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"][date.getDay()];
 }
 
 function leadMatchesDateFilter(lead) {
@@ -562,6 +695,7 @@ function setButtonBusy(button, busy, label = "Aguarde...") {
 }
 
 function renderLogin(error = "", message = "") {
+  const loginMessage = message || state.loginMessage || "";
   if (window.location.pathname !== "/login") history.replaceState({}, "", loginPathWithReturnTo());
   app.innerHTML = `
     <section class="login-page">
@@ -586,7 +720,7 @@ function renderLogin(error = "", message = "") {
               <label for="password">Senha</label>
               <input id="password" name="password" type="password" autocomplete="current-password" required>
             </div>
-            ${message ? `<div class="success">${escapeHtml(message)}</div>` : ""}
+            ${loginMessage ? `<div class="success">${escapeHtml(loginMessage)}</div>` : ""}
             ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
             <div class="field">
               <button class="primary login-submit" type="submit">Entrar</button>
@@ -608,6 +742,7 @@ function renderLogin(error = "", message = "") {
         })
       });
       state.user = result.user;
+      state.loginMessage = "";
       state.leads = [];
       state.leadsLoaded = false;
       state.leadsLoadError = "";
@@ -741,11 +876,11 @@ async function loadState() {
 }
 
 function viewNeedsLeads(view = state.view) {
-  return ["kanban", "sheet", "odysseia", "dashboard"].includes(view);
+  return ["kanban", "sheet", "odysseia", "dashboard", "salesReport"].includes(view);
 }
 
 function leadScopeForView(view = state.view) {
-  if (["kanban", "sheet", "dashboard"].includes(view)) return "pipeline";
+  if (["kanban", "sheet", "dashboard", "salesReport"].includes(view)) return "pipeline";
   if (view === "odysseia") return "bases";
   return "";
 }
@@ -847,6 +982,7 @@ function renderShell(content) {
           ${navButton("sheet", "▤", "Planilha")}
           ${navButton("odysseia", "◎", "Bases")}
           ${navButton("dashboard", "◫", "Dashboard")}
+          ${navButton("salesReport", "▥", "Relatório Comercial")}
           ${navButton("finance", "▣", "Financeiro Lev")}
           ${navButton("settings", "⚙", "Configurações")}
           ${navButton("knowledge", "?", "Ajuda")}
@@ -2203,9 +2339,11 @@ function renderLeadDetail() {
 }
 
 function renderDashboard() {
-  const leads = pipelineLeads();
+  ensureReportDefaults();
+  const leads = pipelineLeads().filter((lead) => dateIsInRange(lead.createdAt || lead.meta?.createdTime || lead.rescuedAt || lead.updatedAt, state.dashboardStart, state.dashboardEnd));
   const data = metrics(leads);
   const max = Math.max(...state.statuses.map((status) => leads.filter((lead) => lead.status === status).length), 1);
+  const dashboardSales = salesInRange(`${new Date().getFullYear()}-01-01`, `${new Date().getFullYear()}-12-31`, state.dashboardProject);
   const brokerCounts = state.users
     .filter((user) => user.role === "Corretor")
     .map((user) => ({ name: user.name, count: leads.filter((lead) => lead.assignedTo === user.id).length, active: user.active }))
@@ -2228,13 +2366,14 @@ function renderDashboard() {
     </tr>
   `).join("");
   renderShell(`
-    ${renderViewHead("Dashboard", "Indicadores de volume de lead e funil", { filters: true })}
+    ${renderViewHead("Dashboard", "Indicadores de volume de lead, vendas e funil", { actions: renderDashboardControls() })}
     <section class="metrics">
       <div class="metric"><span>Volume total</span><strong>${data.total}</strong></div>
       <div class="metric"><span>Ativos</span><strong>${data.active}</strong></div>
       <div class="metric"><span>Favoritos</span><strong>${data.favorites}</strong></div>
       <div class="metric"><span>Em bases</span><strong>${baseLeadCount()}</strong></div>
     </section>
+    ${renderMonthlySalesChart(dashboardSales)}
     ${renderFunnelInfographic(leads)}
     <section class="dashboard-grid">
       <div class="panel"><h2>Funil</h2>${funnel}</div>
@@ -2243,7 +2382,9 @@ function renderDashboard() {
         <div class="table-wrap"><table><thead><tr><th>Nome</th><th>Leads</th><th>Status</th></tr></thead><tbody>${brokers}</tbody></table></div>
       </div>
     </section>
+    ${state.dashboardFunnelStatus ? renderDashboardFunnelModal(leads) : ""}
   `);
+  bindDashboardControls(leads);
 }
 
 function renderFunnelInfographic(leads) {
@@ -2263,15 +2404,284 @@ function renderFunnelInfographic(leads) {
     const color = palette[Math.min(index, palette.length - 1)];
     return `
       <div class="funnel-stage">
-        <div class="funnel-bar" style="--funnel-width:${width}%; --funnel-color:${color}">
+        <button class="funnel-bar" type="button" data-dashboard-funnel="${escapeHtml(item.status)}" style="--funnel-width:${width}%; --funnel-color:${color}">
           <span>${escapeHtml(item.status)}</span>
           <strong>${item.count}</strong>
-        </div>
+        </button>
         ${next ? `<div class="funnel-conversion">${conversion == null ? "0%" : `${conversion}%`} para ${escapeHtml(next.status)}</div>` : ""}
       </div>
     `;
   }).join("");
   return `<section class="panel funnel-panel"><h2>Conversão do funil</h2><div class="funnel-visual">${stages}</div></section>`;
+}
+
+function renderDashboardControls() {
+  ensureReportDefaults();
+  return `
+    <div class="dashboard-controls">
+      <details class="date-filter">
+        <summary><span>Período</span><strong>${escapeHtml(state.dashboardStart)} a ${escapeHtml(state.dashboardEnd)}</strong></summary>
+        <div class="date-filter-menu">
+          <label><span>Início</span><input id="dashboardStart" type="date" value="${escapeHtml(state.dashboardStart)}"></label>
+          <label><span>Fim</span><input id="dashboardEnd" type="date" value="${escapeHtml(state.dashboardEnd)}"></label>
+          <div class="date-filter-actions">
+            <button type="button" class="tiny primary" data-dashboard-period-apply>Aplicar</button>
+            <button type="button" class="tiny" data-dashboard-period-clear>Mês atual</button>
+          </div>
+        </div>
+      </details>
+      <label class="compact-select">
+        <span>Vendas</span>
+        <select id="dashboardProject">
+          <option value="TODOS" ${state.dashboardProject === "TODOS" ? "selected" : ""}>Todos</option>
+          ${(state.projects || []).map((project) => `<option value="${escapeHtml(project)}" ${state.dashboardProject === project ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}
+        </select>
+      </label>
+    </div>
+  `;
+}
+
+function renderMonthlySalesChart(sales) {
+  const year = new Date().getFullYear();
+  const projects = (state.dashboardProject === "TODOS" ? state.projects : [state.dashboardProject]).filter(Boolean);
+  const months = Array.from({ length: 12 }, (_, index) => ({ index, label: new Date(year, index, 1).toLocaleDateString("pt-BR", { month: "short" }).replace(".", "") }));
+  const totals = months.map(({ index }) => sales.filter((sale) => parseFlexibleDate(saleSignedAt(sale))?.getFullYear() === year && parseFlexibleDate(saleSignedAt(sale))?.getMonth() === index));
+  const maxValue = Math.max(...totals.map((items) => items.reduce((sum, sale) => sum + saleContractValue(sale), 0)), 1);
+  return `
+    <section class="panel sales-chart-panel">
+      <div class="panel-title-row">
+        <h2>Vendas mês a mês</h2>
+        <span>${escapeHtml(String(year))}</span>
+      </div>
+      <div class="sales-chart">
+        ${months.map((month, monthIndex) => {
+          const monthSales = totals[monthIndex];
+          const totalValue = monthSales.reduce((sum, sale) => sum + saleContractValue(sale), 0);
+          return `
+            <div class="sales-month">
+              <div class="sales-bars">
+                ${projects.map((project, projectIndex) => {
+                  const value = monthSales.filter((sale) => saleProjectName(sale) === project).reduce((sum, sale) => sum + saleContractValue(sale), 0);
+                  const height = Math.max(4, (value / maxValue) * 100);
+                  return `<span title="${escapeHtml(project)}: ${escapeHtml(brl(value))}" style="--bar-height:${height}%; --bar-color:${["#0f766e", "#2563eb", "#c2410c", "#7c3aed"][projectIndex % 4]}"></span>`;
+                }).join("")}
+                <i class="sales-line-dot" style="bottom:${Math.max(6, (totalValue / maxValue) * 100)}%"></i>
+              </div>
+              <strong>${escapeHtml(month.label)}</strong>
+              <em>${escapeHtml(brl(totalValue))}</em>
+            </div>
+          `;
+        }).join("")}
+      </div>
+      <div class="chart-legend">${projects.map((project, index) => `<span><i style="background:${["#0f766e", "#2563eb", "#c2410c", "#7c3aed"][index % 4]}"></i>${escapeHtml(project)}</span>`).join("")}</div>
+    </section>
+  `;
+}
+
+function renderDashboardFunnelModal(leads) {
+  const status = state.dashboardFunnelStatus;
+  const rows = leads.filter((lead) => lead.status === status).map((lead) => `
+    <tr data-open-lead="${escapeHtml(lead.id)}">
+      <td>${escapeHtml(lead.name)}</td>
+      <td>${escapeHtml(lead.phone || "")}</td>
+      <td>${escapeHtml(leadProjectValue(lead) || "")}</td>
+      <td>${escapeHtml(userName(lead.assignedTo) || "Sem corretor")}</td>
+    </tr>
+  `).join("");
+  return `
+    <div class="modal-backdrop">
+      <div class="modal wide-modal">
+        <button class="modal-close" data-close-dashboard-funnel>×</button>
+        <h2>${escapeHtml(status)}</h2>
+        <div class="table-wrap"><table><thead><tr><th>Lead</th><th>Telefone</th><th>Empreendimento</th><th>Corretor</th></tr></thead><tbody>${rows || '<tr><td colspan="4">Nenhum lead nesta etapa.</td></tr>'}</tbody></table></div>
+      </div>
+    </div>
+  `;
+}
+
+function bindDashboardControls(leads) {
+  document.querySelector("[data-dashboard-period-apply]")?.addEventListener("click", () => {
+    state.dashboardStart = document.querySelector("#dashboardStart")?.value || "";
+    state.dashboardEnd = document.querySelector("#dashboardEnd")?.value || "";
+    renderDashboard();
+  });
+  document.querySelector("[data-dashboard-period-clear]")?.addEventListener("click", () => {
+    const bounds = currentMonthBounds();
+    state.dashboardStart = bounds.start;
+    state.dashboardEnd = bounds.end;
+    renderDashboard();
+  });
+  document.querySelector("#dashboardProject")?.addEventListener("change", (event) => {
+    state.dashboardProject = event.currentTarget.value;
+    renderDashboard();
+  });
+  document.querySelectorAll("[data-dashboard-funnel]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.dashboardFunnelStatus = button.dataset.dashboardFunnel;
+      renderDashboard();
+    });
+  });
+  document.querySelector("[data-close-dashboard-funnel]")?.addEventListener("click", () => {
+    state.dashboardFunnelStatus = "";
+    renderDashboard();
+  });
+  document.querySelectorAll("[data-open-lead]").forEach((row) => {
+    row.addEventListener("click", () => openLead(row.dataset.openLead));
+  });
+}
+
+function reportPeriod() {
+  ensureReportDefaults();
+  return monthRange(state.salesReportMonth);
+}
+
+function reportLeads(period) {
+  return pipelineLeads().filter((lead) => dateIsInRange(lead.createdAt || lead.meta?.createdTime || lead.rescuedAt || lead.updatedAt, period.start, period.end));
+}
+
+function reportSales(period) {
+  return salesInRange(period.start, period.end, state.salesReportProject);
+}
+
+function groupRows(items, getLabel, getValue = () => 1) {
+  const grouped = new Map();
+  for (const item of items) {
+    const label = getLabel(item) || "Não informado";
+    grouped.set(label, (grouped.get(label) || 0) + Number(getValue(item) || 0));
+  }
+  return [...grouped.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+function renderSmallRanking(rows, options = {}) {
+  const money = Boolean(options.money);
+  return `
+    <div class="table-wrap compact-table"><table>
+      <thead><tr><th>${escapeHtml(options.label || "Item")}</th><th>${escapeHtml(options.valueLabel || "Total")}</th></tr></thead>
+      <tbody>${rows.map(([label, value]) => `<tr><td>${escapeHtml(label)}</td><td>${money ? escapeHtml(brl(value)) : numberPt(value)}</td></tr>`).join("") || '<tr><td colspan="2">Sem dados no período.</td></tr>'}</tbody>
+    </table></div>
+  `;
+}
+
+function brokerForLead(lead) {
+  return state.users.find((user) => user.id === lead.assignedTo) || null;
+}
+
+function brokerForSale(sale) {
+  const lead = leadForSale(sale);
+  return lead ? brokerForLead(lead) : null;
+}
+
+function firstInteractionDelayHours(lead, period) {
+  const createdAt = parseFlexibleDate(lead.createdAt || lead.meta?.createdTime || lead.rescuedAt);
+  if (!createdAt) return null;
+  const first = (state.fupLeadLog || [])
+    .filter((log) => String(log.leadId || "") === String(lead.id || "") && dateIsInRange(log.at, period.start, period.end))
+    .map((log) => parseFlexibleDate(log.at))
+    .filter(Boolean)
+    .sort((a, b) => a - b)[0];
+  if (!first || first < createdAt) return null;
+  return (first.getTime() - createdAt.getTime()) / (1000 * 60 * 60);
+}
+
+function avgAttendanceText(leads, period) {
+  const hours = leads.map((lead) => firstInteractionDelayHours(lead, period)).filter((value) => Number.isFinite(value));
+  if (!hours.length) return "Sem dados";
+  const avg = hours.reduce((sum, value) => sum + value, 0) / hours.length;
+  if (avg < 24) return `${avg.toFixed(1).replace(".", ",")} h`;
+  return `${(avg / 24).toFixed(1).replace(".", ",")} dias`;
+}
+
+function renderSalesReportView() {
+  ensureReportDefaults();
+  const period = reportPeriod();
+  const leads = reportLeads(period);
+  const sales = reportSales(period);
+  const totalSalesValue = sales.reduce((sum, sale) => sum + saleContractValue(sale), 0);
+  const interactions = (state.fupLeadLog || []).filter((log) => dateIsInRange(log.at, period.start, period.end));
+  const brokerLeadRows = groupRows(leads, (lead) => userName(lead.assignedTo) || "Sem corretor");
+  const brokerInteractionRows = groupRows(interactions, (log) => log.userName || userName(log.userId) || log.username || "Não informado");
+  const salesByBroker = groupRows(sales, (sale) => brokerForSale(sale)?.name || "Sem corretor");
+  const salesByProjectCount = groupRows(sales, (sale) => saleProjectName(sale));
+  const salesByProjectValue = groupRows(sales, (sale) => saleProjectName(sale), (sale) => saleContractValue(sale));
+  const monthLabel = parseFlexibleDate(`${period.month}-01`)?.toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) || period.month;
+  renderShell(`
+    ${renderViewHead("Relatório Comercial de Vendas", "Estatísticas comerciais do mês selecionado", {
+      actions: `
+        <div class="report-actions">
+          <label class="compact-select"><span>Mês</span><input id="salesReportMonth" type="month" value="${escapeHtml(period.month)}"></label>
+          <label class="compact-select"><span>Empreendimento</span><select id="salesReportProject"><option value="TODOS" ${state.salesReportProject === "TODOS" ? "selected" : ""}>Todos</option>${(state.projects || []).map((project) => `<option value="${escapeHtml(project)}" ${state.salesReportProject === project ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}</select></label>
+          <button class="primary" data-print-report>Gerar PDF</button>
+        </div>
+      `
+    })}
+    <section class="panel commercial-report" id="commercialReportPrintable">
+      <div class="panel-title-row">
+        <div>
+          <h2>${escapeHtml(monthLabel)}</h2>
+          <p class="muted-copy">Período de ${escapeHtml(period.start)} a ${escapeHtml(period.end)}</p>
+        </div>
+      </div>
+      <section class="metrics">
+        <div class="metric"><span>Leads</span><strong>${numberPt(leads.length)}</strong></div>
+        <div class="metric"><span>Tempo médio atendimento</span><strong>${escapeHtml(avgAttendanceText(leads, period))}</strong></div>
+        <div class="metric"><span>Vendas</span><strong>${numberPt(sales.length)}</strong></div>
+        <div class="metric"><span>Valor vendido</span><strong>${escapeHtml(brl(totalSalesValue))}</strong></div>
+      </section>
+      <section class="report-grid">
+        <div class="panel nested-panel"><h3>Leads por origem</h3>${renderSmallRanking(groupRows(leads, (lead) => lead.source || "Não informado"))}</div>
+        <div class="panel nested-panel"><h3>Leads por status</h3>${renderSmallRanking(groupRows(leads, (lead) => lead.status || "Não informado"))}</div>
+        <div class="panel nested-panel"><h3>Cadastros por dia da semana</h3>${renderSmallRanking(groupRows(leads, (lead) => weekdayLabel(lead.createdAt || lead.meta?.createdTime)))}</div>
+        <div class="panel nested-panel"><h3>Cadastros por corretor</h3>${renderSmallRanking(brokerLeadRows)}</div>
+        <div class="panel nested-panel"><h3>Interações por dia da semana</h3>${renderSmallRanking(groupRows(interactions, (log) => weekdayLabel(log.at)))}</div>
+        <div class="panel nested-panel"><h3>Interações por corretor</h3>${renderSmallRanking(brokerInteractionRows)}</div>
+        <div class="panel nested-panel"><h3>Ranking de vendas por corretor</h3>${renderBrokerSalesRanking(salesByBroker)}</div>
+        <div class="panel nested-panel"><h3>Ranking de vendas por empreendimento</h3>${renderSmallRanking(salesByProjectCount)}</div>
+        <div class="panel nested-panel wide"><h3>Total de vendas por empreendimento</h3>${renderProjectSalesTotals(salesByProjectCount, salesByProjectValue)}</div>
+      </section>
+    </section>
+  `);
+  bindSalesReportControls();
+}
+
+function renderBrokerSalesRanking(rows) {
+  return `
+    <div class="broker-ranking">
+      ${rows.map(([name, count], index) => {
+        const user = state.users.find((item) => item.name === name);
+        const initials = String(name || "?").split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+        return `
+          <div class="broker-rank-row">
+            <span>${index + 1}</span>
+            ${user?.photoUrl ? `<img src="${escapeHtml(user.photoUrl)}" alt="${escapeHtml(name)}">` : `<i>${escapeHtml(initials)}</i>`}
+            <strong>${escapeHtml(name)}</strong>
+            <em>${numberPt(count)} venda(s)</em>
+          </div>
+        `;
+      }).join("") || '<div class="empty">Sem vendas no período.</div>'}
+    </div>
+  `;
+}
+
+function renderProjectSalesTotals(countRows, valueRows) {
+  const values = Object.fromEntries(valueRows);
+  return `
+    <div class="table-wrap compact-table"><table>
+      <thead><tr><th>Empreendimento</th><th>Qtde</th><th>Valor</th></tr></thead>
+      <tbody>${countRows.map(([project, count]) => `<tr><td>${escapeHtml(project)}</td><td>${numberPt(count)}</td><td>${escapeHtml(brl(values[project] || 0))}</td></tr>`).join("") || '<tr><td colspan="3">Sem vendas no período.</td></tr>'}</tbody>
+    </table></div>
+  `;
+}
+
+function bindSalesReportControls() {
+  document.querySelector("#salesReportMonth")?.addEventListener("change", (event) => {
+    state.salesReportMonth = event.currentTarget.value || currentMonthBounds().month;
+    renderSalesReportView();
+  });
+  document.querySelector("#salesReportProject")?.addEventListener("change", (event) => {
+    state.salesReportProject = event.currentTarget.value || "TODOS";
+    renderSalesReportView();
+  });
+  document.querySelector("[data-print-report]")?.addEventListener("click", () => window.print());
 }
 
 function settingsTabButton(tab, label) {
@@ -3484,6 +3894,7 @@ function renderLogSettings() {
       if (!confirm("Vincular este evento ao lead encontrado e aplicar a atualização de status?")) return;
       try {
         await api(`/api/sam-events/${encodeURIComponent(button.dataset.samLink)}/link`, { method: "POST", body: JSON.stringify({}) });
+        invalidateLeads();
         await loadState();
         renderLogSettings();
       } catch (error) {
@@ -3497,6 +3908,7 @@ function renderLogSettings() {
       if (!search) return;
       try {
         await api(`/api/sam-events/${encodeURIComponent(button.dataset.samFind)}/link`, { method: "POST", body: JSON.stringify({ search }) });
+        invalidateLeads();
         await loadState();
         renderLogSettings();
       } catch (error) {
@@ -4947,6 +5359,7 @@ function renderApp() {
   if (state.view === "sheet") return renderSheet();
   if (state.view === "odysseia") return renderLeadBases();
   if (state.view === "dashboard") return renderDashboard();
+  if (state.view === "salesReport") return renderSalesReportView();
   if (state.view === "finance") return renderLevFinanceView();
   if (state.view === "settings") return renderSettings();
   if (state.view === "knowledge") return renderKnowledgeView();

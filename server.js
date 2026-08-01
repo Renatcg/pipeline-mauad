@@ -18,6 +18,7 @@ const PERMISSION_SCREENS = [
   { id: "screen:sheet", label: "Planilha", view: "sheet" },
   { id: "screen:bases", label: "Bases", view: "odysseia" },
   { id: "screen:dashboard", label: "Dashboard", view: "dashboard" },
+  { id: "screen:salesReport", label: "Relatório Comercial", view: "salesReport" },
   { id: "screen:finance", label: "Financeiro Lev", view: "finance" },
   { id: "screen:settings", label: "Configurações", view: "settings" },
   { id: "screen:knowledge", label: "Ajuda", view: "knowledge" }
@@ -49,18 +50,18 @@ function basePermissionId(source) {
 
 function defaultScreenPermission(role, screen) {
   const viewAccess = {
-    "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "finance", "settings", "knowledge"],
-    "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "settings", "knowledge"],
-    "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"],
-    Diretoria: ["dashboard", "sheet", "odysseia", "kanban", "knowledge"],
+    "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
+    "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
+    "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
+    Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "kanban", "knowledge"],
     Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
     "Gerente Financeiro": ["finance", "settings", "knowledge"],
     "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
-    "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"],
-    "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "knowledge"]
+    "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
+    "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"]
   };
   const actionAccess = {
-    "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "finance", "settings", "knowledge"],
+    "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
     "Head Comercial": ["kanban", "sheet", "odysseia", "settings", "knowledge"],
     "Supervisor Comercial": ["kanban", "sheet", "odysseia", "knowledge"],
     Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
@@ -2643,6 +2644,11 @@ function canAccessLevFinance(user) {
     || ["Gerente Financeiro", "Auxiliar Financeiro"].includes(user.role);
 }
 
+function canAccessCommercialSalesReport(user) {
+  return canAccessLevFinance(user)
+    || ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Gestor de Tráfego", "Coordenador de Marketing"].includes(user.role);
+}
+
 function canResetLevFinance(user) {
   return user.role === "Admin TI" && String(user.username || "").toLowerCase() === "admin";
 }
@@ -2938,7 +2944,7 @@ function samStatusToPipelineStatusFromList(pipelineStatuses, status) {
   };
   const desired = aliases[normalized] || raw;
   const desiredComparable = normalizeComparableText(desired);
-  return definitions.find((item) => normalizeComparableText(item.status || item.name) === desiredComparable)?.status || desired;
+  return definitions.find((item) => normalizeComparableText(item.status || item.name) === desiredComparable)?.status || "";
 }
 
 function isDuplicateSamEvent(db, eventId) {
@@ -2985,7 +2991,11 @@ function findLeadForSamManualLink(db, search) {
 
 async function applySamEventToLead(db, user, event, lead) {
   const previousStatus = lead.status || "";
-  lead.status = event.nextStatus || samStatusToPipelineStatus(db, event.eventType);
+  const nextStatus = event.nextStatus || samStatusToPipelineStatus(db, event.eventType);
+  if (!nextStatus) {
+    throw new Error("Código SAM sem status de pipeline vinculado.");
+  }
+  lead.status = nextStatus;
   lead.inPipeline = true;
   lead.samLastEvent = {
     eventId: event.eventId,
@@ -3036,6 +3046,8 @@ async function processSamWebhook(db, payload) {
   const email = String(payload.email || "").trim();
   const phone = String(payload.phone || payload.telefone || "").trim();
   const unit = normalizeUnitForMatch(payload.unit_code || payload.unitCode || payload.unit || payload.unidade);
+  const contractValue = parseMoney(payload.contract_value || payload.contractValue || payload.valor_contrato || payload.valorContrato || payload.value || payload.valor);
+  const rawContractValue = filledSamValue(payload.contract_value, payload.contractValue, payload.valor_contrato, payload.valorContrato, payload.value, payload.valor);
   if (!eventId) return { ok: false, httpStatus: 400, error: "event_id obrigatório" };
   if (isDuplicateSamEvent(db, eventId)) return { ok: true, status: "duplicate" };
   if (!eventType) return { ok: false, httpStatus: 400, error: "event_type obrigatório" };
@@ -4051,6 +4063,116 @@ function samEventFromRow(row) {
   };
 }
 
+function isContractSignedPipelineStatus(status) {
+  const normalized = normalizeComparableText(status).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return ["contrato_assinado", "contrato_100_assinado", "venda_finalizada", "contract_signed", "sale_completed"].includes(normalized);
+}
+
+function filledSamValue(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function applySamDataToLead(lead, event, fields = {}, projectDefinitions = []) {
+  const unit = normalizeUnitForMatch(filledSamValue(fields.unit, fields.desiredUnit, event.unit));
+  const project = filledSamValue(fields.project, fields.desiredProject, event.project, projectNameForUnit(unit, projectDefinitions));
+  const email = filledSamValue(fields.email, event.email);
+  const phone = filledSamValue(fields.phone, event.phone);
+  const unitValue = filledSamValue(fields.unitValue, fields.contractValue, event.contractValue, event.valorContrato);
+  if (email) lead.email = email;
+  if (phone) lead.phone = phone;
+  if (unit) {
+    lead.unit = unit;
+    lead.desiredUnit = unit;
+  }
+  if (project) {
+    lead.project = project;
+    lead.desiredProject = project;
+  }
+  if (unitValue) lead.unitValue = unitValue;
+  return { unit, project, email, phone, unitValue };
+}
+
+function levSaleFromSamLead(lead, event, fields = {}, settings = {}) {
+  const unit = normalizeLevUnit(filledSamValue(fields.unit, fields.desiredUnit, lead.unit, lead.desiredUnit, event.unit));
+  if (!unit || !isLikelyLevUnit(unit)) return null;
+  const contractValue = parseMoney(filledSamValue(fields.contractValue, fields.unitValue, lead.unitValue, event.contractValue, event.valorContrato));
+  const commissionPercent = Number(settings.commissionPercent || 0);
+  return {
+    id: `lev-sale-sam-${unit}`,
+    sourceId: event.eventId || "",
+    unit,
+    client: String(lead.name || "").trim(),
+    contractValue,
+    signedAt: filledSamValue(fields.signedAt, event.eventDatetime, lead.samLastEvent?.eventDatetime, new Date().toISOString()),
+    status: "Assinado",
+    table: "",
+    realEstate: filledSamValue(fields.realEstate, fields.realtorCompany),
+    eligible: false,
+    confirmedAt: "",
+    confirmedBy: "",
+    provisionDate: "",
+    provisionEmailSentAt: "",
+    invoiceNumber: "",
+    invoiceIssuedAt: "",
+    paidAt: "",
+    commissionPercent,
+    commissionValue: contractValue * (commissionPercent / 100),
+    leadId: lead.id,
+    leadName: lead.name || "",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+async function upsertStructuredLevSaleFromSam(sql, lead, event, fields = {}) {
+  if (!isContractSignedPipelineStatus(lead.status)) return null;
+  const stateDb = await structuredLevFinanceDb(sql);
+  const sale = levSaleFromSamLead(lead, event, fields, stateDb.levFinance.settings || {});
+  if (!sale) return null;
+  const unit = normalizeLevUnit(sale.unit);
+  const existing = stateDb.levFinance.sales.find((item) => normalizeLevUnit(item.unit) === unit);
+  if (existing) {
+    for (const [key, value] of Object.entries(sale)) {
+      if (value !== "" && value !== 0 && value !== null && value !== undefined) existing[key] = value;
+    }
+    existing.updatedAt = new Date().toISOString();
+    upsertLevSettlement(stateDb, existing, existing.status || "Assinado", "Contrato assinado via SAM");
+  } else {
+    stateDb.levFinance.sales.unshift(sale);
+    upsertLevSettlement(stateDb, sale, "Assinado", "Contrato assinado via SAM");
+  }
+  await persistStructuredLevFinance(sql, stateDb.levFinance);
+  return existing || sale;
+}
+
+async function mirrorLevSaleToStructuredLead(sql, sale) {
+  const unit = normalizeLevUnit(sale?.unit || "");
+  if (!unit) return;
+  const rows = await sql`SELECT l.*, false AS favorite, '{}'::text[] AS tags
+    FROM crm_leads l
+    WHERE l.unit = ${unit} OR l.payload->>'desiredUnit' = ${unit} OR l.payload->>'unit' = ${unit}
+    LIMIT 5`;
+  const projects = await structuredProjectDefinitions(sql);
+  const project = projectNameForUnit(unit, projects);
+  for (const row of rows) {
+    const lead = structuredLeadFromRow(row, false, []);
+    lead.unit = unit;
+    lead.desiredUnit = unit;
+    if (project) {
+      lead.project = project;
+      lead.desiredProject = project;
+    }
+    if (Number(sale.contractValue || 0) > 0) lead.unitValue = String(sale.contractValue);
+    lead.updatedAt = new Date().toISOString();
+    await saveStructuredLead(sql, lead);
+  }
+}
+
 async function saveStructuredSamEvent(sql, event) {
   if (!event?.id) return;
   if (event.eventId) {
@@ -4171,6 +4293,8 @@ async function processSamWebhookStructured(payload) {
     phone,
     unit,
     project,
+    contractValue,
+    rawContractValue,
     nextStatus,
     status: unitMatches ? "matched" : lead ? "unit_mismatch" : "not_found",
     leadId: lead?.id || "",
@@ -4189,6 +4313,7 @@ async function processSamWebhookStructured(payload) {
     leadId: event.leadId,
     unit,
     project,
+    contractValue,
     nextStatus
   });
   return {
@@ -4200,11 +4325,17 @@ async function processSamWebhookStructured(payload) {
   };
 }
 
-async function applyStructuredSamEventToLead(sql, user, event, lead) {
+async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}) {
   const previousStatus = lead.status || "";
   const statuses = await structuredStatusDefinitions(sql);
-  lead.status = event.nextStatus || samStatusToPipelineStatusFromList(statuses, event.eventType);
+  const projectDefinitions = await structuredProjectDefinitions(sql);
+  const nextStatus = event.nextStatus || samStatusToPipelineStatusFromList(statuses, event.eventType);
+  if (!nextStatus) {
+    throw new Error("Código SAM sem status de pipeline vinculado.");
+  }
+  lead.status = nextStatus;
   lead.inPipeline = true;
+  const appliedFields = applySamDataToLead(lead, event, fields, projectDefinitions);
   lead.samLastEvent = {
     eventId: event.eventId,
     eventType: event.eventType,
@@ -4220,10 +4351,11 @@ async function applyStructuredSamEventToLead(sql, user, event, lead) {
   event.resolvedAt = lead.updatedAt;
   event.resolvedBy = user.username;
   await saveStructuredLead(sql, lead);
+  const levSale = await upsertStructuredLevSaleFromSam(sql, lead, event, fields);
   await saveStructuredSamEvent(sql, event);
-  await structuredIntegration("SAM", "LINKED_TO_LEAD", { eventId: event.eventId, samEventId: event.id, leadId: lead.id, from: previousStatus, to: lead.status });
-  await structuredFup(user, lead, "SAM_STATUS_LINKED", { eventId: event.eventId, from: previousStatus, to: lead.status });
-  return { previousStatus, nextStatus: lead.status };
+  await structuredIntegration("SAM", "LINKED_TO_LEAD", { eventId: event.eventId, samEventId: event.id, leadId: lead.id, from: previousStatus, to: lead.status, levSaleId: levSale?.id || "" });
+  await structuredFup(user, lead, "SAM_STATUS_LINKED", { eventId: event.eventId, from: previousStatus, to: lead.status, appliedFields, levSaleId: levSale?.id || "" });
+  return { previousStatus, nextStatus: lead.status, appliedFields, levSale };
 }
 
 async function structuredLogsForState(db) {
@@ -5316,6 +5448,7 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
           continue;
         }
         stateDb.levFinance.sales.push(sale);
+        await mirrorLevSaleToStructuredLead(sql, sale);
         upsertLevSettlement(stateDb, sale, "Extraída, aguardando confirmação", "Imagem submetida no Financeiro Lev");
         created += 1;
       }
@@ -5377,6 +5510,7 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
         if (email.sent) targetSale.provisionEmailSentAt = new Date().toISOString();
         else await structuredIntegration("LEV_FINANCE", "PROVISION_EMAIL_FAILED", { saleId: targetSale.id, unit: targetSale.unit, reason: email.reason });
         targetSale.updatedAt = new Date().toISOString();
+        await mirrorLevSaleToStructuredLead(sql, targetSale);
         await persistStructuredLevFinance(sql, stateDb.levFinance);
         await structuredAudit(user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: targetSale.id, unit: targetSale.unit, provisionDate: targetSale.provisionDate, emailSent: email.sent });
         return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), email, dataSources: { action: "structured" } });
@@ -5410,6 +5544,7 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
         return sendJson(res, 400, { error: "Ação inválida" });
       }
 
+      await mirrorLevSaleToStructuredLead(sql, targetSale || sale || settlement);
       await persistStructuredLevFinance(sql, stateDb.levFinance);
       await structuredAudit(user, "UPDATE_LEV_FINANCE_RECORD", { action, unit: normalizeLevUnit(unit || targetSale?.unit || settlement?.unit) });
       return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), dataSources: { action: "structured" } });
@@ -5439,6 +5574,7 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
       if (email.sent) sale.provisionEmailSentAt = new Date().toISOString();
       else await structuredIntegration("LEV_FINANCE", "PROVISION_EMAIL_FAILED", { saleId: sale.id, unit: sale.unit, reason: email.reason });
       sale.updatedAt = new Date().toISOString();
+      await mirrorLevSaleToStructuredLead(sql, sale);
       await persistStructuredLevFinance(sql, stateDb.levFinance);
       await structuredAudit(user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: sale.id, unit: sale.unit, provisionDate: sale.provisionDate, emailSent: email.sent });
       return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), email, dataSources: { action: "structured" } });
@@ -5666,11 +5802,11 @@ async function fastStructuredStateResponse(req, res, url) {
       canManageSettings(user) ? sql`SELECT payload FROM crm_integration_logs ORDER BY at DESC NULLS LAST LIMIT 50` : Promise.resolve([]),
       canManageSettings(user) ? sql`SELECT payload FROM crm_audit_logs ORDER BY at DESC NULLS LAST LIMIT 25` : Promise.resolve([]),
       canManageSettings(user) ? sql`SELECT payload FROM crm_access_logs ORDER BY at DESC NULLS LAST LIMIT 1000` : Promise.resolve([]),
-      canManageSettings(user) ? sql`SELECT payload FROM crm_fup_lead_logs ORDER BY at DESC NULLS LAST LIMIT 250` : Promise.resolve([]),
+      (canManageSettings(user) || canAccessCommercialSalesReport(user)) ? sql`SELECT payload FROM crm_fup_lead_logs ORDER BY at DESC NULLS LAST LIMIT 1000` : Promise.resolve([]),
       canManageSettings(user) ? sql`SELECT * FROM crm_sam_events ORDER BY created_at DESC NULLS LAST LIMIT 500` : Promise.resolve([]),
-      canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_sales ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
+      canAccessCommercialSalesReport(user) ? sql`SELECT payload FROM crm_lev_sales ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_receipts ORDER BY paid_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
-      canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
+      canAccessCommercialSalesReport(user) ? sql`SELECT payload FROM crm_lev_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
       sql`SELECT key, payload FROM crm_settings`
     ]);
@@ -5746,7 +5882,7 @@ async function fastStructuredStateResponse(req, res, url) {
         logs: "structured",
         config: "structured"
       },
-      levFinance: canAccessLevFinance(user) ? publicLevFinance(stateDb) : null
+      levFinance: canAccessCommercialSalesReport(user) ? publicLevFinance(stateDb) : null
     });
   } catch (error) {
     mirrorStructuredError("state", error);
@@ -6782,9 +6918,10 @@ async function fastStructuredSamEventAction(req, res, url) {
       ? await findStructuredLeadForSamManualLink(sql, body.search)
       : await structuredLeadById(sql, body.leadId || event.leadId, user);
     if (!lead) return sendJson(res, 404, { error: "Lead não encontrado" });
-    const result = await applyStructuredSamEventToLead(sql, user, event, lead);
-    await structuredAudit(user, "LINK_SAM_EVENT", { samEventId: event.id, eventId: event.eventId, leadId: lead.id, from: result.previousStatus, to: result.nextStatus });
-    return sendJson(res, 200, { samEvent: event, lead: publicLead(lead, user) });
+    const fields = body.fields && typeof body.fields === "object" ? body.fields : {};
+    const result = await applyStructuredSamEventToLead(sql, user, event, lead, fields);
+    await structuredAudit(user, "LINK_SAM_EVENT", { samEventId: event.id, eventId: event.eventId, leadId: lead.id, from: result.previousStatus, to: result.nextStatus, levSaleId: result.levSale?.id || "" });
+    return sendJson(res, 200, { samEvent: event, lead: publicLead(lead, user), levSale: result.levSale || null });
   } catch (error) {
     console.error("SAM_EVENT_STRUCTURED_ACTION_ERROR", error);
     return sendJson(res, 500, { error: "Erro ao tratar evento SAM", detail: error.message });
