@@ -369,7 +369,13 @@ function filteredLeads() {
 
 function localDateOnly(value) {
   if (!value) return "";
-  const date = new Date(value);
+  const raw = String(value);
+  const isoDateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const date = value instanceof Date
+    ? value
+    : isoDateOnly
+      ? new Date(Number(isoDateOnly[1]), Number(isoDateOnly[2]) - 1, Number(isoDateOnly[3]))
+      : new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -399,6 +405,11 @@ function parseFlexibleDate(value) {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
   const text = String(value).trim();
   if (!text) return null;
+  const isoDateOnly = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDateOnly) {
+    const date = new Date(Number(isoDateOnly[1]), Number(isoDateOnly[2]) - 1, Number(isoDateOnly[3]));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
   const direct = new Date(text);
   if (!Number.isNaN(direct.getTime())) return direct;
   const match = text.match(/^(\d{2})\/(\d{2})\/(\d{2,4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
@@ -437,11 +448,30 @@ function monthRange(monthValue) {
 }
 
 function saleSignedAt(sale) {
-  return sale?.signedAt || sale?.signatureDate || sale?.contractSignedAt || sale?.payload?.signedAt || "";
+  return sale?.signedAt
+    || sale?.signatureDate
+    || sale?.contractSignedAt
+    || sale?.samLastEvent?.eventDatetime
+    || sale?.payload?.signedAt
+    || sale?.updatedAt
+    || sale?.createdAt
+    || "";
+}
+
+function numericMoneyValue(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const text = String(value).replace(/[^\d,.-]/g, "").trim();
+  if (!text) return 0;
+  const normalized = text.includes(",")
+    ? text.replace(/\./g, "").replace(",", ".")
+    : text;
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : 0;
 }
 
 function saleContractValue(sale) {
-  return Number(sale?.contractValue || sale?.value || sale?.valorContrato || 0);
+  return numericMoneyValue(sale?.contractValue ?? sale?.unitValue ?? sale?.value ?? sale?.valorContrato ?? 0);
 }
 
 function saleProjectName(sale) {
@@ -466,17 +496,25 @@ function allCommercialSales() {
   const byUnit = new Map();
   const add = (sale) => {
     if (!sale) return;
-    const unit = String(sale.unit || sale.id || "").trim();
-    if (!unit) return;
-    const current = byUnit.get(unit) || {};
+    const unit = String(sale.unit || sale.desiredUnit || sale.id || "").trim();
+    const key = unit || sale.leadId || sale.id;
+    if (!key) return;
+    const current = byUnit.get(key) || {};
     const merged = { ...current };
     for (const [key, value] of Object.entries(sale)) {
       if (value !== "" && value !== null && value !== undefined) merged[key] = value;
     }
-    byUnit.set(unit, merged);
+    byUnit.set(key, merged);
   };
-  (state.levFinance?.sales || []).forEach(add);
-  (state.levFinance?.settlements || []).forEach(add);
+  (state.leads || [])
+    .filter((lead) => lead.inPipeline && isContractSignedStatus(lead.status))
+    .forEach((lead) => add({
+      ...lead,
+      leadId: lead.id,
+      unit: lead.unit || lead.desiredUnit || "",
+      contractValue: lead.contractValue || lead.unitValue || lead.value || "",
+      signedAt: lead.contractSignedAt || lead.samLastEvent?.eventDatetime || lead.updatedAt || lead.createdAt || ""
+    }));
   return [...byUnit.values()].filter((sale) => saleSignedAt(sale));
 }
 
