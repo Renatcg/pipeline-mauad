@@ -1574,6 +1574,7 @@ th {
 }
 
 .sales-chart {
+  position: relative;
   min-height: 260px;
   display: grid;
   grid-template-columns: repeat(12, minmax(64px, 1fr));
@@ -1584,10 +1585,32 @@ th {
 }
 
 .sales-month {
+  position: relative;
+  z-index: 2;
   display: grid;
   gap: 6px;
   min-width: 64px;
   text-align: center;
+}
+
+.sales-line-svg {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 8px;
+  width: calc(100% - 8px);
+  height: 170px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.sales-line-svg polyline {
+  fill: none;
+  stroke: #111827;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
 }
 
 .sales-bars {
@@ -1611,6 +1634,7 @@ th {
 .sales-line-dot {
   position: absolute;
   left: 50%;
+  z-index: 3;
   width: 8px;
   height: 8px;
   border: 2px solid #111827;

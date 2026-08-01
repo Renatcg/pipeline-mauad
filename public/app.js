@@ -1597,16 +1597,14 @@ function refreshFavoriteButtons(lead) {
 
 function brokerRedirectControl(lead) {
   const canAssign = canManageLeads();
-  const canSendToFinance = canAccessLevFinance() && isContractSignedStatus(lead.status);
-  if (!canAssign && !canSendToFinance) return "";
+  if (!canAssign) return "";
   const brokers = activeBrokers();
   return `
     <div class="broker-menu" data-assign-menu="${escapeHtml(lead.id)}">
-      <button class="broker-menu-button" data-toggle-assign-menu="${escapeHtml(lead.id)}" title="Ações do lead" ${brokers.length || canSendToFinance ? "" : "disabled"}>⋮</button>
+      <button class="broker-menu-button" data-toggle-assign-menu="${escapeHtml(lead.id)}" title="Ações do lead" ${brokers.length ? "" : "disabled"}>⋮</button>
       <div class="broker-menu-list">
         ${canAssign ? `<button data-assign-broker="${escapeHtml(lead.id)}" data-broker-id="" ${lead.assignedTo ? "" : "disabled"}>Sem corretor</button>` : ""}
         ${canAssign ? brokers.map((broker) => `<button data-assign-broker="${escapeHtml(lead.id)}" data-broker-id="${escapeHtml(broker.id)}" ${broker.id === lead.assignedTo ? "disabled" : ""}>${escapeHtml(broker.name)}</button>`).join("") : ""}
-        ${canSendToFinance ? `<button data-send-card-lev="${escapeHtml(lead.id)}">Enviar ao Financeiro Lev</button>` : ""}
       </div>
     </div>
   `;
@@ -1730,25 +1728,6 @@ function bindLeadActions() {
         renderApp();
       } catch (error) {
         Object.assign(lead, previous);
-        alert(error.message);
-        renderApp();
-      }
-    });
-  });
-  document.querySelectorAll("[data-send-card-lev]").forEach((button) => {
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const lead = state.leads.find((item) => item.id === button.dataset.sendCardLev);
-      if (!lead) return;
-      if (!confirm("Enviar este lead para as pendências do Financeiro Lev?")) return;
-      try {
-        setButtonBusy(button, true, "Enviando...");
-        const data = await api(`/api/leads/${encodeURIComponent(lead.id)}/send-to-lev-finance`, { method: "POST" });
-        if (data.levFinance) state.levFinance = data.levFinance;
-        if (data.lead) Object.assign(lead, data.lead);
-        alert("Lead enviado para as pendências do Financeiro Lev.");
-        renderApp();
-      } catch (error) {
         alert(error.message);
         renderApp();
       }
@@ -2310,7 +2289,6 @@ function renderLeadDetail() {
       </div>
       <div class="actions">
         <button data-back-lead>Voltar</button>
-        ${canAccessLevFinance() && isContractSignedStatus(lead.status) ? `<button class="primary" data-send-lead-lev="${escapeHtml(lead.id)}">Enviar ao Financeiro Lev</button>` : ""}
         ${canManageLeads() ? `<button class="danger-button" data-delete-lead="${escapeHtml(lead.id)}">Excluir lead</button>` : ""}
         <button class="icon favorite ${lead.favorite ? "primary" : ""}" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button>
       </div>
@@ -2346,21 +2324,6 @@ function renderLeadDetail() {
   `);
 
   document.querySelector("[data-back-lead]")?.addEventListener("click", () => routeTo(state.previousView || "kanban"));
-  document.querySelector("[data-send-lead-lev]")?.addEventListener("click", async (event) => {
-    if (!confirm("Enviar este lead para as pendências do Financeiro Lev?")) return;
-    const button = event.currentTarget;
-    try {
-      setButtonBusy(button, true, "Enviando...");
-      const data = await api(`/api/leads/${encodeURIComponent(lead.id)}/send-to-lev-finance`, { method: "POST" });
-      if (data.levFinance) state.levFinance = data.levFinance;
-      Object.assign(lead, data.lead || {});
-      alert("Lead enviado para as pendências do Financeiro Lev.");
-      renderLeadDetail();
-    } catch (error) {
-      setButtonBusy(button, false);
-      alert(error.message);
-    }
-  });
   document.querySelector("[data-delete-lead]")?.addEventListener("click", async (event) => {
     if (!confirm("Excluir este lead definitivamente?")) return;
     const button = event.currentTarget;
@@ -2541,22 +2504,31 @@ function renderMonthlySalesChart(sales) {
   const projects = (state.dashboardProject === "TODOS" ? state.projects : [state.dashboardProject]).filter(Boolean);
   const months = Array.from({ length: 12 }, (_, index) => ({ index, label: new Date(year, index, 1).toLocaleDateString("pt-BR", { month: "short" }).replace(".", "") }));
   const totals = months.map(({ index }) => sales.filter((sale) => parseFlexibleDate(saleSignedAt(sale))?.getFullYear() === year && parseFlexibleDate(saleSignedAt(sale))?.getMonth() === index));
-  const maxValue = Math.max(...totals.map((items) => items.reduce((sum, sale) => sum + saleContractValue(sale), 0)), 1);
+  const totalValues = totals.map((items) => items.reduce((sum, sale) => sum + saleContractValue(sale), 0));
+  const maxValue = Math.max(...totalValues, 1);
+  const linePoints = totalValues.map((value, index) => {
+    const x = ((index + 0.5) / months.length) * 1200;
+    const y = 100 - Math.max(6, (value / maxValue) * 100);
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
   const hasRealSales = sales.some((sale) => saleContractValue(sale) > 0 && parseFlexibleDate(saleSignedAt(sale)));
   return `
     <section class="panel sales-chart-panel">
       <div class="panel-title-row">
         <div>
           <h2>Curva de Vendas</h2>
-          <p class="muted-copy">Fonte: vendas reais registradas no Financeiro Lev, pela data de assinatura do contrato.</p>
+          <p class="muted-copy">Fonte: leads do pipeline em Contrato Assinado, pela data de assinatura do contrato.</p>
         </div>
         <span>${escapeHtml(String(year))}</span>
       </div>
       ${hasRealSales ? `
       <div class="sales-chart">
+        <svg class="sales-line-svg" viewBox="0 0 1200 100" preserveAspectRatio="none" aria-hidden="true">
+          <polyline points="${escapeHtml(linePoints)}"></polyline>
+        </svg>
         ${months.map((month, monthIndex) => {
           const monthSales = totals[monthIndex];
-          const totalValue = monthSales.reduce((sum, sale) => sum + saleContractValue(sale), 0);
+          const totalValue = totalValues[monthIndex];
           return `
             <div class="sales-month">
               <div class="sales-bars">
@@ -2673,24 +2645,18 @@ function brokerForSale(sale) {
   return lead ? brokerForLead(lead) : null;
 }
 
-function firstInteractionDelayHours(lead, period) {
-  const createdAt = parseFlexibleDate(lead.createdAt || lead.meta?.createdTime || lead.rescuedAt);
-  if (!createdAt) return null;
-  const first = (state.fupLeadLog || [])
-    .filter((log) => String(log.leadId || "") === String(lead.id || "") && dateIsInRange(log.at, period.start, period.end))
-    .map((log) => parseFlexibleDate(log.at))
+function averageLeadsPerDayText(leads) {
+  const dates = leads
+    .map((lead) => parseFlexibleDate(lead.createdAt || lead.meta?.createdTime || lead.rescuedAt || lead.updatedAt))
     .filter(Boolean)
-    .sort((a, b) => a - b)[0];
-  if (!first || first < createdAt) return null;
-  return (first.getTime() - createdAt.getTime()) / (1000 * 60 * 60);
-}
-
-function avgAttendanceText(leads, period) {
-  const hours = leads.map((lead) => firstInteractionDelayHours(lead, period)).filter((value) => Number.isFinite(value));
-  if (!hours.length) return "Sem dados";
-  const avg = hours.reduce((sum, value) => sum + value, 0) / hours.length;
-  if (avg < 24) return `${avg.toFixed(1).replace(".", ",")} h`;
-  return `${(avg / 24).toFixed(1).replace(".", ",")} dias`;
+    .sort((a, b) => a - b);
+  if (!dates.length) return "0/dia";
+  const first = parseFlexibleDate(localDateOnly(dates[0]));
+  const last = parseFlexibleDate(localDateOnly(dates[dates.length - 1]));
+  const days = first && last
+    ? Math.max(1, Math.floor((last.getTime() - first.getTime()) / (1000 * 60 * 60 * 24)) + 1)
+    : 1;
+  return `${(leads.length / days).toFixed(1).replace(".", ",")}/dia`;
 }
 
 function renderSalesReportView() {
@@ -2729,7 +2695,7 @@ function renderSalesReportView() {
       </div>
       <section class="metrics">
         <div class="metric"><span>Leads</span><strong>${numberPt(leads.length)}</strong></div>
-        <div class="metric"><span>Tempo médio atendimento</span><strong>${escapeHtml(avgAttendanceText(leads, period))}</strong></div>
+        <div class="metric"><span>Média de leads por dia</span><strong>${escapeHtml(averageLeadsPerDayText(leads))}</strong></div>
         <div class="metric"><span>Vendas</span><strong>${numberPt(sales.length)}</strong></div>
         <div class="metric"><span>Valor vendido</span><strong>${escapeHtml(brl(totalSalesValue))}</strong></div>
       </section>
@@ -2742,7 +2708,10 @@ function renderSalesReportView() {
           ${renderReportBarChart("Leads por origem", leadsByOrigin)}
           ${renderReportBarChart("Leads por status", leadsByStatus)}
           ${renderReportBarChart("Cadastros por dia da semana", orderedWeekdayRows(leadsByWeekday), { vertical: true })}
+          ${renderReportBarChart("Cadastros por corretor", brokerLeadRows)}
           ${renderReportBarChart("Interações por dia da semana", orderedWeekdayRows(interactionsByWeekday), { vertical: true })}
+          ${renderReportBarChart("Interações por corretor", brokerInteractionRows)}
+          ${renderReportBarChart("Vendas por corretor", salesByBroker)}
           ${renderReportBarChart("Vendas por empreendimento", salesByProjectValue, { money: true })}
         </section>
       ` : `
@@ -4904,7 +4873,6 @@ function levFinanceRow(item, options = {}) {
   const statusKey = options.statusKey || state.levFinanceTab || "pending";
   const actions = [
     `<button type="button" data-lev-action="edit" data-lev-key="${escapeHtml(recordKey)}">Editar</button>`,
-    canAccessLevFinance() && statusKey === "pending" ? `<button type="button" data-lev-action="pipeline" data-lev-key="${escapeHtml(recordKey)}">Criar lead em contrato assinado</button>` : "",
     statusKey === "pending" || statusKey === "ignored" ? `<button type="button" data-lev-action="confirm" data-lev-key="${escapeHtml(recordKey)}">Confirmar</button>` : "",
     statusKey === "pending" || statusKey === "ignored" ? `<button type="button" data-lev-action="invoice" data-lev-key="${escapeHtml(recordKey)}">Alterar para NF Emitida</button>` : "",
     statusKey === "pending" || statusKey === "nf" ? `<button type="button" data-lev-action="paid" data-lev-key="${escapeHtml(recordKey)}">Alterar para NF Paga</button>` : "",
@@ -5208,19 +5176,6 @@ function bindLevFinanceControls() {
       if (["edit", "invoice", "paid"].includes(action)) {
         state.levFinanceModal = { type: action, key };
         renderLevFinanceView();
-        return;
-      }
-      if (action === "pipeline") {
-        if (!confirm("Criar ou atualizar um lead do pipeline na etapa Contrato Assinado a partir deste registro?")) return;
-        try {
-          const data = await api(`/api/lev-finance/records/${encodeURIComponent(key)}`, { method: "PATCH", body: JSON.stringify({ action: "create_pipeline_lead" }) });
-          state.levFinance = data.levFinance;
-          if (data.lead) upsertLeadInState(data.lead);
-          alert("Lead criado/atualizado na etapa Contrato Assinado.");
-          renderLevFinanceView();
-        } catch (error) {
-          alert(error.message);
-        }
         return;
       }
       if (action === "delete") {
