@@ -502,9 +502,19 @@ function saleSignedAt(sale) {
     || sale?.contractSignedAt
     || sale?.samLastEvent?.eventDatetime
     || sale?.payload?.signedAt
-    || sale?.updatedAt
-    || sale?.createdAt
     || "";
+}
+
+function leadContractSignedAt(lead) {
+  const history = Array.isArray(lead?.manualSamStatusHistory) ? lead.manualSamStatusHistory : [];
+  const historical = history.find((item) => isContractSignedStatus(item.status) && item.statusAt);
+  if (historical?.statusAt) return historical.statusAt;
+  if (lead?.contractSignedAt) return lead.contractSignedAt;
+  if (lead?.signedAt) return lead.signedAt;
+  if (lead?.samLastEvent?.eventDatetime && (isContractSignedStatus(lead.samLastEvent.nextStatus) || isContractSignedStatus(lead.status))) {
+    return lead.samLastEvent.eventDatetime;
+  }
+  return "";
 }
 
 function numericMoneyValue(value) {
@@ -562,7 +572,7 @@ function allCommercialSales() {
       leadId: lead.id,
       unit: lead.unit || lead.desiredUnit || "",
       contractValue: lead.contractValue || lead.unitValue || lead.value || "",
-      signedAt: lead.contractSignedAt || lead.samLastEvent?.eventDatetime || lead.updatedAt || lead.createdAt || ""
+      signedAt: leadContractSignedAt(lead)
     }));
   return [...byUnit.values()].filter((sale) => saleSignedAt(sale));
 }
@@ -2519,6 +2529,7 @@ function renderLeadDetail() {
             <div class="field"><label>E-mail</label><input name="email" type="email" value="${escapeHtml(lead.email || "")}"></div>
             <div class="field"><label>Status do pipeline</label>${statusField}</div>
             <div class="field"><label>Corretor</label>${brokerField}</div>
+            ${canManageLeads() && isSamOnlyStatus(lead.status) ? `<div class="field full"><button type="button" data-set-sam-status-date="${escapeHtml(lead.id)}">Informar data histórica SAM</button></div>` : ""}
             <div class="field full"><label>Observações internas</label><textarea name="notes">${escapeHtml(lead.notes || "")}</textarea></div>
             <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar detalhes</button></div></div>
           </form>
@@ -2549,6 +2560,21 @@ function renderLeadDetail() {
   });
   bindLeadActions();
   bindSettingsActionMenus();
+  document.querySelector("[data-set-sam-status-date]")?.addEventListener("click", async (event) => {
+    const manualSamStatusDate = promptManualSamStatusDate(lead.status);
+    if (!manualSamStatusDate) return;
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const result = await patchLead(lead.id, { status: lead.status, manualSamStatusDate });
+      Object.assign(lead, result.lead);
+      alert("Data histórica SAM salva com sucesso.");
+      renderLeadDetail();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
   document.querySelectorAll("[data-delete-comment]").forEach((button) => {
     button.addEventListener("click", async () => {
       const message = state.user?.role === "Admin TI"

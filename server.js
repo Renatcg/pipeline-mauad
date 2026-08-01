@@ -7831,11 +7831,13 @@ async function fastStructuredLeadAction(req, res, url) {
       const previousAssignedName = lead.assignedName || "";
       const previousOrder = Number(lead.order || 0);
       const previousFavorite = Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite);
-      const changingToSamOnlyStatus = Object.prototype.hasOwnProperty.call(body, "status")
-        && body.status !== previousStatus
-        && await isStructuredSamOnlyStatus(sql, body.status);
+      const hasStatusPayload = Object.prototype.hasOwnProperty.call(body, "status");
+      const hasManualSamStatusDate = Object.prototype.hasOwnProperty.call(body, "manualSamStatusDate") || Object.prototype.hasOwnProperty.call(body, "samStatusDate");
+      const bodyStatusIsSamOnly = hasStatusPayload && await isStructuredSamOnlyStatus(sql, body.status);
+      const changingToSamOnlyStatus = hasStatusPayload && body.status !== previousStatus && bodyStatusIsSamOnly;
+      const datingCurrentSamOnlyStatus = hasManualSamStatusDate && hasStatusPayload && body.status === previousStatus && bodyStatusIsSamOnly;
       let manualSamStatusAt = "";
-      if (changingToSamOnlyStatus) {
+      if (changingToSamOnlyStatus || datingCurrentSamOnlyStatus) {
         if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão para avanço histórico SAM." });
         manualSamStatusAt = parseManualSamStatusDate(body.manualSamStatusDate || body.samStatusDate);
         if (!manualSamStatusAt) return sendJson(res, 400, { error: "Informe a data em que o lead atingiu este status." });
@@ -7907,6 +7909,8 @@ async function fastStructuredLeadAction(req, res, url) {
       }
       if (Object.prototype.hasOwnProperty.call(body, "status") && lead.status !== previousStatus) {
         await structuredFup(user, lead, manualSamStatusAt ? "CHANGE_STATUS_SAM_HISTORICAL" : "CHANGE_STATUS", { from: previousStatus, to: lead.status, manualSamStatusAt });
+      } else if (manualSamStatusAt) {
+        await structuredFup(user, lead, "SET_SAM_STATUS_DATE", { status: lead.status, manualSamStatusAt });
       }
       if (Object.prototype.hasOwnProperty.call(body, "order") && Number(lead.order || 0) !== previousOrder) {
         await structuredFup(user, lead, "CHANGE_ORDER_MANUAL", { from: previousOrder, to: Number(lead.order || 0), status: lead.status });
