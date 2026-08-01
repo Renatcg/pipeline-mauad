@@ -71,6 +71,7 @@ const state = {
   dashboardFunnelStatus: "",
   salesReportMonth: "",
   salesReportProject: "TODOS",
+  salesReportMode: "chart",
   mobileNavOpen: false,
   lastAccessLogKey: "",
   creatingLead: false,
@@ -452,7 +453,12 @@ function saleProjectName(sale) {
 }
 
 function isContractSignedStatus(status) {
-  const normalized = normalizeText(status).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const normalized = String(status || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
   return ["contrato_assinado", "contrato_100_assinado", "venda_finalizada", "contract_signed", "sale_completed"].includes(normalized);
 }
 
@@ -1552,14 +1558,17 @@ function refreshFavoriteButtons(lead) {
 }
 
 function brokerRedirectControl(lead) {
-  if (!canManageLeads()) return "";
+  const canAssign = canManageLeads();
+  const canSendToFinance = canAccessLevFinance() && isContractSignedStatus(lead.status);
+  if (!canAssign && !canSendToFinance) return "";
   const brokers = activeBrokers();
   return `
     <div class="broker-menu" data-assign-menu="${escapeHtml(lead.id)}">
-      <button class="broker-menu-button" data-toggle-assign-menu="${escapeHtml(lead.id)}" title="Direcionar para corretor" ${brokers.length ? "" : "disabled"}>⋮</button>
+      <button class="broker-menu-button" data-toggle-assign-menu="${escapeHtml(lead.id)}" title="Ações do lead" ${brokers.length || canSendToFinance ? "" : "disabled"}>⋮</button>
       <div class="broker-menu-list">
-        <button data-assign-broker="${escapeHtml(lead.id)}" data-broker-id="" ${lead.assignedTo ? "" : "disabled"}>Sem corretor</button>
-        ${brokers.map((broker) => `<button data-assign-broker="${escapeHtml(lead.id)}" data-broker-id="${escapeHtml(broker.id)}" ${broker.id === lead.assignedTo ? "disabled" : ""}>${escapeHtml(broker.name)}</button>`).join("")}
+        ${canAssign ? `<button data-assign-broker="${escapeHtml(lead.id)}" data-broker-id="" ${lead.assignedTo ? "" : "disabled"}>Sem corretor</button>` : ""}
+        ${canAssign ? brokers.map((broker) => `<button data-assign-broker="${escapeHtml(lead.id)}" data-broker-id="${escapeHtml(broker.id)}" ${broker.id === lead.assignedTo ? "disabled" : ""}>${escapeHtml(broker.name)}</button>`).join("") : ""}
+        ${canSendToFinance ? `<button data-send-card-lev="${escapeHtml(lead.id)}">Enviar ao Financeiro Lev</button>` : ""}
       </div>
     </div>
   `;
@@ -1683,6 +1692,25 @@ function bindLeadActions() {
         renderApp();
       } catch (error) {
         Object.assign(lead, previous);
+        alert(error.message);
+        renderApp();
+      }
+    });
+  });
+  document.querySelectorAll("[data-send-card-lev]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const lead = state.leads.find((item) => item.id === button.dataset.sendCardLev);
+      if (!lead) return;
+      if (!confirm("Enviar este lead para as pendências do Financeiro Lev?")) return;
+      try {
+        setButtonBusy(button, true, "Enviando...");
+        const data = await api(`/api/leads/${encodeURIComponent(lead.id)}/send-to-lev-finance`, { method: "POST" });
+        if (data.levFinance) state.levFinance = data.levFinance;
+        if (data.lead) Object.assign(lead, data.lead);
+        alert("Lead enviado para as pendências do Financeiro Lev.");
+        renderApp();
+      } catch (error) {
         alert(error.message);
         renderApp();
       }
@@ -2479,7 +2507,10 @@ function renderMonthlySalesChart(sales) {
   return `
     <section class="panel sales-chart-panel">
       <div class="panel-title-row">
-        <h2>Curva de Vendas</h2>
+        <div>
+          <h2>Curva de Vendas</h2>
+          <p class="muted-copy">Fonte: vendas reais registradas no Financeiro Lev, pela data de assinatura do contrato.</p>
+        </div>
         <span>${escapeHtml(String(year))}</span>
       </div>
       ${hasRealSales ? `
@@ -2498,7 +2529,7 @@ function renderMonthlySalesChart(sales) {
                 <i class="sales-line-dot" style="bottom:${Math.max(6, (totalValue / maxValue) * 100)}%"></i>
               </div>
               <strong>${escapeHtml(month.label)}</strong>
-              <em>${escapeHtml(brl(totalValue))}</em>
+              <em>${numberPt(monthSales.length)} venda(s) · ${escapeHtml(brl(totalValue))}</em>
             </div>
           `;
         }).join("")}
@@ -2663,30 +2694,63 @@ function renderSalesReportView() {
         <div class="metric"><span>Vendas</span><strong>${numberPt(sales.length)}</strong></div>
         <div class="metric"><span>Valor vendido</span><strong>${escapeHtml(brl(totalSalesValue))}</strong></div>
       </section>
-      <section class="report-charts">
-        ${renderReportBarChart("Leads por origem", leadsByOrigin)}
-        ${renderReportBarChart("Leads por status", leadsByStatus)}
-        ${renderReportBarChart("Cadastros por dia da semana", leadsByWeekday)}
-        ${renderReportBarChart("Vendas por empreendimento", salesByProjectValue, { money: true })}
-      </section>
-      <section class="report-grid">
+      <div class="tabs report-view-tabs">
+        <button class="${state.salesReportMode === "chart" ? "primary" : ""}" type="button" data-sales-report-mode="chart">Gráficos</button>
+        <button class="${state.salesReportMode === "table" ? "primary" : ""}" type="button" data-sales-report-mode="table">Tabelas</button>
+      </div>
+      ${state.salesReportMode === "chart" ? `
+        <section class="report-charts">
+          ${renderReportBarChart("Leads por origem", leadsByOrigin)}
+          ${renderReportBarChart("Leads por status", leadsByStatus)}
+          ${renderReportBarChart("Cadastros por dia da semana", orderedWeekdayRows(leadsByWeekday), { vertical: true })}
+          ${renderReportBarChart("Interações por dia da semana", orderedWeekdayRows(interactionsByWeekday), { vertical: true })}
+          ${renderReportBarChart("Vendas por empreendimento", salesByProjectValue, { money: true })}
+        </section>
+      ` : `
+        <section class="report-grid">
         <div class="panel nested-panel"><h3>Leads por origem</h3>${renderSmallRanking(leadsByOrigin)}</div>
         <div class="panel nested-panel"><h3>Leads por status</h3>${renderSmallRanking(leadsByStatus)}</div>
-        <div class="panel nested-panel"><h3>Cadastros por dia da semana</h3>${renderSmallRanking(leadsByWeekday)}</div>
+        <div class="panel nested-panel"><h3>Cadastros por dia da semana</h3>${renderSmallRanking(orderedWeekdayRows(leadsByWeekday))}</div>
         <div class="panel nested-panel"><h3>Cadastros por corretor</h3>${renderSmallRanking(brokerLeadRows)}</div>
-        <div class="panel nested-panel"><h3>Interações por dia da semana</h3>${renderSmallRanking(interactionsByWeekday)}</div>
+        <div class="panel nested-panel"><h3>Interações por dia da semana</h3>${renderSmallRanking(orderedWeekdayRows(interactionsByWeekday))}</div>
         <div class="panel nested-panel"><h3>Interações por corretor</h3>${renderSmallRanking(brokerInteractionRows)}</div>
         <div class="panel nested-panel"><h3>Ranking de vendas por corretor</h3>${renderBrokerSalesRanking(salesByBroker)}</div>
         <div class="panel nested-panel"><h3>Ranking de vendas por empreendimento</h3>${renderSmallRanking(salesByProjectCount)}</div>
         <div class="panel nested-panel wide"><h3>Total de vendas por empreendimento</h3>${renderProjectSalesTotals(salesByProjectCount, salesByProjectValue)}</div>
-      </section>
+        </section>
+      `}
     </section>
   `);
   bindSalesReportControls();
 }
 
+function orderedWeekdayRows(rows) {
+  const order = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+  const values = Object.fromEntries(rows);
+  return order.map((label) => [label, Number(values[label] || 0)]);
+}
+
 function renderReportBarChart(title, rows, options = {}) {
   const max = Math.max(...rows.map(([, value]) => Number(value || 0)), 1);
+  if (options.vertical) {
+    return `
+      <div class="panel nested-panel report-bar-card">
+        <h3>${escapeHtml(title)}</h3>
+        <div class="report-bars-vertical">
+          ${rows.map(([label, value], index) => {
+            const height = Math.max(4, (Number(value || 0) / max) * 100);
+            return `
+              <div class="report-vertical-item">
+                <strong>${options.money ? escapeHtml(brl(value)) : numberPt(value)}</strong>
+                <div class="report-vertical-bar"><i style="height:${height}%; background:${["#0f766e", "#2563eb", "#c2410c", "#7c3aed", "#0891b2", "#be123c"][index % 6]}"></i></div>
+                <span>${escapeHtml(label)}</span>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    `;
+  }
   return `
     <div class="panel nested-panel report-bar-card">
       <h3>${escapeHtml(title)}</h3>
@@ -2736,6 +2800,12 @@ function renderProjectSalesTotals(countRows, valueRows) {
 }
 
 function bindSalesReportControls() {
+  document.querySelectorAll("[data-sales-report-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.salesReportMode = button.dataset.salesReportMode || "chart";
+      renderSalesReportView();
+    });
+  });
   document.querySelector("#salesReportMonth")?.addEventListener("change", (event) => {
     state.salesReportMonth = event.currentTarget.value || currentMonthBounds().month;
     renderSalesReportView();

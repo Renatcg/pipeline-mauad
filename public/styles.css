@@ -1716,6 +1716,51 @@ th {
   border-radius: inherit;
 }
 
+.report-view-tabs {
+  margin-top: 14px;
+}
+
+.report-bars-vertical {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(34px, 1fr));
+  align-items: end;
+  gap: 10px;
+  min-height: 190px;
+}
+
+.report-vertical-item {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-items: end;
+  gap: 6px;
+  min-height: 170px;
+  text-align: center;
+}
+
+.report-vertical-item strong,
+.report-vertical-item span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.report-vertical-bar {
+  position: relative;
+  height: 125px;
+  overflow: hidden;
+  border-radius: 7px 7px 4px 4px;
+  background: #eef2f7;
+}
+
+.report-vertical-bar i {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: block;
+  border-radius: 7px 7px 0 0;
+}
+
 .nested-panel {
   background: #fbfcfd;
 }
