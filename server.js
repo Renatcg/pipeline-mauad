@@ -9,7 +9,7 @@ const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? path.join("/tmp",
 const DB_PATH = path.join(DATA_DIR, "db.json");
 const SEED_PATH = path.join(DATA_DIR, "seed.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
-const SESSION_TTL_MS = 1000 * 60 * 15;
+const DEFAULT_SESSION_TTL_MS = 1000 * 60 * 15;
 const PASSWORD_SETUP_TTL_MS = 1000 * 60 * 60 * 24;
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor", "Gerente Financeiro", "Auxiliar Financeiro", "Gestor de Tráfego", "Coordenador de Marketing"];
 const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
@@ -2604,9 +2604,25 @@ function signSession(payload) {
   return `${body}.${sig}`;
 }
 
-function sessionCookie(userId) {
-  const sid = signSession({ userId, expiresAt: Date.now() + SESSION_TTL_MS });
-  return `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`;
+function sessionTtlMsFromCommercialSettings(settings = {}) {
+  const minutes = Number(settings.sessionTimeoutMinutes || 15);
+  const safeMinutes = Number.isFinite(minutes) ? Math.min(240, Math.max(1, minutes)) : 15;
+  return safeMinutes * 60 * 1000;
+}
+
+async function structuredSessionTtlMs(sql) {
+  try {
+    const rows = await sql`SELECT payload FROM crm_settings WHERE key = 'commercialSettings' LIMIT 1`;
+    return sessionTtlMsFromCommercialSettings(rows[0]?.payload || {});
+  } catch {
+    return DEFAULT_SESSION_TTL_MS;
+  }
+}
+
+function sessionCookie(userId, ttlMs = DEFAULT_SESSION_TTL_MS) {
+  const safeTtlMs = Math.max(60 * 1000, Number(ttlMs || DEFAULT_SESSION_TTL_MS));
+  const sid = signSession({ userId, expiresAt: Date.now() + safeTtlMs });
+  return `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(safeTtlMs / 1000)}`;
 }
 
 function readSession(req) {
@@ -4856,8 +4872,12 @@ function normalizeLevFinanceSettingsPayload(settings = {}) {
 }
 
 function normalizeCommercialSettingsPayload(settings = {}) {
+  const sessionTimeoutMinutes = Number(settings.sessionTimeoutMinutes || 15);
   return {
-    monthlySalesGoal: Math.max(0, Number(settings.monthlySalesGoal || 0))
+    monthlySalesGoal: Math.max(0, Number(settings.monthlySalesGoal || 0)),
+    sessionTimeoutMinutes: Number.isFinite(sessionTimeoutMinutes)
+      ? Math.min(240, Math.max(1, sessionTimeoutMinutes))
+      : 15
   };
 }
 
@@ -5688,7 +5708,10 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       const body = await readBody(req);
       const commercialSettings = normalizeCommercialSettingsPayload(body);
       await saveStructuredSetting(sql, "commercialSettings", commercialSettings);
-      await structuredAudit(user, "UPDATE_COMMERCIAL_SETTINGS", { monthlySalesGoal: commercialSettings.monthlySalesGoal });
+      await structuredAudit(user, "UPDATE_COMMERCIAL_SETTINGS", {
+        monthlySalesGoal: commercialSettings.monthlySalesGoal,
+        sessionTimeoutMinutes: commercialSettings.sessionTimeoutMinutes
+      });
       return sendJson(res, 200, { commercialSettings, dataSources: { action: "structured" } });
     }
 
@@ -6603,7 +6626,8 @@ async function fastStructuredStateResponse(req, res, url) {
       receiptRows,
       settlementRows,
       articleRows,
-      settingsRows
+      settingsRows,
+      presenceRows
     ] = await Promise.all([
       sql`SELECT * FROM crm_users ORDER BY name ASC, username ASC`,
       sql`SELECT name, position, payload FROM crm_projects ORDER BY position ASC, name ASC`,
@@ -6621,7 +6645,8 @@ async function fastStructuredStateResponse(req, res, url) {
       canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_receipts ORDER BY paid_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? sql`SELECT payload FROM crm_lev_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
-      sql`SELECT key, payload FROM crm_settings`
+      sql`SELECT key, payload FROM crm_settings`,
+      sql`SELECT payload FROM crm_access_logs ORDER BY at DESC NULLS LAST LIMIT 2000`
     ]);
     const settings = Object.fromEntries(settingsRows.map((row) => [row.key, row.payload || {}]));
     const users = userRows.map((row) => publicUser(structuredUserFromAuthRow(row))).filter((item) => item.id);
@@ -6633,6 +6658,8 @@ async function fastStructuredStateResponse(req, res, url) {
     const baseSources = sourceRows.map((row) => row.name).filter(Boolean);
     const forms = formRows.map((row) => row.payload || {}).filter((item) => item.id);
     const permissions = structuredPermissionsFromRows(permissionRows);
+    const commercialSettings = normalizeCommercialSettingsPayload(settings.commercialSettings || {});
+    const userPresence = buildUserPresence(users, presenceRows, sessionTtlMsFromCommercialSettings(commercialSettings));
     const integrations = {
       ...(settings.integrations || {}),
       metaForms: {
@@ -6653,7 +6680,7 @@ async function fastStructuredStateResponse(req, res, url) {
       baseAccess: structuredBaseAccessFromPermissions(permissions, baseSources.length ? baseSources : allBaseSources({ leads: [] })),
       knowledgeArticles: articleRows.map((row) => row.payload || {}).filter((item) => item.id),
       knowledgeChatSessions: Array.isArray(settings.knowledgeChatSessions) ? settings.knowledgeChatSessions : [],
-      commercialSettings: normalizeCommercialSettingsPayload(settings.commercialSettings || {}),
+      commercialSettings,
       levFinance: {
         settings: settings.levFinanceSettings || {},
         sales: saleRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit),
@@ -6672,6 +6699,7 @@ async function fastStructuredStateResponse(req, res, url) {
       statusDefinitions,
       tagDefinitions: stateDb.tagDefinitions,
       users: stateDb.users,
+      userPresence,
       leads: [],
       integrations: canManageSettings(user) ? stateDb.integrations : null,
       baseAccess: canManagePipelineSettings(user) ? stateDb.baseAccess : null,
@@ -6754,7 +6782,7 @@ async function structuredUserFromSession(req, res, sql) {
     sendJson(res, 401, { error: "Usuário inativo" });
     return null;
   }
-  res.setHeader("Set-Cookie", sessionCookie(user.id));
+  res.setHeader("Set-Cookie", sessionCookie(user.id, await structuredSessionTtlMs(sql)));
   return user;
 }
 
@@ -6815,11 +6843,20 @@ async function fastStructuredAuthRoutes(req, res, url) {
       void structuredAccess(user, "LOGIN", { path: "/login", view: "Login", source: "structured" }, req)
         .catch((error) => mirrorStructuredError("login-access", error));
       return sendJson(res, 200, { user: publicUser(user), dataSources: { auth: "structured" } }, {
-        "Set-Cookie": sessionCookie(user.id)
+        "Set-Cookie": sessionCookie(user.id, await structuredSessionTtlMs(sql))
       });
     }
 
     if (req.method === "POST" && url.pathname === "/api/logout") {
+      const session = readSession(req);
+      if (session?.userId) {
+        const rows = await sql`SELECT * FROM crm_users WHERE id = ${session.userId} LIMIT 1`;
+        const logoutUser = structuredUserFromAuthRow(rows[0]);
+        if (logoutUser?.id) {
+          void structuredAccess(logoutUser, "LOGOUT", { path: "/logout", view: "Logout", source: "structured" }, req)
+            .catch((error) => mirrorStructuredError("logout-access", error));
+        }
+      }
       return sendJson(res, 200, { ok: true }, { "Set-Cookie": "sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0" });
     }
 
@@ -7335,6 +7372,47 @@ async function structuredAccess(actor, action, details, req) {
     details,
     ip: clientIp(req),
     userAgent: String(req.headers["user-agent"] || "").slice(0, 220)
+  });
+}
+
+function buildUserPresence(users = [], accessLogs = [], timeoutMs = DEFAULT_SESSION_TTL_MS) {
+  const now = Date.now();
+  const logsByActor = new Map();
+  for (const row of accessLogs) {
+    const entry = row?.payload || row || {};
+    const actor = String(entry.actor || "").trim().toLowerCase();
+    const at = new Date(entry.at || 0).getTime();
+    if (!actor || !Number.isFinite(at) || at <= 0) continue;
+    if (!logsByActor.has(actor)) logsByActor.set(actor, []);
+    logsByActor.get(actor).push({ ...entry, atMs: at });
+  }
+  return users.map((user) => {
+    const actor = String(user.username || "").trim().toLowerCase();
+    const logs = (logsByActor.get(actor) || []).sort((a, b) => a.atMs - b.atMs);
+    const last = logs[logs.length - 1] || null;
+    const lastLogin = [...logs].reverse().find((entry) => entry.action === "LOGIN");
+    const sessions = [];
+    for (let index = 0; index < logs.length; index += 1) {
+      const entry = logs[index];
+      if (entry.action !== "LOGIN") continue;
+      const nextLoginIndex = logs.findIndex((candidate, candidateIndex) => candidateIndex > index && candidate.action === "LOGIN");
+      const sliceEnd = nextLoginIndex > -1 ? nextLoginIndex : logs.length;
+      const sessionLogs = logs.slice(index, sliceEnd);
+      const explicitLogout = sessionLogs.find((candidate) => candidate.action === "LOGOUT");
+      const end = explicitLogout || sessionLogs[sessionLogs.length - 1];
+      const duration = Math.min(12 * 60 * 60 * 1000, Math.max(60 * 1000, end.atMs - entry.atMs));
+      sessions.push(duration / 60000);
+    }
+    const averageSessionMinutes = sessions.length
+      ? sessions.reduce((sum, value) => sum + value, 0) / sessions.length
+      : 0;
+    return {
+      userId: user.id,
+      online: Boolean(last && last.action !== "LOGOUT" && now - last.atMs <= timeoutMs),
+      lastAccessAt: last ? new Date(last.atMs).toISOString() : "",
+      onlineSince: lastLogin ? new Date(lastLogin.atMs).toISOString() : (last ? new Date(last.atMs).toISOString() : ""),
+      averageSessionMinutes: Math.round(averageSessionMinutes)
+    };
   });
 }
 

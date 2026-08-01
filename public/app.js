@@ -1,5 +1,4 @@
 const app = document.querySelector("#app");
-const INACTIVITY_LIMIT_MS = 1000 * 60 * 15;
 let knowledgeTypingTimer = null;
 let pageSearchRenderTimer = null;
 const MANUAL_BASE_SOURCES = ["Stand", "Lista RMeirelles"];
@@ -13,6 +12,7 @@ const state = {
   projectDefinitions: [],
   tagDefinitions: [],
   users: [],
+  userPresence: [],
   leads: [],
   leadsLoaded: false,
   leadsScope: "",
@@ -169,24 +169,39 @@ function resizeProfilePhoto(file) {
       reject(new Error("Envie uma imagem válida."));
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
+    const renderImage = (source, cleanup = () => {}) => {
       const image = new Image();
       image.onload = () => {
-        const size = 256;
-        const canvas = document.createElement("canvas");
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext("2d");
-        const scale = Math.max(size / image.width, size / image.height);
-        const width = image.width * scale;
-        const height = image.height * scale;
-        ctx.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
-        resolve(canvas.toDataURL("image/jpeg", 0.82));
+        try {
+          const size = 224;
+          const canvas = document.createElement("canvas");
+          canvas.width = size;
+          canvas.height = size;
+          const ctx = canvas.getContext("2d");
+          const scale = Math.max(size / image.width, size / image.height);
+          const width = image.width * scale;
+          const height = image.height * scale;
+          ctx.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+          cleanup();
+          resolve(canvas.toDataURL("image/jpeg", 0.76));
+        } catch {
+          cleanup();
+          reject(new Error("Não foi possível preparar a imagem."));
+        }
       };
-      image.onerror = () => reject(new Error("Não foi possível ler a imagem."));
-      image.src = reader.result;
+      image.onerror = () => {
+        cleanup();
+        reject(new Error("Não foi possível ler a imagem."));
+      };
+      image.src = source;
     };
+    if (window.URL?.createObjectURL) {
+      const url = URL.createObjectURL(file);
+      renderImage(url, () => URL.revokeObjectURL(url));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => renderImage(reader.result);
     reader.onerror = () => reject(new Error("Não foi possível ler a imagem."));
     reader.readAsDataURL(file);
   });
@@ -236,6 +251,7 @@ function clearInactivityTimer() {
 function resetInactivityTimer() {
   if (!state.user) return;
   clearInactivityTimer();
+  const timeoutMinutes = Math.max(1, Number(state.commercialSettings?.sessionTimeoutMinutes || 15));
   state.inactivityTimer = setTimeout(async () => {
     state.user = null;
     state.loginMessage = "Sessão expirada por inatividade.";
@@ -245,7 +261,7 @@ function resetInactivityTimer() {
     } catch {}
     history.replaceState({}, "", "/login");
     renderLogin("", state.loginMessage);
-  }, INACTIVITY_LIMIT_MS);
+  }, timeoutMinutes * 60 * 1000);
 }
 
 ["click", "keydown", "mousemove", "scroll", "touchstart"].forEach((eventName) => {
@@ -345,6 +361,73 @@ function activeBrokers() {
   return state.users
     .filter(isAssignableBrokerUser)
     .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+}
+
+function firstName(value = "") {
+  return String(value || "").trim().split(/\s+/)[0] || "";
+}
+
+function formatDurationFromMinutes(minutes) {
+  const safeMinutes = Math.max(0, Math.round(Number(minutes || 0)));
+  if (safeMinutes < 60) return `${safeMinutes || 1} min`;
+  const hours = Math.floor(safeMinutes / 60);
+  const rest = safeMinutes % 60;
+  return rest ? `${hours}h ${rest}min` : `${hours}h`;
+}
+
+function userPresenceData() {
+  const presenceByUser = new Map((state.userPresence || []).map((item) => [item.userId, item]));
+  return (state.users || [])
+    .filter((user) => user.active !== false)
+    .map((user) => ({
+      user,
+      ...(presenceByUser.get(user.id) || {
+        online: false,
+        lastAccessAt: user.lastAccessAt || "",
+        onlineSince: "",
+        averageSessionMinutes: 0
+      })
+    }))
+    .sort((a, b) => {
+      if (a.online !== b.online) return a.online ? -1 : 1;
+      if (a.online && b.online) return new Date(a.onlineSince || a.lastAccessAt || 0) - new Date(b.onlineSince || b.lastAccessAt || 0);
+      return new Date(b.lastAccessAt || 0) - new Date(a.lastAccessAt || 0);
+    });
+}
+
+function renderUserPresenceList() {
+  const users = userPresenceData();
+  if (!users.length) return "";
+  return `
+    <section class="side-presence" aria-label="Usuários do sistema">
+      <div class="side-presence-list">
+        ${users.map((item) => {
+          const name = item.user.name || item.user.username || "Usuário";
+          return `
+            <div class="presence-user ${item.online ? "online" : "offline"}">
+              ${userAvatarHtml(item.user, "presence-avatar")}
+              <span class="presence-name">${escapeHtml(firstName(name))}</span>
+              <i class="presence-dot" aria-label="${item.online ? "Online" : "Offline"}"></i>
+              <div class="presence-popover">
+                <i class="presence-card-status ${item.online ? "online" : "offline"}"></i>
+                ${userAvatarHtml(item.user, "presence-card-avatar")}
+                <strong>${escapeHtml(name)}</strong>
+                <span>${escapeHtml(item.user.role || "")}</span>
+                <dl>
+                  <dt>Último acesso</dt>
+                  <dd>${item.lastAccessAt ? formatDateTime(item.lastAccessAt) : "Sem registro"}</dd>
+                  <dt>Tempo médio</dt>
+                  <dd>${formatDurationFromMinutes(item.averageSessionMinutes)}</dd>
+                  <dt>Status</dt>
+                  <dd>${item.online ? "Online agora" : "Offline"}</dd>
+                </dl>
+              </div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function syncRouteFromLocation() {
@@ -466,6 +549,20 @@ function parseFlexibleDate(value) {
   const year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
   const date = new Date(year, Number(match[2]) - 1, Number(match[1]), Number(match[4] || 0), Number(match[5] || 0), Number(match[6] || 0));
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatDateTime(value) {
+  const date = parseFlexibleDate(value);
+  if (!date) return "";
+  return date.toLocaleString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  }).replace(",", "");
 }
 
 function brl(value) {
@@ -982,7 +1079,6 @@ async function loadState() {
   state.user = data.user;
   loadTableSortPreference("base");
   loadTableSortPreference("sheet");
-  resetInactivityTimer();
   state.roles = data.roles;
   state.statuses = data.pipelineStatuses;
   state.projects = data.projects || ["Reserva Guinle", "Golf Club Resort"];
@@ -991,6 +1087,7 @@ async function loadState() {
     .map((item, position) => ({ ...item, position, advanceMode: item.advanceMode || "manual" }));
   state.tagDefinitions = data.tagDefinitions || [];
   state.users = data.users;
+  state.userPresence = data.userPresence || [];
   if (Array.isArray(data.leads) && data.leads.length) {
     state.leads = data.leads;
     state.leadsLoaded = true;
@@ -1010,6 +1107,7 @@ async function loadState() {
   state.fupLeadLog = data.fupLeadLog || [];
   state.levFinance = data.levFinance || null;
   state.commercialSettings = data.commercialSettings || {};
+  resetInactivityTimer();
   state.backupSettings = data.backupSettings || state.backupSettings || null;
   state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
   state.knowledgeCategories = data.knowledgeCategories || [];
@@ -1123,15 +1221,18 @@ function renderShell(content) {
           <button class="mobile-menu-button" type="button" data-mobile-menu aria-expanded="${state.mobileNavOpen ? "true" : "false"}">Menu</button>
         </div>
         <nav class="nav ${state.mobileNavOpen ? "open" : ""}">
-          ${navButton("kanban", "▦", "Kanban")}
-          ${navButton("sheet", "▤", "Planilha")}
-          ${navButton("odysseia", "◎", "Bases")}
-          ${navButton("dashboard", "◫", "Dashboard")}
-          ${navButton("salesReport", "▥", "Relatório Comercial")}
-          ${navButton("finance", "▣", "Financeiro Lev")}
-          ${navButton("settings", "⚙", "Configurações")}
-          ${navButton("knowledge", "?", "Ajuda")}
-          <button id="logout" class="logout-nav" type="button">Sair</button>
+          <div class="nav-main">
+            ${navButton("kanban", "▦", "Kanban")}
+            ${navButton("sheet", "▤", "Planilha")}
+            ${navButton("odysseia", "◎", "Bases")}
+            ${navButton("dashboard", "◫", "Dashboard")}
+            ${navButton("salesReport", "▥", "Relatório Comercial")}
+            ${navButton("finance", "▣", "Financeiro Lev")}
+            ${navButton("settings", "⚙", "Configurações")}
+            ${navButton("knowledge", "?", "Ajuda")}
+            <button id="logout" class="logout-nav" type="button">Sair</button>
+          </div>
+          ${renderUserPresenceList()}
         </nav>
       </aside>
       <section class="main">
@@ -4972,6 +5073,10 @@ function renderCommercialSettings() {
           <label>Meta mensal de vendas</label>
           <input name="monthlySalesGoal" type="number" min="0" step="0.01" value="${escapeHtml(settings.monthlySalesGoal || "")}" placeholder="Ex.: 5000000">
         </div>
+        <div class="field">
+          <label>Timeout por inatividade (minutos)</label>
+          <input name="sessionTimeoutMinutes" type="number" min="1" max="240" step="1" value="${escapeHtml(settings.sessionTimeoutMinutes || 15)}" placeholder="Ex.: 15">
+        </div>
         <div class="field full">
           <div class="row-actions">
             <button class="primary" type="submit">Salvar configurações</button>
@@ -4990,7 +5095,8 @@ function renderCommercialSettings() {
       const data = await api("/api/commercial-settings", {
         method: "PUT",
         body: JSON.stringify({
-          monthlySalesGoal: Number(formData.get("monthlySalesGoal") || 0)
+          monthlySalesGoal: Number(formData.get("monthlySalesGoal") || 0),
+          sessionTimeoutMinutes: Number(formData.get("sessionTimeoutMinutes") || 15)
         })
       });
       state.commercialSettings = data.commercialSettings || {};
