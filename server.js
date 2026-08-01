@@ -2387,6 +2387,30 @@ async function sendLeadNotificationWhatsapp(user, lead) {
   return { sent: true, id: data.key?.id || data.id || "" };
 }
 
+async function sendUserWhatsappText(user, text) {
+  if (!user?.notifications?.whatsapp) return { skipped: true };
+  const number = formatWhatsappNumber(user.notifications.whatsappNumber);
+  if (!number) return { sent: false, reason: "Número de WhatsApp ausente" };
+  if (!EVO_API_URL || !EVO_API_KEY || !EVO_INSTANCE) return { sent: false, reason: "Evo API não configurada" };
+  const endpoint = `${EVO_API_URL.replace(/\/$/, "")}/message/sendText/${encodeURIComponent(EVO_INSTANCE)}`;
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        apikey: EVO_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ number, text })
+    });
+  } catch (error) {
+    return { sent: false, reason: externalFetchFailureReason("Evo API", error) };
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return { sent: false, reason: data.message || data.error || "Falha no envio da Evo API" };
+  return { sent: true, id: data.key?.id || data.id || "" };
+}
+
 function leadNotificationRecipients(db, lead) {
   const recipients = new Map();
   const assigned = lead.assignedTo
@@ -3807,6 +3831,26 @@ function dbDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function parseManualSamStatusDate(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const br = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (br) {
+    const day = Number(br[1]);
+    const month = Number(br[2]);
+    const rawYear = Number(br[3]);
+    const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+    const hours = Number(br[4] || 12);
+    const minutes = Number(br[5] || 0);
+    const seconds = Number(br[6] || 0);
+    const date = new Date(year, month - 1, day, hours, minutes, seconds);
+    if (date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day) return date.toISOString();
+    return "";
+  }
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
 function safeJsonParse(value, fallback = null) {
   try {
     return JSON.parse(value);
@@ -4447,6 +4491,8 @@ async function processSamWebhookStructured(payload) {
   const email = String(payload.email || "").trim();
   const phone = String(payload.phone || payload.telefone || "").trim();
   const unit = normalizeUnitForMatch(payload.unit_code || payload.unitCode || payload.unit || payload.unidade);
+  const contractValue = parseMoney(payload.contract_value || payload.contractValue || payload.valor_contrato || payload.valorContrato || payload.value || payload.valor);
+  const rawContractValue = filledSamValue(payload.contract_value, payload.contractValue, payload.valor_contrato, payload.valorContrato, payload.value, payload.valor);
   if (!eventId) return { ok: false, httpStatus: 400, error: "event_id obrigatório" };
   if (await isDuplicateStructuredSamEvent(sql, eventId)) return { ok: true, status: "duplicate" };
   if (!eventType) return { ok: false, httpStatus: 400, error: "event_type obrigatório" };
@@ -4493,6 +4539,11 @@ async function processSamWebhookStructured(payload) {
     contractValue,
     nextStatus
   });
+  await notifyStructuredSamMovement(sql, event).catch((error) => structuredIntegration("SAM", "WHATSAPP_ERROR", {
+    eventId,
+    samEventId: event.id,
+    error: error.message || String(error)
+  }));
   return {
     ok: true,
     status: "pending_review",
@@ -4683,6 +4734,45 @@ async function structuredNotificationDb(sql) {
     integrationLog: [],
     fupLeadLog: []
   };
+}
+
+function samMovementNotificationText(event) {
+  return [
+    "Movimento recebido do SAM",
+    "",
+    `Empreendimento: ${event.project || "Não identificado"}`,
+    `Unidade: ${event.unit || "-"}`,
+    `Evento: ${event.eventType || "-"}`,
+    `E-mail: ${event.email || "-"}`,
+    `Status sugerido: ${event.nextStatus || "Não vinculado"}`,
+    `Situação: ${event.status === "matched" ? "Lead encontrado" : event.status === "unit_mismatch" ? "Unidade divergente" : "Lead não encontrado"}`,
+    event.leadName ? `Lead: ${event.leadName}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+async function notifyStructuredSamMovement(sql, event) {
+  const db = await structuredNotificationDb(sql);
+  const recipients = (db.users || []).filter((user) => {
+    if (!user.active) return false;
+    if (!["Admin TI", "Head Comercial", "Supervisor Comercial"].includes(user.role)) return false;
+    return Boolean(user.notifications?.whatsapp);
+  });
+  if (!recipients.length) {
+    await structuredIntegration("SAM", "WHATSAPP_NO_RECIPIENTS", { eventId: event.eventId, samEventId: event.id });
+    return;
+  }
+  const text = samMovementNotificationText(event);
+  for (const recipient of recipients) {
+    const result = await sendUserWhatsappText(recipient, text);
+    await structuredIntegration("SAM", result.sent ? "WHATSAPP_SENT" : "WHATSAPP_FAILED", {
+      eventId: event.eventId,
+      samEventId: event.id,
+      userId: recipient.id,
+      userName: recipient.name || recipient.username || "",
+      reason: result.reason || "",
+      providerId: result.id || ""
+    });
+  }
 }
 
 async function structuredSettingsMap(sql) {
@@ -7741,8 +7831,14 @@ async function fastStructuredLeadAction(req, res, url) {
       const previousAssignedName = lead.assignedName || "";
       const previousOrder = Number(lead.order || 0);
       const previousFavorite = Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite);
-      if (Object.prototype.hasOwnProperty.call(body, "status") && body.status !== previousStatus && await isStructuredSamOnlyStatus(sql, body.status)) {
-        return sendJson(res, 400, { error: "Este status só pode ser alcançado pelo retorno do SAM." });
+      const changingToSamOnlyStatus = Object.prototype.hasOwnProperty.call(body, "status")
+        && body.status !== previousStatus
+        && await isStructuredSamOnlyStatus(sql, body.status);
+      let manualSamStatusAt = "";
+      if (changingToSamOnlyStatus) {
+        if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão para avanço histórico SAM." });
+        manualSamStatusAt = parseManualSamStatusDate(body.manualSamStatusDate || body.samStatusDate);
+        if (!manualSamStatusAt) return sendJson(res, 400, { error: "Informe a data em que o lead atingiu este status." });
       }
       const detailFields = ["name", "phone", "email", "assistant", "desiredProject", "desiredUnit", "unitValue", "notes", "tags"];
       const allowed = canManageLeads(user) && lead.inPipeline
@@ -7770,6 +7866,26 @@ async function fastStructuredLeadAction(req, res, url) {
           lead[key] = body[key];
         }
       }
+      if (manualSamStatusAt) {
+        lead.manualSamStatusHistory = Array.isArray(lead.manualSamStatusHistory) ? lead.manualSamStatusHistory : [];
+        lead.manualSamStatusHistory.unshift({
+          status: lead.status,
+          statusAt: manualSamStatusAt,
+          registeredAt: new Date().toISOString(),
+          registeredBy: user.id,
+          registeredByName: user.name || user.username || ""
+        });
+        lead.samLastEvent = {
+          eventId: "manual-historical",
+          eventType: "manual_historical_status",
+          eventDatetime: manualSamStatusAt,
+          unit: lead.desiredUnit || lead.unit || "",
+          project: lead.desiredProject || "",
+          nextStatus: lead.status,
+          appliedAt: new Date().toISOString(),
+          manual: true
+        };
+      }
       if (body.status && body.status !== previousStatus && !Object.prototype.hasOwnProperty.call(body, "order")) lead.order = Date.now();
       lead.updatedAt = new Date().toISOString();
       await saveStructuredLead(sql, lead);
@@ -7790,7 +7906,7 @@ async function fastStructuredLeadAction(req, res, url) {
         }
       }
       if (Object.prototype.hasOwnProperty.call(body, "status") && lead.status !== previousStatus) {
-        await structuredFup(user, lead, "CHANGE_STATUS", { from: previousStatus, to: lead.status });
+        await structuredFup(user, lead, manualSamStatusAt ? "CHANGE_STATUS_SAM_HISTORICAL" : "CHANGE_STATUS", { from: previousStatus, to: lead.status, manualSamStatusAt });
       }
       if (Object.prototype.hasOwnProperty.call(body, "order") && Number(lead.order || 0) !== previousOrder) {
         await structuredFup(user, lead, "CHANGE_ORDER_MANUAL", { from: previousOrder, to: Number(lead.order || 0), status: lead.status });

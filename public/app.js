@@ -745,14 +745,26 @@ function statusAdvanceLabel(status) {
   return isSamOnlyStatus(status) ? "Somente SAM" : "Manual";
 }
 
-function statusOptionsHtml(selectedStatus = "") {
+function statusOptionsHtml(selectedStatus = "", options = {}) {
+  const allowSamOnly = Boolean(options.allowSamOnly);
   return state.statuses.map((status, index) => {
     const selected = selectedStatus ? selectedStatus === status : index === 0;
     const samOnly = isSamOnlyStatus(status);
-    const disabled = samOnly && !selected;
+    const disabled = samOnly && !selected && !allowSamOnly;
     const suffix = samOnly ? " (somente SAM)" : "";
     return `<option value="${escapeHtml(status)}" ${selected ? "selected" : ""} ${disabled ? "disabled" : ""}>${escapeHtml(status + suffix)}</option>`;
   }).join("");
+}
+
+function promptManualSamStatusDate(status) {
+  const value = prompt(`Este status é controlado pelo SAM.\nInforme a data histórica em que o lead atingiu "${status}" (dd/mm/aaaa).`);
+  if (value === null) return null;
+  const trimmed = String(value || "").trim();
+  if (!trimmed) {
+    alert("Informe a data do status.");
+    return null;
+  }
+  return trimmed;
 }
 
 function baseSourcesForTotal(lead) {
@@ -1988,9 +2000,14 @@ function bindDragDrop() {
       const lead = state.leads.find((item) => item.id === draggedId);
       const status = column.dataset.status;
       if (!lead) return;
+      let manualSamStatusDate = "";
       if (status !== lead.status && isSamOnlyStatus(status)) {
-        alert("Este status só pode ser alcançado pelo retorno do SAM.");
-        return;
+        if (!canManageLeads()) {
+          alert("Este status só pode ser alcançado pelo retorno do SAM.");
+          return;
+        }
+        manualSamStatusDate = promptManualSamStatusDate(status);
+        if (!manualSamStatusDate) return;
       }
       const cards = [...column.querySelectorAll(".card")]
         .filter((card) => card.dataset.lead !== draggedId);
@@ -2011,7 +2028,7 @@ function bindDragDrop() {
       else if (belowLead) nextOrder = Math.max(Date.now(), belowOrder + 1000);
       const result = await api(`/api/leads/${lead.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ status, order: nextOrder })
+        body: JSON.stringify({ status, order: nextOrder, ...(manualSamStatusDate ? { manualSamStatusDate } : {}) })
       });
       Object.assign(lead, result.lead);
       renderApp();
@@ -2059,7 +2076,7 @@ function leadRows(leads, options = {}) {
       <td>${escapeHtml(leadEmailForTable(lead))}</td>
       <td>
         ${(options.readOnlyStatus || options.textStatus) ? escapeHtml(leadBaseStatus(lead, options)) : `<select data-status-select="${escapeHtml(lead.id)}">
-          ${statusOptionsHtml(lead.status)}
+          ${statusOptionsHtml(lead.status, { allowSamOnly: canManageLeads() })}
         </select>`}
       </td>
       <td>${escapeHtml(lead.assignedName || userName(lead.assignedTo))}</td>
@@ -2464,7 +2481,7 @@ function renderLeadDetail() {
   const project = leadProjectValue(lead);
   const statusField = lead.inPipeline ? `
     <select name="status" ${canManageLeads() ? "" : "disabled"}>
-      ${statusOptionsHtml(lead.status)}
+      ${statusOptionsHtml(lead.status, { allowSamOnly: canManageLeads() })}
     </select>
   ` : `<input value="${escapeHtml(lead.sourceStatus || lead.odysseiaStatus || lead.status)}" disabled>`;
   const brokerField = `
@@ -2564,6 +2581,11 @@ function renderLeadDetail() {
     if (canManageLeads()) {
       payload.status = form.get("status");
       payload.assignedTo = form.get("assignedTo");
+      if (payload.status !== lead.status && isSamOnlyStatus(payload.status)) {
+        const manualSamStatusDate = promptManualSamStatusDate(payload.status);
+        if (!manualSamStatusDate) return;
+        payload.manualSamStatusDate = manualSamStatusDate;
+      }
     }
     await patchLead(lead.id, payload);
     alert("Detalhes do lead salvos com sucesso.");
