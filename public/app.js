@@ -34,6 +34,7 @@ const state = {
   integrationLog: [],
   samEvents: [],
   levFinance: null,
+  commercialSettings: {},
   structuredDbDiagnostics: null,
   dataSources: {},
   knowledgeCategories: [],
@@ -238,8 +239,7 @@ function canAccessLevFinance() {
 }
 
 function canAccessCommercialSalesReport() {
-  return canAccessLevFinance()
-    || ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Gestor de Tráfego", "Coordenador de Marketing"].includes(state.user?.role);
+  return ["Admin TI", "Head Comercial", "Diretoria"].includes(state.user?.role);
 }
 
 function canResetLevFinance() {
@@ -264,6 +264,10 @@ function canManagePipelineSettings() {
 
 function canManageLevFinanceSettings() {
   return canAccessLevFinance();
+}
+
+function canManageCommercialSettings() {
+  return ["Admin TI", "Head Comercial"].includes(state.user?.role);
 }
 
 function editableRoles() {
@@ -915,6 +919,7 @@ async function loadState() {
   state.accessLog = data.accessLog || [];
   state.fupLeadLog = data.fupLeadLog || [];
   state.levFinance = data.levFinance || null;
+  state.commercialSettings = data.commercialSettings || {};
   state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
   state.knowledgeCategories = data.knowledgeCategories || [];
   state.knowledgeArticles = data.knowledgeArticles || [];
@@ -2617,6 +2622,55 @@ function reportSales(period) {
   return salesInRange(period.start, period.end, state.salesReportProject);
 }
 
+function commercialMonthlyGoal() {
+  return Math.max(0, Number(state.commercialSettings?.monthlySalesGoal || 0));
+}
+
+function salesReportPayload() {
+  ensureReportDefaults();
+  const period = reportPeriod();
+  const leads = reportLeads(period);
+  const sales = reportSales(period);
+  const reportYear = parseFlexibleDate(`${period.month}-01`)?.getFullYear() || new Date().getFullYear();
+  const monthlySalesValues = Array.from({ length: 12 }, (_, index) => {
+    const label = new Date(reportYear, index, 1).toLocaleDateString("pt-BR", { month: "short" }).replace(".", "");
+    const value = salesInRange(`${reportYear}-${String(index + 1).padStart(2, "0")}-01`, `${reportYear}-${String(index + 1).padStart(2, "0")}-${String(new Date(reportYear, index + 1, 0).getDate()).padStart(2, "0")}`, state.salesReportProject)
+      .reduce((sum, sale) => sum + saleContractValue(sale), 0);
+    return [label, value];
+  });
+  const totalSalesValue = sales.reduce((sum, sale) => sum + saleContractValue(sale), 0);
+  const monthlyGoal = commercialMonthlyGoal();
+  const achievement = monthlyGoal > 0 ? (totalSalesValue / monthlyGoal) * 100 : null;
+  const interactions = (state.fupLeadLog || []).filter((log) => dateIsInRange(log.at, period.start, period.end));
+  const monthLabel = parseFlexibleDate(`${period.month}-01`)?.toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) || period.month;
+  return {
+    generatedAt: new Date().toISOString(),
+    monthLabel,
+    period,
+    project: state.salesReportProject || "TODOS",
+    metrics: {
+      leads: leads.length,
+      averageLeadsPerDay: averageLeadsPerDayText(leads),
+      sales: sales.length,
+      totalSalesValue,
+      monthlyGoal,
+      achievement
+    },
+    charts: {
+      leadsByOrigin: groupRows(leads, (lead) => lead.source || "Não informado"),
+      leadsByStatus: groupRows(leads, (lead) => lead.status || "Não informado"),
+      leadsByWeekday: orderedWeekdayRows(groupRows(leads, (lead) => weekdayLabel(lead.createdAt || lead.meta?.createdTime))),
+      brokerLeadRows: groupRows(leads, (lead) => userName(lead.assignedTo) || "Sem corretor"),
+      interactionsByWeekday: orderedWeekdayRows(groupRows(interactions, (log) => weekdayLabel(log.at))),
+      brokerInteractionRows: groupRows(interactions, (log) => log.userName || userName(log.userId) || log.username || "Não informado"),
+      salesByBroker: groupRows(sales, (sale) => brokerForSale(sale)?.name || "Sem corretor"),
+      salesByProjectCount: groupRows(sales, (sale) => saleProjectName(sale)),
+      salesByProjectValue: groupRows(sales, (sale) => saleProjectName(sale), (sale) => saleContractValue(sale)),
+      monthlySalesValues
+    }
+  };
+}
+
 function groupRows(items, getLabel, getValue = () => 1) {
   const grouped = new Map();
   for (const item of items) {
@@ -2660,22 +2714,20 @@ function averageLeadsPerDayText(leads) {
 }
 
 function renderSalesReportView() {
-  ensureReportDefaults();
-  const period = reportPeriod();
-  const leads = reportLeads(period);
-  const sales = reportSales(period);
-  const totalSalesValue = sales.reduce((sum, sale) => sum + saleContractValue(sale), 0);
-  const interactions = (state.fupLeadLog || []).filter((log) => dateIsInRange(log.at, period.start, period.end));
-  const brokerLeadRows = groupRows(leads, (lead) => userName(lead.assignedTo) || "Sem corretor");
-  const brokerInteractionRows = groupRows(interactions, (log) => log.userName || userName(log.userId) || log.username || "Não informado");
-  const salesByBroker = groupRows(sales, (sale) => brokerForSale(sale)?.name || "Sem corretor");
-  const salesByProjectCount = groupRows(sales, (sale) => saleProjectName(sale));
-  const salesByProjectValue = groupRows(sales, (sale) => saleProjectName(sale), (sale) => saleContractValue(sale));
-  const leadsByOrigin = groupRows(leads, (lead) => lead.source || "Não informado");
-  const leadsByStatus = groupRows(leads, (lead) => lead.status || "Não informado");
-  const leadsByWeekday = groupRows(leads, (lead) => weekdayLabel(lead.createdAt || lead.meta?.createdTime));
-  const interactionsByWeekday = groupRows(interactions, (log) => weekdayLabel(log.at));
-  const monthLabel = parseFlexibleDate(`${period.month}-01`)?.toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) || period.month;
+  const report = salesReportPayload();
+  const { period, monthLabel } = report;
+  const { leads, averageLeadsPerDay, sales, totalSalesValue, monthlyGoal, achievement } = report.metrics;
+  const {
+    brokerLeadRows,
+    brokerInteractionRows,
+    salesByBroker,
+    salesByProjectCount,
+    salesByProjectValue,
+    leadsByOrigin,
+    leadsByStatus,
+    leadsByWeekday,
+    interactionsByWeekday
+  } = report.charts;
   renderShell(`
     ${renderViewHead("Relatório Comercial de Vendas", "Estatísticas comerciais do mês selecionado", {
       actions: `
@@ -2694,10 +2746,11 @@ function renderSalesReportView() {
         </div>
       </div>
       <section class="metrics">
-        <div class="metric"><span>Leads</span><strong>${numberPt(leads.length)}</strong></div>
-        <div class="metric"><span>Média de leads por dia</span><strong>${escapeHtml(averageLeadsPerDayText(leads))}</strong></div>
-        <div class="metric"><span>Vendas</span><strong>${numberPt(sales.length)}</strong></div>
+        <div class="metric"><span>Leads</span><strong>${numberPt(leads)}</strong></div>
+        <div class="metric"><span>Média de leads por dia</span><strong>${escapeHtml(averageLeadsPerDay)}</strong></div>
+        <div class="metric"><span>Vendas</span><strong>${numberPt(sales)}</strong></div>
         <div class="metric"><span>Valor vendido</span><strong>${escapeHtml(brl(totalSalesValue))}</strong></div>
+        <div class="metric"><span>Atingimento da meta</span><strong>${achievement == null ? "Sem meta" : `${achievement.toFixed(1).replace(".", ",")}%`}</strong><em>${monthlyGoal > 0 ? `Meta ${escapeHtml(brl(monthlyGoal))}` : "Configure em Configurações"}</em></div>
       </section>
       <div class="tabs report-view-tabs">
         <button class="${state.salesReportMode === "chart" ? "primary" : ""}" type="button" data-sales-report-mode="chart">Gráficos</button>
@@ -2707,9 +2760,9 @@ function renderSalesReportView() {
         <section class="report-charts">
           ${renderReportBarChart("Leads por origem", leadsByOrigin)}
           ${renderReportBarChart("Leads por status", leadsByStatus)}
-          ${renderReportBarChart("Cadastros por dia da semana", orderedWeekdayRows(leadsByWeekday), { vertical: true })}
+          ${renderReportBarChart("Cadastros por dia da semana", leadsByWeekday, { vertical: true })}
           ${renderReportBarChart("Cadastros por corretor", brokerLeadRows)}
-          ${renderReportBarChart("Interações por dia da semana", orderedWeekdayRows(interactionsByWeekday), { vertical: true })}
+          ${renderReportBarChart("Interações por dia da semana", interactionsByWeekday, { vertical: true })}
           ${renderReportBarChart("Interações por corretor", brokerInteractionRows)}
           ${renderReportBarChart("Vendas por corretor", salesByBroker)}
           ${renderReportBarChart("Vendas por empreendimento", salesByProjectValue, { money: true })}
@@ -2718,9 +2771,9 @@ function renderSalesReportView() {
         <section class="report-grid">
         <div class="panel nested-panel"><h3>Leads por origem</h3>${renderSmallRanking(leadsByOrigin)}</div>
         <div class="panel nested-panel"><h3>Leads por status</h3>${renderSmallRanking(leadsByStatus)}</div>
-        <div class="panel nested-panel"><h3>Cadastros por dia da semana</h3>${renderSmallRanking(orderedWeekdayRows(leadsByWeekday))}</div>
+        <div class="panel nested-panel"><h3>Cadastros por dia da semana</h3>${renderSmallRanking(leadsByWeekday)}</div>
         <div class="panel nested-panel"><h3>Cadastros por corretor</h3>${renderSmallRanking(brokerLeadRows)}</div>
-        <div class="panel nested-panel"><h3>Interações por dia da semana</h3>${renderSmallRanking(orderedWeekdayRows(interactionsByWeekday))}</div>
+        <div class="panel nested-panel"><h3>Interações por dia da semana</h3>${renderSmallRanking(interactionsByWeekday)}</div>
         <div class="panel nested-panel"><h3>Interações por corretor</h3>${renderSmallRanking(brokerInteractionRows)}</div>
         <div class="panel nested-panel"><h3>Ranking de vendas por corretor</h3>${renderBrokerSalesRanking(salesByBroker)}</div>
         <div class="panel nested-panel"><h3>Ranking de vendas por empreendimento</h3>${renderSmallRanking(salesByProjectCount)}</div>
@@ -2822,7 +2875,37 @@ function bindSalesReportControls() {
     state.salesReportProject = event.currentTarget.value || "TODOS";
     renderSalesReportView();
   });
-  document.querySelector("[data-print-report]")?.addEventListener("click", () => window.print());
+  document.querySelector("[data-print-report]")?.addEventListener("click", (event) => downloadSalesReportPdf(event.currentTarget));
+}
+
+async function downloadSalesReportPdf(button) {
+  const report = salesReportPayload();
+  try {
+    setButtonBusy(button, true, "Gerando...");
+    const response = await fetch("/api/sales-report/pdf", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(report)
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "Não foi possível gerar o PDF.");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `relatorio-comercial-${report.period.month}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    setButtonBusy(button, false);
+    if (button) button.textContent = "Gerar PDF";
+  }
 }
 
 function settingsTabButton(tab, label) {
@@ -2841,6 +2924,7 @@ function settingsLayout(content) {
         ${canManageSystemSettings() ? settingsTabButton("logs", "Logs") : ""}
         ${canManagePipelineSettings() ? settingsTabButton("projects", "Empreendimentos") : ""}
         ${canManageLevFinanceSettings() ? settingsTabButton("levFinance", "Financeiro Lev") : ""}
+        ${canManageCommercialSettings() ? settingsTabButton("commercial", "Configurações comerciais") : ""}
         ${canManageSystemSettings() ? settingsTabButton("backup", "Backup") : ""}
         ${canManageSystemSettings() ? settingsTabButton("structuredDb", "Banco estruturado") : ""}
         ${canManageSystemSettings() ? settingsTabButton("knowledge", "Base de conhecimento") : ""}
@@ -2861,6 +2945,7 @@ function renderSettings() {
   if (["integrations", "logs", "knowledge", "backup", "structuredDb"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
   if (["statuses", "tags", "projects", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
+  if (state.settingsTab === "commercial" && !canManageCommercialSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) state.settingsTab = canManageLevFinanceSettings() ? "levFinance" : "knowledge";
   if (state.settingsTab === "integrations") return renderIntegrationSettings();
   if (state.settingsTab === "statuses") return renderStatusSettings();
@@ -2869,6 +2954,7 @@ function renderSettings() {
   if (state.settingsTab === "logs") return renderLogSettings();
   if (state.settingsTab === "projects") return renderProjectSettings();
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
+  if (state.settingsTab === "commercial") return renderCommercialSettings();
   if (state.settingsTab === "backup") return renderBackupSettings();
   if (state.settingsTab === "structuredDb") return renderStructuredDbSettings();
   if (state.settingsTab === "knowledge") return renderKnowledgeSettings();
@@ -4629,6 +4715,50 @@ function renderLevFinanceSettings() {
       });
       state.levFinance = data.levFinance;
       state.settingsNotice = "Configurações financeiras salvas.";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+}
+
+function renderCommercialSettings() {
+  const settings = state.commercialSettings || {};
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Configurações comerciais</h2>
+      </div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
+      <form id="commercialSettingsForm" class="form-grid editor">
+        <div class="field">
+          <label>Meta mensal de vendas</label>
+          <input name="monthlySalesGoal" type="number" min="0" step="0.01" value="${escapeHtml(settings.monthlySalesGoal || "")}" placeholder="Ex.: 5000000">
+        </div>
+        <div class="field full">
+          <div class="row-actions">
+            <button class="primary" type="submit">Salvar configurações</button>
+          </div>
+        </div>
+      </form>
+    </section>
+  `);
+  bindSettingsCommon();
+  document.querySelector("#commercialSettingsForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button[type='submit']");
+    const formData = new FormData(event.currentTarget);
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const data = await api("/api/commercial-settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          monthlySalesGoal: Number(formData.get("monthlySalesGoal") || 0)
+        })
+      });
+      state.commercialSettings = data.commercialSettings || {};
+      state.settingsNotice = "Configurações comerciais salvas.";
       renderSettings();
     } catch (error) {
       setButtonBusy(button, false);

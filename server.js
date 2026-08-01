@@ -2526,6 +2526,19 @@ function sendJson(res, status, body, headers = {}) {
   return send(res, status, body, { "Content-Type": "application/json; charset=utf-8", ...headers });
 }
 
+function sendBuffer(res, status, buffer, headers = {}) {
+  if (res.headersSent || res.writableEnded) return false;
+  res.writeHead(status, {
+    "Content-Type": "application/octet-stream",
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "no-store",
+    "Content-Length": buffer.length,
+    ...headers
+  });
+  res.end(buffer);
+  return true;
+}
+
 function notFound(res) {
   return sendJson(res, 404, { error: "Não encontrado" });
 }
@@ -2646,12 +2659,15 @@ function canAccessLevFinance(user) {
 }
 
 function canAccessCommercialSalesReport(user) {
-  return canAccessLevFinance(user)
-    || ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Gestor de Tráfego", "Coordenador de Marketing"].includes(user.role);
+  return ["Admin TI", "Head Comercial", "Diretoria"].includes(user.role);
 }
 
 function canResetLevFinance(user) {
   return user.role === "Admin TI" && String(user.username || "").toLowerCase() === "admin";
+}
+
+function canManageCommercialSettings(user) {
+  return ["Admin TI", "Head Comercial"].includes(user.role);
 }
 
 function hasBaseHistory(lead) {
@@ -4665,6 +4681,231 @@ function normalizeLevFinanceSettingsPayload(settings = {}) {
   };
 }
 
+function normalizeCommercialSettingsPayload(settings = {}) {
+  return {
+    monthlySalesGoal: Math.max(0, Number(settings.monthlySalesGoal || 0))
+  };
+}
+
+function safeReportRows(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .slice(0, 12)
+    .map((row) => [String(row?.[0] || "Não informado"), Number(row?.[1] || 0)]);
+}
+
+function salesReportFallbackSummary(report) {
+  const metrics = report?.metrics || {};
+  const achievement = Number.isFinite(Number(metrics.achievement)) ? `${Number(metrics.achievement).toFixed(1).replace(".", ",")}%` : "sem meta configurada";
+  return `No período analisado, o comercial registrou ${Number(metrics.leads || 0).toLocaleString("pt-BR")} lead(s), ${Number(metrics.sales || 0).toLocaleString("pt-BR")} venda(s) e ${formatCurrency(metrics.totalSalesValue || 0)} em valor vendido. O atingimento da meta ficou em ${achievement}.`;
+}
+
+async function aiSalesReportSummary(report) {
+  const fallback = salesReportFallbackSummary(report);
+  if (!OPENAI_API_KEY) return fallback;
+  try {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        instructions: [
+          "Você escreve resumo executivo para relatório comercial imobiliário da Construtora Mauad.",
+          "Use somente os dados recebidos. Não invente valores, causas, nomes ou conclusões não suportadas.",
+          "Escreva em português do Brasil, com tom profissional e direto, em até 3 frases."
+        ].join(" "),
+        input: JSON.stringify({
+          periodo: report?.period,
+          empreendimento: report?.project,
+          indicadores: report?.metrics,
+          leadsPorOrigem: safeReportRows(report?.charts?.leadsByOrigin),
+          vendasPorEmpreendimento: safeReportRows(report?.charts?.salesByProjectValue)
+        }),
+        max_output_tokens: 220
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return fallback;
+    const text = data.output_text || data.output?.flatMap((item) => item.content || []).map((content) => content.text || "").join(" ").trim();
+    return text || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function pdfTextHex(value) {
+  const text = String(value ?? "");
+  const bytes = [0xfe, 0xff];
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    bytes.push((code >> 8) & 0xff, code & 0xff);
+  }
+  return Buffer.from(bytes).toString("hex").toUpperCase();
+}
+
+function pdfWrapText(text, maxChars) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length > maxChars && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [""];
+}
+
+function createCommercialSalesReportPdf(report, summary) {
+  const pageWidth = 595;
+  const pageHeight = 842;
+  const margin = 42;
+  const contentWidth = pageWidth - margin * 2;
+  const objects = [];
+  const pages = [];
+  let ops = [];
+  let y = 42;
+
+  const yPdf = (top) => pageHeight - top;
+  const color = (hex) => {
+    const clean = String(hex || "#111827").replace("#", "");
+    const parts = [0, 2, 4].map((start) => parseInt(clean.slice(start, start + 2), 16) / 255);
+    return parts.map((part) => part.toFixed(3)).join(" ");
+  };
+  const rect = (x, top, width, height, fill) => {
+    ops.push(`${color(fill)} rg ${x.toFixed(2)} ${(pageHeight - top - height).toFixed(2)} ${width.toFixed(2)} ${height.toFixed(2)} re f`);
+  };
+  const text = (value, x, top, size = 10, bold = false, fill = "#111827") => {
+    ops.push(`BT ${color(fill)} rg /${bold ? "F2" : "F1"} ${size} Tf 1 0 0 1 ${x.toFixed(2)} ${yPdf(top).toFixed(2)} Tm <${pdfTextHex(value)}> Tj ET`);
+  };
+  const line = (x1, top1, x2, top2, stroke = "#38d9ff", width = 2) => {
+    ops.push(`${color(stroke)} RG ${width} w ${x1.toFixed(2)} ${yPdf(top1).toFixed(2)} m ${x2.toFixed(2)} ${yPdf(top2).toFixed(2)} l S`);
+  };
+  const addPage = () => {
+    if (ops.length) pages.push(ops.join("\n"));
+    ops = [];
+    y = 42;
+  };
+  const ensureSpace = (height) => {
+    if (y + height > pageHeight - 42) addPage();
+  };
+  const paragraph = (value, x, maxWidth, size = 10, fill = "#475569") => {
+    const maxChars = Math.max(20, Math.floor(maxWidth / (size * 0.48)));
+    for (const part of pdfWrapText(value, maxChars)) {
+      text(part, x, y, size, false, fill);
+      y += size + 5;
+    }
+  };
+  const sectionTitle = (value) => {
+    ensureSpace(28);
+    text(value, margin, y, 14, true, "#111827");
+    y += 20;
+  };
+  const metricCard = (label, value, x, top, width) => {
+    rect(x + 2, top + 3, width, 54, "#dbe4ed");
+    rect(x, top, width, 54, "#ffffff");
+    text(label, x + 12, top + 18, 8, true, "#64748b");
+    text(value, x + 12, top + 39, 15, true, "#111827");
+  };
+  const barTable = (title, rows, money = false) => {
+    const cleanRows = safeReportRows(rows);
+    ensureSpace(70 + cleanRows.length * 18);
+    sectionTitle(title);
+    const max = Math.max(...cleanRows.map(([, value]) => value), 1);
+    for (const [label, value] of cleanRows) {
+      text(label.slice(0, 38), margin, y, 9, true, "#1f2937");
+      rect(margin + 190, y - 8, 220, 10, "#e8eef5");
+      rect(margin + 190, y - 8, Math.max(3, (value / max) * 220), 10, "#0f766e");
+      text(money ? formatCurrency(value) : value.toLocaleString("pt-BR"), margin + 425, y, 9, true, "#111827");
+      y += 18;
+    }
+    y += 8;
+  };
+
+  rect(0, 0, pageWidth, 112, "#061015");
+  text("Pipeline Comercial | Construtora Mauad", margin, 42, 15, true, "#ffffff");
+  text("Relatório Comercial de Vendas", margin, 72, 25, true, "#ffffff");
+  text(`${report?.monthLabel || ""} • ${report?.period?.start || ""} a ${report?.period?.end || ""}`, margin, 96, 10, false, "#cbd5e1");
+  y = 142;
+
+  const metrics = report?.metrics || {};
+  const achievement = Number.isFinite(Number(metrics.achievement)) ? `${Number(metrics.achievement).toFixed(1).replace(".", ",")}%` : "Sem meta";
+  const cardWidth = (contentWidth - 24) / 4;
+  metricCard("LEADS", Number(metrics.leads || 0).toLocaleString("pt-BR"), margin, y, cardWidth);
+  metricCard("VENDAS", Number(metrics.sales || 0).toLocaleString("pt-BR"), margin + cardWidth + 8, y, cardWidth);
+  metricCard("VALOR VENDIDO", formatCurrency(metrics.totalSalesValue || 0), margin + (cardWidth + 8) * 2, y, cardWidth);
+  metricCard("ATINGIMENTO", achievement, margin + (cardWidth + 8) * 3, y, cardWidth);
+  y += 86;
+
+  sectionTitle("Resumo executivo");
+  paragraph(summary, margin, contentWidth, 11, "#334155");
+  y += 8;
+
+  const charts = report?.charts || {};
+  barTable("Leads por origem", charts.leadsByOrigin);
+  barTable("Leads por status", charts.leadsByStatus);
+  barTable("Vendas por corretor", charts.salesByBroker);
+  barTable("Vendas por empreendimento", charts.salesByProjectValue, true);
+
+  sectionTitle("Curva de vendas");
+  const monthValues = safeReportRows(charts.monthlySalesValues || []);
+  if (monthValues.length) {
+    const chartTop = y + 8;
+    const chartHeight = 110;
+    const chartWidth = contentWidth;
+    const max = Math.max(...monthValues.map(([, value]) => value), 1);
+    let previous = null;
+    monthValues.forEach(([label, value], index) => {
+      const x = margin + (index / Math.max(monthValues.length - 1, 1)) * chartWidth;
+      const pointY = chartTop + chartHeight - (value / max) * chartHeight;
+      rect(x - 6, chartTop + chartHeight + 8, 12, 6, "#0f766e");
+      text(label.slice(0, 3), x - 9, chartTop + chartHeight + 28, 7, true, "#64748b");
+      if (previous) line(previous.x, previous.y, x, pointY, "#38d9ff", 2.6);
+      rect(x - 3, pointY - 3, 6, 6, "#38d9ff");
+      previous = { x, y: pointY };
+    });
+    y = chartTop + chartHeight + 42;
+  } else {
+    paragraph("Sem dados de curva mensal para este relatório.", margin, contentWidth);
+  }
+
+  addPage();
+
+  const kids = [];
+  const addObject = (body) => {
+    objects.push(body);
+    return objects.length;
+  };
+  const catalogId = addObject("<< /Type /Catalog /Pages 2 0 R >>");
+  const pagesId = addObject("");
+  const fontRegularId = addObject("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+  const fontBoldId = addObject("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
+  pages.forEach((content) => {
+    const contentBuffer = Buffer.from(content, "utf8");
+    const contentId = addObject(`<< /Length ${contentBuffer.length} >>\nstream\n${content}\nendstream`);
+    const pageId = addObject(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${contentId} 0 R >>`);
+    kids.push(`${pageId} 0 R`);
+  });
+  objects[pagesId - 1] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${kids.length} >>`;
+  const chunks = ["%PDF-1.4\n"];
+  const offsets = [0];
+  objects.forEach((body, index) => {
+    offsets.push(Buffer.byteLength(chunks.join(""), "utf8"));
+    chunks.push(`${index + 1} 0 obj\n${body}\nendobj\n`);
+  });
+  const xrefOffset = Buffer.byteLength(chunks.join(""), "utf8");
+  chunks.push(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`);
+  offsets.slice(1).forEach((offset) => chunks.push(`${String(offset).padStart(10, "0")} 00000 n \n`));
+  chunks.push(`trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
+  return Buffer.from(chunks.join(""), "utf8");
+}
+
 function levFinancePayloadFromRow(row) {
   const payload = row?.payload || {};
   return {
@@ -5091,6 +5332,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
   const isSettingsRoute =
     url.pathname === "/api/integrations" ||
     url.pathname.startsWith("/api/integrations/meta/") ||
+    url.pathname === "/api/commercial-settings" ||
     url.pathname === "/api/knowledge" ||
     url.pathname.startsWith("/api/knowledge/") ||
     url.pathname === "/api/projects" ||
@@ -5113,6 +5355,15 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       const integrations = await saveStructuredMetaForms(sql, body.integrations || {});
       await structuredAudit(user, "UPDATE_INTEGRATIONS", {});
       return sendJson(res, 200, { integrations, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/commercial-settings" && method === "PUT") {
+      if (!canManageCommercialSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const commercialSettings = normalizeCommercialSettingsPayload(body);
+      await saveStructuredSetting(sql, "commercialSettings", commercialSettings);
+      await structuredAudit(user, "UPDATE_COMMERCIAL_SETTINGS", { monthlySalesGoal: commercialSettings.monthlySalesGoal });
+      return sendJson(res, 200, { commercialSettings, dataSources: { action: "structured" } });
     }
 
     if (url.pathname === "/api/integrations/meta/import-lead" && method === "POST") {
@@ -5729,6 +5980,35 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
   }
 }
 
+async function fastStructuredSalesReportRoutes(req, res, url) {
+  if (!DATABASE_URL || url.pathname !== "/api/sales-report/pdf") return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchemaOnce(sql);
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+    if (!canAccessCommercialSalesReport(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (req.method !== "POST") return notFound(res);
+    const report = await readBody(req);
+    const summary = await aiSalesReportSummary(report);
+    const pdf = createCommercialSalesReportPdf(report, summary);
+    await structuredAudit(user, "EXPORT_COMMERCIAL_SALES_REPORT_PDF", {
+      month: report?.period?.month || "",
+      sales: report?.metrics?.sales || 0,
+      totalSalesValue: report?.metrics?.totalSalesValue || 0
+    });
+    return sendBuffer(res, 200, pdf, {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="relatorio-comercial-${String(report?.period?.month || "mauad")}.pdf"`
+    });
+  } catch (error) {
+    mirrorStructuredError("sales-report-pdf", error);
+    sendJson(res, 500, { error: "Erro ao gerar PDF", detail: error.message });
+    return true;
+  }
+}
+
 async function fastStructuredBackupRoutes(req, res, url) {
   if (!DATABASE_URL || !["/api/admin/export-db", "/api/admin/import-db"].includes(url.pathname)) return false;
   try {
@@ -5945,9 +6225,9 @@ async function fastStructuredStateResponse(req, res, url) {
       canManageSettings(user) ? sql`SELECT payload FROM crm_access_logs ORDER BY at DESC NULLS LAST LIMIT 1000` : Promise.resolve([]),
       (canManageSettings(user) || canAccessCommercialSalesReport(user)) ? sql`SELECT payload FROM crm_fup_lead_logs ORDER BY at DESC NULLS LAST LIMIT 1000` : Promise.resolve([]),
       canManageSettings(user) ? sql`SELECT * FROM crm_sam_events ORDER BY created_at DESC NULLS LAST LIMIT 500` : Promise.resolve([]),
-      canAccessCommercialSalesReport(user) ? sql`SELECT payload FROM crm_lev_sales ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
+      (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? sql`SELECT payload FROM crm_lev_sales ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_receipts ORDER BY paid_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
-      canAccessCommercialSalesReport(user) ? sql`SELECT payload FROM crm_lev_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
+      (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? sql`SELECT payload FROM crm_lev_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
       sql`SELECT key, payload FROM crm_settings`
     ]);
@@ -5981,6 +6261,7 @@ async function fastStructuredStateResponse(req, res, url) {
       baseAccess: structuredBaseAccessFromPermissions(permissions, baseSources.length ? baseSources : allBaseSources({ leads: [] })),
       knowledgeArticles: articleRows.map((row) => row.payload || {}).filter((item) => item.id),
       knowledgeChatSessions: Array.isArray(settings.knowledgeChatSessions) ? settings.knowledgeChatSessions : [],
+      commercialSettings: normalizeCommercialSettingsPayload(settings.commercialSettings || {}),
       levFinance: {
         settings: settings.levFinanceSettings || {},
         sales: saleRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit),
@@ -6023,7 +6304,8 @@ async function fastStructuredStateResponse(req, res, url) {
         logs: "structured",
         config: "structured"
       },
-      levFinance: canAccessCommercialSalesReport(user) ? publicLevFinance(stateDb) : null
+      commercialSettings: stateDb.commercialSettings,
+      levFinance: (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? publicLevFinance(stateDb) : null
     });
   } catch (error) {
     mirrorStructuredError("state", error);
@@ -9185,6 +9467,7 @@ async function handleRequest(req, res) {
     if (await fastStructuredUserPermissionRoutes(req, res, url)) return;
     if (await fastStructuredSettingsRoutes(req, res, url)) return;
     if (await fastStructuredLevFinanceRoutes(req, res, url)) return;
+    if (await fastStructuredSalesReportRoutes(req, res, url)) return;
     if (await fastStructuredBackupRoutes(req, res, url)) return;
     if (await fastStructuredOperationalRoutes(req, res, url)) return;
     if (await fastStructuredStateResponse(req, res, url)) return;

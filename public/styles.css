@@ -591,7 +591,19 @@ textarea {
 }
 
 .nav .logout-nav {
-  margin-top: 4px;
+  width: auto;
+  justify-content: center;
+  margin-top: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  border-radius: 999px;
+  padding: 8px 16px;
+  color: white;
+  background: transparent;
+}
+
+.nav .logout-nav:hover {
+  border-color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .main {
@@ -928,7 +940,7 @@ textarea {
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -956,6 +968,15 @@ textarea {
   display: block;
   margin-top: 4px;
   font-size: 26px;
+}
+
+.metric em {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
 }
 
 .kanban {
@@ -1602,14 +1623,15 @@ th {
   height: 170px;
   pointer-events: none;
   z-index: 1;
+  filter: drop-shadow(0 0 8px rgba(56, 217, 255, 0.76)) drop-shadow(0 4px 10px rgba(14, 165, 233, 0.26));
 }
 
 .sales-line-svg polyline {
   fill: none;
-  stroke: #111827;
+  stroke: #38d9ff;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 2.5;
+  stroke-width: 3;
   vector-effect: non-scaling-stroke;
 }
 
@@ -1629,6 +1651,7 @@ th {
   height: var(--bar-height);
   border-radius: 4px 4px 0 0;
   background: var(--bar-color);
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.18);
 }
 
 .sales-line-dot {
@@ -1637,9 +1660,10 @@ th {
   z-index: 3;
   width: 8px;
   height: 8px;
-  border: 2px solid #111827;
+  border: 2px solid #38d9ff;
   border-radius: 999px;
   background: white;
+  box-shadow: 0 0 0 3px rgba(56, 217, 255, 0.22), 0 0 14px rgba(56, 217, 255, 0.82);
   transform: translateX(-50%);
 }
 
@@ -1699,6 +1723,10 @@ th {
   font-size: 15px;
 }
 
+.report-bar-card {
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08);
+}
+
 .report-bars {
   display: grid;
   gap: 8px;
@@ -1738,6 +1766,7 @@ th {
   display: block;
   height: 100%;
   border-radius: inherit;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.18);
 }
 
 .report-view-tabs {
@@ -1783,6 +1812,7 @@ th {
   left: 0;
   display: block;
   border-radius: 7px 7px 0 0;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.2);
 }
 
 .nested-panel {
@@ -2341,7 +2371,7 @@ th {
   background: linear-gradient(90deg, var(--funnel-color), color-mix(in srgb, var(--funnel-color) 76%, #111827));
   color: white;
   clip-path: polygon(7% 0, 93% 0, 100% 100%, 0 100%);
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.18), 0 0 20px color-mix(in srgb, var(--funnel-color) 22%, transparent);
   border: 0;
   cursor: pointer;
   font: inherit;
