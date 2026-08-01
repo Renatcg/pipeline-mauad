@@ -733,6 +733,28 @@ function sortBaseLeads(leads) {
   return sortLeadsForTable(leads, state.baseSort, { blankHistoricalBaseStatus: true });
 }
 
+function statusDefinitionFor(status) {
+  return (state.statusDefinitions || []).find((item) => item.status === status) || {};
+}
+
+function isSamOnlyStatus(status) {
+  return statusDefinitionFor(status).advanceMode === "sam_only";
+}
+
+function statusAdvanceLabel(status) {
+  return isSamOnlyStatus(status) ? "Somente SAM" : "Manual";
+}
+
+function statusOptionsHtml(selectedStatus = "") {
+  return state.statuses.map((status, index) => {
+    const selected = selectedStatus ? selectedStatus === status : index === 0;
+    const samOnly = isSamOnlyStatus(status);
+    const disabled = samOnly && !selected;
+    const suffix = samOnly ? " (somente SAM)" : "";
+    return `<option value="${escapeHtml(status)}" ${selected ? "selected" : ""} ${disabled ? "disabled" : ""}>${escapeHtml(status + suffix)}</option>`;
+  }).join("");
+}
+
 function baseSourcesForTotal(lead) {
   const sources = new Set();
   if (lead.source) sources.add(lead.source);
@@ -943,7 +965,8 @@ async function loadState() {
   state.statuses = data.pipelineStatuses;
   state.projects = data.projects || ["Reserva Guinle", "Golf Club Resort"];
   state.projectDefinitions = data.projectDefinitions || state.projects.map((name, position) => ({ name, position, unitPrefixes: [] }));
-  state.statusDefinitions = data.statusDefinitions || state.statuses.map((status, position) => ({ status, position, samCodes: [] }));
+  state.statusDefinitions = (data.statusDefinitions || state.statuses.map((status, position) => ({ status, position, samCodes: [] })))
+    .map((item, position) => ({ ...item, position, advanceMode: item.advanceMode || "manual" }));
   state.tagDefinitions = data.tagDefinitions || [];
   state.users = data.users;
   if (Array.isArray(data.leads) && data.leads.length) {
@@ -1364,7 +1387,11 @@ function bindPageFilters() {
     if (pageSearchRenderTimer) clearTimeout(pageSearchRenderTimer);
     pageSearchRenderTimer = setTimeout(() => {
       pageSearchRenderTimer = null;
-      renderApp();
+      if (state.view === "odysseia") {
+        loadLeadsForCurrentView().then(() => renderLeadBases()).catch(() => renderLeadBases());
+      } else {
+        renderApp();
+      }
       requestAnimationFrame(() => {
         const nextSearch = document.querySelector("#pageSearch");
         if (!nextSearch) return;
@@ -1392,7 +1419,11 @@ function bindPageFilters() {
     if (event.key !== "Enter") return;
     if (pageSearchRenderTimer) clearTimeout(pageSearchRenderTimer);
     pageSearchRenderTimer = null;
-    renderApp();
+    if (state.view === "odysseia") {
+      loadLeadsForCurrentView().then(() => renderLeadBases()).catch(() => renderLeadBases());
+    } else {
+      renderApp();
+    }
   });
   favoriteToggle?.addEventListener("click", () => {
     state.favoritesOnly = !state.favoritesOnly;
@@ -1466,7 +1497,7 @@ function renderCreateLeadModal() {
   if (state.createLeadImpactPrompt) return renderLeadImpactModal();
   const draft = state.createLeadDraft || {};
   const value = (key) => escapeHtml(draft[key] || "");
-  const statusOptions = state.statuses.map((status, index) => `<option value="${escapeHtml(status)}" ${(draft.status ? draft.status === status : index === 0) ? "selected" : ""}>${escapeHtml(status)}</option>`).join("");
+  const statusOptions = statusOptionsHtml(draft.status || state.statuses[0] || "");
   const brokerOptions = state.user?.role === "Corretor"
     ? `<option value="${escapeHtml(state.user.id)}" selected>${escapeHtml(state.user.name)}</option>`
     : `<option value="">Sem corretor</option>${activeBrokers().map((broker) => `<option value="${escapeHtml(broker.id)}" ${draft.assignedTo === broker.id ? "selected" : ""}>${escapeHtml(broker.name)}</option>`).join("")}`;
@@ -1957,6 +1988,10 @@ function bindDragDrop() {
       const lead = state.leads.find((item) => item.id === draggedId);
       const status = column.dataset.status;
       if (!lead) return;
+      if (status !== lead.status && isSamOnlyStatus(status)) {
+        alert("Este status só pode ser alcançado pelo retorno do SAM.");
+        return;
+      }
       const cards = [...column.querySelectorAll(".card")]
         .filter((card) => card.dataset.lead !== draggedId);
       const beforeCard = cards.find((card) => {
@@ -2024,7 +2059,7 @@ function leadRows(leads, options = {}) {
       <td>${escapeHtml(leadEmailForTable(lead))}</td>
       <td>
         ${(options.readOnlyStatus || options.textStatus) ? escapeHtml(leadBaseStatus(lead, options)) : `<select data-status-select="${escapeHtml(lead.id)}">
-          ${state.statuses.map((status) => `<option value="${escapeHtml(status)}" ${status === lead.status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+          ${statusOptionsHtml(lead.status)}
         </select>`}
       </td>
       <td>${escapeHtml(lead.assignedName || userName(lead.assignedTo))}</td>
@@ -2294,26 +2329,32 @@ function friendlyMetaValue(value, labels = {}) {
 }
 
 function renderMetaLeadInfo(lead) {
-  if (lead.source !== "META" || !lead.meta) return "";
+  const manualImpact = String(lead.impactedBySocial || "").trim();
+  if ((lead.source !== "META" || !lead.meta) && !manualImpact) return "";
   const formConfig = metaFormConfigForLead(lead);
   const ignoredFields = new Set(["email", "full_name", "phone_number", "nome", "telefone", "celular"]);
-  const answerRows = Object.entries(lead.meta.rawFields || {})
+  const answerRows = lead.meta ? Object.entries(lead.meta.rawFields || {})
     .filter(([question]) => !ignoredFields.has(String(question || "").toLowerCase()))
     .map(([question, answer]) => `
     <article class="answer-item">
       <span>${escapeHtml(friendlyMetaValue(question, formConfig.questionLabels))}</span>
       <strong>${escapeHtml(friendlyMetaValue(answer, formConfig.answerLabels))}</strong>
     </article>
-  `).join("");
+  `).join("") : `
+    <article class="answer-item">
+      <span>Foi impactado pelas redes sociais?</span>
+      <strong>${escapeHtml(manualImpact)}</strong>
+    </article>
+  `;
   const adUrl = metaAdUrlForLead(lead);
   return `
     <section class="panel meta-detail-panel">
       <h2>Respostas do formulário</h2>
       <div class="answers-list">${answerRows || '<div class="empty">Nenhuma resposta recebida.</div>'}</div>
-      <div class="meta-ad-link">
+      ${lead.meta ? `<div class="meta-ad-link">
         <span>URL do anúncio</span>
         ${adUrl ? `<a href="${escapeHtml(adUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(adUrl)}</a>` : "<strong>Não cadastrada</strong>"}
-      </div>
+      </div>` : ""}
     </section>
   `;
 }
@@ -2423,7 +2464,7 @@ function renderLeadDetail() {
   const project = leadProjectValue(lead);
   const statusField = lead.inPipeline ? `
     <select name="status" ${canManageLeads() ? "" : "disabled"}>
-      ${state.statuses.map((status) => `<option value="${escapeHtml(status)}" ${status === lead.status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+      ${statusOptionsHtml(lead.status)}
     </select>
   ` : `<input value="${escapeHtml(lead.sourceStatus || lead.odysseiaStatus || lead.status)}" disabled>`;
   const brokerField = `
@@ -4955,7 +4996,7 @@ function renderBackupSettings() {
       </div>
       ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
       <form id="backupSettingsForm" class="form-grid editor">
-        <div class="field full"><label class="checkline settings-check"><input type="checkbox" name="enabled" ${settings.enabled !== false ? "checked" : ""}> Backup diário ativo</label><small>Na Vercel, o agendamento roda uma vez por dia em produção.</small></div>
+        <div class="field full"><label class="checkline settings-check"><input type="checkbox" name="enabled" ${settings.enabled !== false ? "checked" : ""}> Backup diário ativo</label><small>Na Vercel, o agendamento roda uma vez por dia em produção. Para o automático funcionar, a variável <strong>CRON_SECRET</strong> precisa estar configurada na Vercel; ela pode ter o mesmo valor do BACKUP_SECRET.</small></div>
         <div class="field"><label>Enviar por e-mail</label><label class="checkline settings-check"><input type="checkbox" name="emailEnabled" ${settings.emailEnabled ? "checked" : ""}> Ativar envio</label></div>
         <div class="field"><label>Enviar para Google Drive</label><label class="checkline settings-check"><input type="checkbox" name="driveEnabled" ${settings.driveEnabled ? "checked" : ""}> Ativar envio</label></div>
         <div class="field"><label>E-mails Para</label><input name="emailTo" value="${escapeHtml(settings.emailTo || "")}" placeholder="admin@empresa.com, diretoria@empresa.com"></div>
@@ -5695,6 +5736,7 @@ function renderStatusSettings() {
   const editStatus = editIndex != null ? (state.statusDefinitions || [])[editIndex] || { status: state.statuses[editIndex] || "", samCodes: [] } : null;
   const formValue = editStatus?.status || "";
   const samCodesValue = (editStatus?.samCodes || []).join(", ");
+  const advanceModeValue = editStatus?.advanceMode || "manual";
   const rows = state.statuses.map((status, index) => {
     const definition = (state.statusDefinitions || []).find((item) => item.status === status) || {};
     const count = state.leads.filter((lead) => lead.inPipeline && lead.status === status).length;
@@ -5702,6 +5744,7 @@ function renderStatusSettings() {
       <tr>
         <td>${escapeHtml(status)}</td>
         <td>${escapeHtml((definition.samCodes || []).join(", ") || "-")}</td>
+        <td>${escapeHtml(statusAdvanceLabel(status))}</td>
         <td>${index + 1}</td>
         <td>${count}</td>
         <td>${renderSettingsActionMenu(`status-${index}`, [
@@ -5721,11 +5764,15 @@ function renderStatusSettings() {
         <form id="statusForm" class="form-grid editor">
           <div class="field"><label>Nome do status</label><input name="name" value="${escapeHtml(formValue)}" required></div>
           <div class="field"><label>Códigos recebidos do SAM</label><input name="samCodes" value="${escapeHtml(samCodesValue)}" placeholder="Ex.: reservation_created, reserva"></div>
+          <div class="field"><label>Avanço do status</label><select name="advanceMode">
+            <option value="manual" ${advanceModeValue === "manual" ? "selected" : ""}>Manual</option>
+            <option value="sam_only" ${advanceModeValue === "sam_only" ? "selected" : ""}>Somente pelo SAM</option>
+          </select></div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Status</th><th>Códigos SAM</th><th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty">Nenhum status cadastrado</td></tr>'}</tbody></table>
+        <table><thead><tr><th>Status</th><th>Códigos SAM</th><th>Avanço</th><th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nenhum status cadastrado</td></tr>'}</tbody></table>
       </div>
     </section>
   `);
@@ -5752,7 +5799,7 @@ function renderStatusSettings() {
   document.querySelector("#statusForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const payload = { name: form.get("name"), samCodes: form.get("samCodes") };
+    const payload = { name: form.get("name"), samCodes: form.get("samCodes"), advanceMode: form.get("advanceMode") };
     if (editIndex != null) {
       const data = await api(`/api/statuses/${editIndex}`, { method: "PATCH", body: JSON.stringify(payload) });
       state.statuses = data.pipelineStatuses || state.statuses;

@@ -87,7 +87,7 @@ Configure as variaveis no projeto da Vercel:
 - `META_PAGE_ACCESS_TOKEN`: token da pagina com permissao para leitura dos leads.
 - `META_GRAPH_VERSION`: opcional, padrao `v25.0`.
 - `CRON_SECRET`: segredo para permitir sincronizacao automatica protegida.
-- `BACKUP_SECRET`: opcional; se ausente, o backup diario usa `CRON_SECRET`.
+- `BACKUP_SECRET`: opcional para chamadas manuais; na Vercel, o backup automatico usa `CRON_SECRET`. Se quiser simplificar, configure `CRON_SECRET` com o mesmo valor do `BACKUP_SECRET`.
 
 No Meta Developers, use a URL de callback:
 

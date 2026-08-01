@@ -139,16 +139,18 @@ textarea {
 }
 
 .login-page {
-  min-height: 100vh;
+  min-height: 100svh;
+  max-height: 100svh;
   display: grid;
   place-items: center;
-  padding: 36px;
+  padding: clamp(12px, 3vh, 36px);
   background: #070707;
+  overflow-y: auto;
 }
 
 .login-frame {
   width: min(890px, 100%);
-  min-height: min(456px, calc(100vh - 72px));
+  min-height: min(456px, calc(100svh - 72px));
   display: grid;
   grid-template-columns: 1.15fr 0.9fr;
   overflow: hidden;
@@ -2855,7 +2857,8 @@ th {
 
 @media (max-width: 920px) {
   .login-page {
-    padding: 16px;
+    padding: 10px;
+    align-items: start;
   }
 
   .login-frame {
@@ -2864,29 +2867,35 @@ th {
   }
 
   .login-intro {
-    padding: 34px 24px;
+    gap: 8px;
+    padding: 18px 20px;
   }
 
   .login-intro img {
-    width: min(260px, 78%);
-    margin-bottom: 4px;
+    width: min(190px, 68%);
+    margin-bottom: 0;
   }
 
   .login-intro h1 {
-    font-size: 34px;
+    font-size: 25px;
   }
 
   .login-intro p,
   .login-intro small {
-    font-size: 14px;
+    font-size: 12px;
+    line-height: 1.35;
   }
 
   .login-panel {
-    padding: 30px 24px;
+    padding: 18px 20px 20px;
   }
 
   .login-box h2 {
-    font-size: 34px;
+    font-size: 28px;
+  }
+
+  .login-box p {
+    margin-bottom: 14px;
   }
 
   .shell {

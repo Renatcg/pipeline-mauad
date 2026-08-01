@@ -830,7 +830,7 @@ const META_PAGE_ACCESS_TOKEN = process.env.META_PAGE_ACCESS_TOKEN || "";
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 const META_DEFAULT_ASSIGNED_TO = process.env.META_DEFAULT_ASSIGNED_TO || "";
 const SAM_WEBHOOK_SECRET = process.env.SAM_WEBHOOK_SECRET || "";
-const BACKUP_SECRET = process.env.BACKUP_SECRET || process.env.CRON_SECRET || "";
+const BACKUP_SECRET = process.env.CRON_SECRET || process.env.BACKUP_SECRET || "";
 const APP_SCHEMA_VERSION = 2026072903;
 const DB_CACHE_TTL_MS = 3000;
 let sqlClientPromise = null;
@@ -5773,7 +5773,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
       const statusDefinitions = await structuredStatusDefinitions(sql);
       if (statusDefinitions.some((status) => status.status.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Status já existe" });
-      statusDefinitions.push(normalizeStatusDefinition({ status: name, samCodes: body.samCodes }, statusDefinitions.length));
+      statusDefinitions.push(normalizeStatusDefinition({ status: name, samCodes: body.samCodes, advanceMode: body.advanceMode }, statusDefinitions.length));
       await replaceStructuredStatuses(sql, statusDefinitions);
       await structuredAudit(user, "CREATE_STATUS", { name });
       return sendJson(res, 201, { pipelineStatuses: statusDefinitions.map((status) => status.status), statusDefinitions, dataSources: { action: "structured" } });
@@ -5809,7 +5809,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       const name = String(body.name || "").trim();
       if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
       if (statuses.some((status, idx) => idx !== index && status.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Status já existe" });
-      statusDefinitions[index] = normalizeStatusDefinition({ ...statusDefinitions[index], status: name, samCodes: body.samCodes }, index);
+      statusDefinitions[index] = normalizeStatusDefinition({ ...statusDefinitions[index], status: name, samCodes: body.samCodes, advanceMode: body.advanceMode }, index);
       await replaceStructuredStatuses(sql, statusDefinitions);
       const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
         FROM crm_leads l
@@ -7186,9 +7186,11 @@ function normalizeStatusDefinition(input, position = 0) {
   const samCodes = Array.isArray(input?.samCodes)
     ? input.samCodes
     : normalizeListFromText(input?.samCodes);
+  const advanceMode = String(input?.advanceMode || "").trim() === "sam_only" ? "sam_only" : "manual";
   return {
     status,
     position,
+    advanceMode,
     samCodes: [...new Set(samCodes.map((code) => String(code || "").trim()).filter(Boolean))]
   };
 }
@@ -7208,6 +7210,13 @@ function projectNameForUnit(unit, projectDefinitions = []) {
 async function structuredStatusDefinitions(sql) {
   const rows = await sql`SELECT status, position, payload FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`;
   return rows.map((row, index) => normalizeStatusDefinition({ ...(row.payload || {}), status: row.status }, Number(row.position ?? index))).filter((item) => item.status);
+}
+
+async function isStructuredSamOnlyStatus(sql, status) {
+  const target = String(status || "").trim();
+  if (!target) return false;
+  const definitions = await structuredStatusDefinitions(sql);
+  return definitions.some((item) => item.status === target && item.advanceMode === "sam_only");
 }
 
 async function structuredProjectNames(sql) {
@@ -7732,6 +7741,9 @@ async function fastStructuredLeadAction(req, res, url) {
       const previousAssignedName = lead.assignedName || "";
       const previousOrder = Number(lead.order || 0);
       const previousFavorite = Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite);
+      if (Object.prototype.hasOwnProperty.call(body, "status") && body.status !== previousStatus && await isStructuredSamOnlyStatus(sql, body.status)) {
+        return sendJson(res, 400, { error: "Este status só pode ser alcançado pelo retorno do SAM." });
+      }
       const detailFields = ["name", "phone", "email", "assistant", "desiredProject", "desiredUnit", "unitValue", "notes", "tags"];
       const allowed = canManageLeads(user) && lead.inPipeline
         ? ["status", "favorite", "assignedTo", "order", ...detailFields]
