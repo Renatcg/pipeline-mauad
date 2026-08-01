@@ -1828,7 +1828,6 @@ function applyLevRecordFields(db, sale, settlement, fields = {}) {
     client: fields.client !== undefined ? String(fields.client || "").trim() : undefined,
     signedAt: fields.signedAt !== undefined ? String(fields.signedAt || "").trim() : undefined,
     contractValue: fields.contractValue !== undefined ? parseMoney(fields.contractValue) : undefined,
-    commissionValue: fields.commissionValue !== undefined ? parseMoney(fields.commissionValue) : undefined,
     realEstate: fields.realEstate !== undefined ? String(fields.realEstate || "").trim() : undefined,
     invoiceNumber: fields.invoiceNumber !== undefined ? String(fields.invoiceNumber || "").trim() : undefined,
     invoiceIssuedAt: fields.invoiceIssuedAt !== undefined ? String(fields.invoiceIssuedAt || "").trim() : undefined,
@@ -1840,11 +1839,13 @@ function applyLevRecordFields(db, sale, settlement, fields = {}) {
     }
     target.updatedAt = new Date().toISOString();
   }
-  if (sale && patch.contractValue !== undefined && fields.commissionValue === undefined) {
-    sale.commissionValue = Number(sale.contractValue || 0) * (Number(sale.commissionPercent || db.levFinance.settings?.commissionPercent || 0) / 100);
+  if (sale) {
+    sale.commissionPercent = Number(sale.commissionPercent || db.levFinance.settings?.commissionPercent || 0);
+    sale.commissionValue = Number(sale.contractValue || 0) * (Number(sale.commissionPercent || 0) / 100);
   }
-  if (settlement && patch.contractValue !== undefined && fields.commissionValue === undefined) {
-    settlement.commissionValue = Number(settlement.contractValue || 0) * (Number(sale?.commissionPercent || db.levFinance.settings?.commissionPercent || 0) / 100);
+  if (settlement) {
+    settlement.commissionPercent = Number(settlement.commissionPercent || sale?.commissionPercent || db.levFinance.settings?.commissionPercent || 0);
+    settlement.commissionValue = Number(settlement.contractValue || 0) * (Number(settlement.commissionPercent || 0) / 100);
   }
   if (oldUnit && nextUnit && oldUnit !== nextUnit) {
     db.levFinance.paidUnits = db.levFinance.paidUnits.map((unit) => normalizeLevUnit(unit) === oldUnit ? nextUnit : unit);

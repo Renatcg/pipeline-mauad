@@ -2162,7 +2162,7 @@ function renderCommentBubble(comment, lead) {
       <div class="chat-bubble ${canOpenDeleted ? "clickable" : ""}" ${canOpenDeleted ? `data-show-deleted-comment="${escapeHtml(comment.id)}"` : ""}>
         <div class="chat-meta">
           <strong>${escapeHtml(displayName)}</strong>
-          <span>${escapeHtml(new Date(comment.createdAt).toLocaleString("pt-BR"))}</span>
+          <span>${escapeHtml(dateTimeLabel(comment.createdAt))}</span>
           ${canDeleteComments() && (!deleted || state.user?.role === "Admin TI") ? renderSettingsActionMenu(`comment-${comment.id}`, [
             `<button type="button" class="danger-menu-item" data-delete-comment="${escapeHtml(comment.id)}">${state.user?.role === "Admin TI" ? "Excluir permanentemente" : "Excluir mensagem"}</button>`
           ]) : ""}
@@ -2287,7 +2287,7 @@ function renderLeadDetail() {
           <form id="leadDetailForm" class="form-grid lead-data-form">
             <div class="field"><label>Origem</label><input value="${escapeHtml(lead.source || "")}" disabled></div>
             <div class="field"><label>ID importado</label><input value="${escapeHtml(lead.externalId || "")}" disabled></div>
-            <div class="field"><label>Criado em</label><input value="${escapeHtml(lead.createdAt ? new Date(lead.createdAt).toLocaleString("pt-BR") : "")}" disabled></div>
+            <div class="field"><label>Criado em</label><input value="${escapeHtml(dateTimeLabel(lead.createdAt))}" disabled></div>
             <div class="field"><label>Nome</label><input name="name" value="${escapeHtml(lead.name)}" required></div>
             <div class="field"><label>Telefone</label><input name="phone" value="${escapeHtml(lead.phone || "")}"></div>
             <div class="field"><label>E-mail</label><input name="email" type="email" value="${escapeHtml(lead.email || "")}"></div>
@@ -2372,6 +2372,7 @@ function renderLeadDetail() {
       payload.assignedTo = form.get("assignedTo");
     }
     await patchLead(lead.id, payload);
+    alert("Detalhes do lead salvos com sucesso.");
     renderLeadDetail();
   });
   document.querySelector("#commentForm")?.addEventListener("submit", async (event) => {
@@ -3492,7 +3493,7 @@ function renderUserAccessLogModal(userId) {
     .filter((item) => [item.actor, item.actorName, item.userId].some((value) => userKeys.has(String(value || "").toLowerCase())))
     .map((item) => `
       <tr>
-        <td>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))}</td>
+        <td>${escapeHtml(dateTimeLabel(item.at))}</td>
         <td>${escapeHtml(actionLabel[item.action] || item.action)}</td>
         <td>${escapeHtml(item.details?.view || "")}</td>
         <td>${escapeHtml(item.details?.path || "")}</td>
@@ -3887,7 +3888,7 @@ function samEventDetailLabel(event) {
   if (event.status === "matched") return `Pronto para vincular: ${event.nextStatus || "-"}`;
   if (event.status === "unit_mismatch") return `Unidade no lead: ${(event.leadUnits || []).join(", ") || "-"}`;
   if (event.status === "not_found") return "Procure manualmente antes de vincular";
-  if (event.status === "linked") return `Tratado por ${event.resolvedBy || "-"} em ${event.resolvedAt ? new Date(event.resolvedAt).toLocaleString("pt-BR") : "-"}`;
+  if (event.status === "linked") return `Tratado por ${event.resolvedBy || "-"} em ${event.resolvedAt ? dateTimeLabel(event.resolvedAt) : "-"}`;
   if (event.status === "ignored") return `Ignorado por ${event.resolvedBy || "-"}`;
   return "";
 }
@@ -3902,7 +3903,7 @@ function renderLogSettings() {
     })
     .map((item) => `
       <tr>
-        <td>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))}</td>
+        <td>${escapeHtml(dateTimeLabel(item.at))}</td>
         <td>${escapeHtml(item.provider || "")}</td>
         <td>${escapeHtml(item.action || "")}</td>
         <td>${escapeHtml(item.details?.leadgenId || item.details?.formId || "")}</td>
@@ -3916,7 +3917,7 @@ function renderLogSettings() {
     })
     .map((item) => `
       <tr>
-        <td>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))}</td>
+        <td>${escapeHtml(dateTimeLabel(item.at))}</td>
         <td>${escapeHtml(item.actor || "")}</td>
         <td>${escapeHtml(item.action || "")}</td>
         <td>${escapeHtml(JSON.stringify(item.details || {}))}</td>
@@ -3929,7 +3930,7 @@ function renderLogSettings() {
     })
     .map((item) => `
       <tr>
-        <td>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))}</td>
+        <td>${escapeHtml(dateTimeLabel(item.at))}</td>
         <td>${escapeHtml(item.leadName || "")}</td>
         <td>${escapeHtml(item.actorName || item.actor || "")}</td>
         <td>${escapeHtml(fupActionLabel(item.action))}</td>
@@ -3952,7 +3953,7 @@ function renderLogSettings() {
       ] : [];
       return `
         <tr>
-          <td>${escapeHtml(new Date(event.createdAt).toLocaleString("pt-BR"))}</td>
+          <td>${escapeHtml(dateTimeLabel(event.createdAt))}</td>
           <td>${escapeHtml(event.eventType || "")}</td>
           <td>${escapeHtml(event.unit || "")}</td>
           <td>${escapeHtml(event.email || "")}</td>
@@ -4164,7 +4165,7 @@ function renderKnowledgeContent() {
         <div class="knowledge-article-body">${escapeHtml(article.content).replaceAll("\n", "<br>")}</div>
       </details>
       ${(article.keywords || []).length ? `<div class="knowledge-keywords">${article.keywords.map((keyword) => `<span>${escapeHtml(keyword)}</span>`).join("")}</div>` : ""}
-      <small>Atualizado em ${escapeHtml(article.updatedAt ? new Date(article.updatedAt).toLocaleString("pt-BR") : "-")}${article.updatedBy ? ` por ${escapeHtml(article.updatedBy)}` : ""}</small>
+      <small>Atualizado em ${escapeHtml(article.updatedAt ? dateTimeLabel(article.updatedAt) : "-")}${article.updatedBy ? ` por ${escapeHtml(article.updatedBy)}` : ""}</small>
     </article>
   `).join("");
   const messages = (state.knowledgeAiMessages || []).map((message) => {
@@ -4462,7 +4463,7 @@ function renderAccessSettings() {
   };
   const rows = (state.accessLog || []).map((item) => `
     <tr>
-      <td>${escapeHtml(new Date(item.at).toLocaleString("pt-BR"))}</td>
+      <td>${escapeHtml(dateTimeLabel(item.at))}</td>
       <td>${escapeHtml(item.actorName || item.actor)}</td>
       <td>${escapeHtml(item.actor || "")}</td>
       <td>${escapeHtml(item.role || "")}</td>
@@ -4499,6 +4500,21 @@ function dateLabel(value) {
   if (!value) return "";
   const date = new Date(value.includes("/") ? value.replace(/(\d{2})\/(\d{2})\/(\d{2,4}).*/, "$2/$1/$3") : value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("pt-BR");
+}
+
+function dateTimeLabel(value) {
+  if (!value) return "";
+  const raw = String(value);
+  const brDate = raw.match(/^(\d{2})\/(\d{2})\/(\d{2,4})(?:[,\s]+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  const isoDate = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  const date = brDate
+    ? new Date(Number(brDate[3].length === 2 ? `20${brDate[3]}` : brDate[3]), Number(brDate[2]) - 1, Number(brDate[1]), Number(brDate[4] || 0), Number(brDate[5] || 0), Number(brDate[6] || 0))
+    : isoDate
+      ? new Date(Number(isoDate[1]), Number(isoDate[2]) - 1, Number(isoDate[3]), Number(isoDate[4] || 0), Number(isoDate[5] || 0), Number(isoDate[6] || 0))
+    : new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${String(date.getFullYear()).slice(-2)} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function levSettlementClass(status) {
@@ -4730,7 +4746,7 @@ function structuredDbRunLabel(run) {
   const remaining = Number(summary.remaining || 0);
   return `
     <span class="chip ${statusClass}">${escapeHtml(status)}</span>
-    <small class="structured-run-date">${when ? escapeHtml(new Date(when).toLocaleString("pt-BR")) : ""}</small>
+    <small class="structured-run-date">${when ? escapeHtml(dateTimeLabel(when)) : ""}</small>
     ${remaining > 0 ? `<small class="structured-run-date">Faltam ${remaining.toLocaleString("pt-BR")}</small>` : ""}
     ${run.error ? `<small class="structured-run-error">${escapeHtml(run.error)}</small>` : ""}
   `;
@@ -4741,7 +4757,7 @@ function structuredDbLatestLabel(run) {
   const when = run.finished_at || run.finishedAt || run.started_at || run.startedAt;
   const isStaleRunning = run.status === "running" && when && Date.now() - new Date(when).getTime() > 5 * 60 * 1000;
   const status = isStaleRunning ? "interrompida" : run.status;
-  return `${status} · ${when ? new Date(when).toLocaleString("pt-BR") : ""}`;
+  return `${status} · ${when ? dateTimeLabel(when) : ""}`;
 }
 
 function renderStructuredDbSettings() {
@@ -4837,7 +4853,7 @@ function levFinanceRow(item, options = {}) {
       <tr>
         <td>${escapeHtml(item.unit)}</td>
         <td>${escapeHtml(item.client)}</td>
-        <td>${escapeHtml(item.signedAt)}</td>
+        <td>${escapeHtml(dateTimeLabel(item.signedAt))}</td>
         <td>${money(item.contractValue)}</td>
         <td>${item.commissionValue ? money(item.commissionValue) : "-"}</td>
         <td>${escapeHtml(item.realEstate)}</td>
@@ -4865,7 +4881,7 @@ function levFinanceRow(item, options = {}) {
     <tr>
       <td>${escapeHtml(item.unit)}</td>
       <td>${escapeHtml(item.client)}</td>
-      <td>${escapeHtml(item.signedAt)}</td>
+      <td>${escapeHtml(dateTimeLabel(item.signedAt))}</td>
       <td>${money(item.contractValue)}</td>
       <td>${item.commissionValue ? money(item.commissionValue) : "-"}</td>
       <td>${escapeHtml(item.realEstate)}</td>
@@ -4931,9 +4947,9 @@ function renderLevFinanceModal() {
   const editFields = modal.type === "edit" ? `
     <div class="field"><label>Unidade</label><input name="unit" value="${escapeHtml(record.unit || "")}" required></div>
     <div class="field"><label>Cliente</label><input name="client" value="${escapeHtml(record.client || "")}"></div>
-    <div class="field"><label>Assinatura</label><input name="signedAt" value="${escapeHtml(record.signedAt || "")}"></div>
+    <div class="field"><label>Assinatura</label><input name="signedAt" value="${escapeHtml(dateTimeLabel(record.signedAt) || record.signedAt || "")}"></div>
     <div class="field"><label>Valor contrato</label><input name="contractValue" value="${escapeHtml(record.contractValue || "")}"></div>
-    <div class="field"><label>Comissão Lev</label><input name="commissionValue" value="${escapeHtml(record.commissionValue || "")}"></div>
+    <div class="field"><label>Comissão Lev</label><input value="${escapeHtml(record.commissionValue ? money(record.commissionValue) : "Calculada ao salvar")}" disabled><small>Calculada automaticamente pelo % cadastrado.</small></div>
     <div class="field"><label>Imobiliária</label><input name="realEstate" value="${escapeHtml(record.realEstate || "")}"></div>
   ` : "";
   const invoiceFields = modal.type === "invoice" ? `
