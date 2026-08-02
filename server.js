@@ -11,6 +11,10 @@ const SEED_PATH = path.join(DATA_DIR, "seed.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DEFAULT_SESSION_TTL_MS = 1000 * 60 * 15;
 const PASSWORD_SETUP_TTL_MS = 1000 * 60 * 60 * 24;
+const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL || "";
+const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
+const REDIS_KEY_PREFIX = process.env.REDIS_KEY_PREFIX || "pipeline-mauad";
+const REDIS_TIMEOUT_MS = Number(process.env.REDIS_TIMEOUT_MS || 800);
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor", "Gerente Financeiro", "Auxiliar Financeiro", "Gestor de Tráfego", "Coordenador de Marketing"];
 const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
 const PERMISSION_SCREENS = [
@@ -2610,10 +2614,74 @@ function sessionTtlMsFromCommercialSettings(settings = {}) {
   return safeMinutes * 60 * 1000;
 }
 
+function redisEnabled() {
+  return Boolean(UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN);
+}
+
+function redisKey(...parts) {
+  return [REDIS_KEY_PREFIX, ...parts].map((part) => String(part || "").replace(/[:\s]+/g, "-")).join(":");
+}
+
+async function redisPipeline(commands = []) {
+  if (!redisEnabled() || !commands.length) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(200, REDIS_TIMEOUT_MS));
+  try {
+    const response = await fetch(`${UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/pipeline`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(commands)
+    });
+    if (!response.ok) throw new Error(`Redis HTTP ${response.status}`);
+    const data = await response.json();
+    if (!Array.isArray(data)) return null;
+    return data.map((item) => item?.result ?? null);
+  } catch (error) {
+    mirrorStructuredError("redis", error);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function redisGetJson(key) {
+  const result = await redisPipeline([["GET", key]]);
+  const value = result?.[0];
+  if (!value) return null;
+  try {
+    return typeof value === "string" ? JSON.parse(value) : value;
+  } catch {
+    return null;
+  }
+}
+
+async function redisSetJson(key, value, ttlSeconds) {
+  const command = ["SET", key, JSON.stringify(value)];
+  if (ttlSeconds) command.push("EX", String(Math.max(1, Math.floor(ttlSeconds))));
+  await redisPipeline([command]);
+}
+
+async function redisDelete(key) {
+  await redisPipeline([["DEL", key]]);
+}
+
+async function cachedCommercialSettings(sql) {
+  const key = redisKey("settings", "commercial");
+  const cached = await redisGetJson(key);
+  if (cached) return cached;
+  const rows = await sql`SELECT payload FROM crm_settings WHERE key = 'commercialSettings' LIMIT 1`;
+  const settings = rows[0]?.payload || {};
+  void redisSetJson(key, settings, 60).catch((error) => mirrorStructuredError("redis-settings", error));
+  return settings;
+}
+
 async function structuredSessionTtlMs(sql) {
   try {
-    const rows = await sql`SELECT payload FROM crm_settings WHERE key = 'commercialSettings' LIMIT 1`;
-    return sessionTtlMsFromCommercialSettings(rows[0]?.payload || {});
+    return sessionTtlMsFromCommercialSettings(await cachedCommercialSettings(sql));
   } catch {
     return DEFAULT_SESSION_TTL_MS;
   }
@@ -2662,9 +2730,11 @@ function verifySamJwt(req) {
 }
 
 function publicUser(user) {
-  const { passwordHash, passwordSetup, ...safe } = user;
+  const { passwordHash, passwordSetup, photoUrl, ...safe } = user;
   return {
     ...safe,
+    hasPhoto: Boolean(photoUrl),
+    photoUpdatedAt: user.updatedAt || safe.updatedAt || null,
     passwordConfigured: Boolean(passwordHash),
     invitePending: Boolean(passwordSetup && !passwordHash && new Date(passwordSetup.expiresAt).getTime() > Date.now()),
     inviteExpiresAt: passwordSetup?.expiresAt || null
@@ -6660,7 +6730,7 @@ async function fastStructuredStateResponse(req, res, url) {
     const forms = formRows.map((row) => row.payload || {}).filter((item) => item.id);
     const permissions = structuredPermissionsFromRows(permissionRows);
     const commercialSettings = normalizeCommercialSettingsPayload(settings.commercialSettings || {});
-    const userPresence = buildUserPresence(users, presenceRows, sessionTtlMsFromCommercialSettings(commercialSettings));
+    const userPresence = buildUserPresence(users, presenceRows, sessionTtlMsFromCommercialSettings(commercialSettings), await redisPresenceForUsers(users));
     const integrations = {
       ...(settings.integrations || {}),
       metaForms: {
@@ -6723,7 +6793,8 @@ async function fastStructuredStateResponse(req, res, url) {
       dataSources: {
         state: "structured",
         logs: "structured",
-        config: "structured"
+        config: "structured",
+        presence: redisEnabled() ? "redis" : "structured"
       },
       commercialSettings: stateDb.commercialSettings,
       backupSettings: canManageSettings(user) ? normalizeBackupSettings(settings.backupSettings || {}) : null,
@@ -6783,7 +6854,9 @@ async function structuredUserFromSession(req, res, sql) {
     sendJson(res, 401, { error: "Usuário inativo" });
     return null;
   }
-  res.setHeader("Set-Cookie", sessionCookie(user.id, await structuredSessionTtlMs(sql)));
+  const ttlMs = await structuredSessionTtlMs(sql);
+  res.setHeader("Set-Cookie", sessionCookie(user.id, ttlMs));
+  void redisTouchPresence(user, ttlMs, req).catch((error) => mirrorStructuredError("redis-presence", error));
   return user;
 }
 
@@ -6804,6 +6877,19 @@ function structuredUserFromAuthRow(row) {
   };
 }
 
+function parseDataImage(photoUrl) {
+  const match = String(photoUrl || "").match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=\s]+)$/);
+  if (!match) return null;
+  try {
+    return {
+      contentType: match[1],
+      buffer: Buffer.from(match[2].replace(/\s+/g, ""), "base64")
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function structuredUserBySetupToken(sql, token) {
   const tokenHash = hashToken(String(token || ""));
   if (!tokenHash) return null;
@@ -6816,12 +6902,27 @@ async function structuredUserBySetupToken(sql, token) {
 
 async function fastStructuredAuthRoutes(req, res, url) {
   if (!DATABASE_URL) return false;
+  const userPhotoMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/photo$/);
   const authPaths = new Set(["/api/login", "/api/logout", "/api/me", "/api/profile", "/api/password/setup/validate", "/api/password/setup"]);
-  if (!authPaths.has(url.pathname)) return false;
+  if (!authPaths.has(url.pathname) && !userPhotoMatch) return false;
   try {
     const sql = await getSql();
     if (!sql) return false;
     await ensureStructuredSchemaOnce(sql);
+
+    if (req.method === "GET" && userPhotoMatch) {
+      const viewer = await structuredUserFromSession(req, res, sql);
+      if (!viewer) return true;
+      const targetId = decodeURIComponent(userPhotoMatch[1] || "");
+      const rows = await sql`SELECT * FROM crm_users WHERE id = ${targetId} AND active = true LIMIT 1`;
+      const target = structuredUserFromAuthRow(rows[0]);
+      const image = parseDataImage(target?.photoUrl || "");
+      if (!image?.buffer?.length) return notFound(res);
+      return sendBuffer(res, 200, image.buffer, {
+        "Content-Type": image.contentType,
+        "Cache-Control": "private, max-age=300"
+      });
+    }
 
     if (req.method === "POST" && url.pathname === "/api/login") {
       const body = await readBody(req);
@@ -6843,8 +6944,10 @@ async function fastStructuredAuthRoutes(req, res, url) {
         .catch((error) => mirrorStructuredError("login-audit", error));
       void structuredAccess(user, "LOGIN", { path: "/login", view: "Login", source: "structured" }, req)
         .catch((error) => mirrorStructuredError("login-access", error));
+      const ttlMs = await structuredSessionTtlMs(sql);
+      void redisTouchPresence(user, ttlMs, req, true).catch((error) => mirrorStructuredError("redis-login-presence", error));
       return sendJson(res, 200, { user: publicUser(user), dataSources: { auth: "structured" } }, {
-        "Set-Cookie": sessionCookie(user.id, await structuredSessionTtlMs(sql))
+        "Set-Cookie": sessionCookie(user.id, ttlMs)
       });
     }
 
@@ -6854,6 +6957,7 @@ async function fastStructuredAuthRoutes(req, res, url) {
         const rows = await sql`SELECT * FROM crm_users WHERE id = ${session.userId} LIMIT 1`;
         const logoutUser = structuredUserFromAuthRow(rows[0]);
         if (logoutUser?.id) {
+          await redisClearPresence(logoutUser.id);
           void structuredAccess(logoutUser, "LOGOUT", { path: "/logout", view: "Logout", source: "structured" }, req)
             .catch((error) => mirrorStructuredError("logout-access", error));
         }
@@ -7377,9 +7481,52 @@ async function structuredAccess(actor, action, details, req) {
   });
 }
 
-function buildUserPresence(users = [], accessLogs = [], timeoutMs = DEFAULT_SESSION_TTL_MS) {
+async function redisTouchPresence(user, ttlMs = DEFAULT_SESSION_TTL_MS, req, resetOnlineSince = false) {
+  if (!user?.id || !redisEnabled()) return null;
+  const key = redisKey("presence", "user", user.id);
+  const existing = resetOnlineSince ? null : await redisGetJson(key);
+  const now = new Date().toISOString();
+  const payload = {
+    userId: user.id,
+    username: user.username || "",
+    name: user.name || "",
+    role: user.role || "",
+    online: true,
+    onlineSince: existing?.onlineSince || now,
+    lastAccessAt: now,
+    ip: req ? clientIp(req) : "",
+    userAgent: req ? String(req.headers["user-agent"] || "").slice(0, 220) : ""
+  };
+  await redisSetJson(key, payload, Math.ceil(Math.max(ttlMs, 60 * 1000) / 1000) + 30);
+  return payload;
+}
+
+async function redisClearPresence(userId) {
+  if (!userId || !redisEnabled()) return;
+  await redisDelete(redisKey("presence", "user", userId));
+}
+
+async function redisPresenceForUsers(users = []) {
+  if (!redisEnabled() || !users.length) return [];
+  const commands = users
+    .filter((user) => user?.id)
+    .map((user) => ["GET", redisKey("presence", "user", user.id)]);
+  const results = await redisPipeline(commands);
+  if (!results) return [];
+  return results.map((value) => {
+    if (!value) return null;
+    try {
+      return typeof value === "string" ? JSON.parse(value) : value;
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+}
+
+function buildUserPresence(users = [], accessLogs = [], timeoutMs = DEFAULT_SESSION_TTL_MS, redisPresence = []) {
   const now = Date.now();
   const logsByActor = new Map();
+  const redisByUser = new Map(redisPresence.map((entry) => [String(entry.userId || ""), entry]));
   for (const row of accessLogs) {
     const entry = row?.payload || row || {};
     const actor = String(entry.actor || "").trim().toLowerCase();
@@ -7419,11 +7566,14 @@ function buildUserPresence(users = [], accessLogs = [], timeoutMs = DEFAULT_SESS
     const averageSessionMinutes = sessions.length
       ? sessions.reduce((sum, value) => sum + value, 0) / sessions.length
       : 0;
+    const redisEntry = redisByUser.get(userId);
+    const redisLastAt = new Date(redisEntry?.lastAccessAt || 0).getTime();
+    const redisOnline = Boolean(redisEntry?.online && Number.isFinite(redisLastAt) && now - redisLastAt <= timeoutMs + 30 * 1000);
     return {
       userId: user.id,
-      online: Boolean(last && last.action !== "LOGOUT" && now - last.atMs <= timeoutMs),
-      lastAccessAt: last ? new Date(last.atMs).toISOString() : "",
-      onlineSince: lastLogin ? new Date(lastLogin.atMs).toISOString() : (last ? new Date(last.atMs).toISOString() : ""),
+      online: redisOnline || Boolean(last && last.action !== "LOGOUT" && now - last.atMs <= timeoutMs),
+      lastAccessAt: redisEntry?.lastAccessAt || (last ? new Date(last.atMs).toISOString() : ""),
+      onlineSince: redisEntry?.onlineSince || (lastLogin ? new Date(lastLogin.atMs).toISOString() : (last ? new Date(last.atMs).toISOString() : "")),
       averageSessionMinutes: Math.round(averageSessionMinutes)
     };
   });

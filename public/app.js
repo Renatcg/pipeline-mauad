@@ -156,9 +156,20 @@ function userInitials(user = state.user) {
   return (parts.length > 1 ? `${parts[0][0]}${parts[parts.length - 1][0]}` : name.slice(0, 2)).toUpperCase();
 }
 
+function userPhotoSrc(user = state.user) {
+  if (!user) return "";
+  if (user.photoUrl) return user.photoUrl;
+  if (user.hasPhoto && user.id) {
+    const stamp = encodeURIComponent(user.photoUpdatedAt || user.updatedAt || "1");
+    return `/api/users/${encodeURIComponent(user.id)}/photo?v=${stamp}`;
+  }
+  return "";
+}
+
 function userAvatarHtml(user = state.user, className = "user-avatar") {
-  if (user?.photoUrl) {
-    return `<span class="${escapeHtml(className)}"><img src="${escapeHtml(user.photoUrl)}" alt="${escapeHtml(user.name || "Usuário")}"></span>`;
+  const photoSrc = userPhotoSrc(user);
+  if (photoSrc) {
+    return `<span class="${escapeHtml(className)}"><img src="${escapeHtml(photoSrc)}" alt="${escapeHtml(user.name || "Usuário")}"></span>`;
   }
   return `<span class="${escapeHtml(className)}">${escapeHtml(userInitials(user))}</span>`;
 }
@@ -1324,7 +1335,7 @@ function renderShell(content) {
 function renderOwnProfileModal() {
   const user = state.user || {};
   const notifications = user.notifications || {};
-  const photoUrl = state.profilePhotoDraft !== null ? state.profilePhotoDraft : user.photoUrl || "";
+  const photoUrl = state.profilePhotoDraft !== null ? state.profilePhotoDraft : userPhotoSrc(user);
   return `
     <div class="modal-backdrop" data-own-profile-backdrop>
       <section class="modal-card profile-modal" role="dialog" aria-modal="true" aria-labelledby="ownProfileTitle">
@@ -1399,7 +1410,7 @@ function bindOwnProfileModal() {
         whatsapp: form.get("notifyWhatsapp") === "on",
         whatsappNumber: form.get("whatsappNumber")
       },
-      photoUrl: state.profilePhotoDraft !== null ? state.profilePhotoDraft : state.user?.photoUrl || ""
+      photoUrl: state.profilePhotoDraft !== null ? state.profilePhotoDraft : undefined
     };
     try {
       setButtonBusy(submitButton, true, "Salvando...");
@@ -3220,7 +3231,7 @@ function renderBrokerSalesRanking(rows) {
         return `
           <div class="broker-rank-row">
             <span>${index + 1}</span>
-            ${user?.photoUrl ? `<img src="${escapeHtml(user.photoUrl)}" alt="${escapeHtml(name)}">` : `<i>${escapeHtml(initials)}</i>`}
+            ${userPhotoSrc(user) ? `<img src="${escapeHtml(userPhotoSrc(user))}" alt="${escapeHtml(name)}">` : `<i>${escapeHtml(initials)}</i>`}
             <strong>${escapeHtml(name)}</strong>
             <em>${numberPt(count)} venda(s)</em>
           </div>
