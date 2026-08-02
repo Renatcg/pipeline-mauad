@@ -3915,6 +3915,7 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_users (id text PRIMARY KEY, username text, name text, role text, active boolean NOT NULL DEFAULT true, operates_as_broker boolean NOT NULL DEFAULT false, notifications jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz, updated_at timestamptz, payload jsonb NOT NULL)`;
   await sql`ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS password_hash text`;
   await sql`ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS password_setup jsonb`;
+  await sql`ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS photo_url text`;
   await sql`CREATE INDEX IF NOT EXISTS crm_users_username_idx ON crm_users (lower(username))`;
   await sql`CREATE TABLE IF NOT EXISTS crm_leads (id text PRIMARY KEY, name text, email text, phone text, source text, status text, in_pipeline boolean NOT NULL DEFAULT false, assigned_to text, assigned_name text, project text, unit text, unit_value text, base_source_before_pipeline text, previous_pipeline_source text, created_at timestamptz, updated_at timestamptz, payload jsonb NOT NULL)`;
   await sql`ALTER TABLE crm_leads ADD COLUMN IF NOT EXISTS source_status text`;
@@ -6797,7 +6798,7 @@ function structuredUserFromAuthRow(row) {
     active: row.active !== false,
     operatesAsBroker: Boolean(row.operates_as_broker ?? row.payload?.operatesAsBroker),
     notifications: row.notifications || row.payload?.notifications || {},
-    photoUrl: row.payload?.photoUrl || "",
+    photoUrl: row.photo_url || row.payload?.photoUrl || "",
     passwordHash: row.password_hash || "",
     passwordSetup: row.password_setup || row.payload?.passwordSetup || null
   };
@@ -7365,6 +7366,7 @@ async function structuredFup(actor, lead, action, details = {}) {
 async function structuredAccess(actor, action, details, req) {
   await mirrorStructuredAccessLog({
     at: new Date().toISOString(),
+    userId: actor.id || "",
     actor: actor.username,
     actorName: actor.name,
     role: actor.role,
@@ -7381,14 +7383,25 @@ function buildUserPresence(users = [], accessLogs = [], timeoutMs = DEFAULT_SESS
   for (const row of accessLogs) {
     const entry = row?.payload || row || {};
     const actor = String(entry.actor || "").trim().toLowerCase();
+    const userId = String(entry.userId || "").trim();
     const at = new Date(entry.at || 0).getTime();
-    if (!actor || !Number.isFinite(at) || at <= 0) continue;
-    if (!logsByActor.has(actor)) logsByActor.set(actor, []);
-    logsByActor.get(actor).push({ ...entry, atMs: at });
+    if ((!actor && !userId) || !Number.isFinite(at) || at <= 0) continue;
+    const normalizedEntry = { ...entry, atMs: at };
+    if (actor) {
+      if (!logsByActor.has(actor)) logsByActor.set(actor, []);
+      logsByActor.get(actor).push(normalizedEntry);
+    }
+    if (userId) {
+      if (!logsByActor.has(userId)) logsByActor.set(userId, []);
+      logsByActor.get(userId).push(normalizedEntry);
+    }
   }
   return users.map((user) => {
     const actor = String(user.username || "").trim().toLowerCase();
-    const logs = (logsByActor.get(actor) || []).sort((a, b) => a.atMs - b.atMs);
+    const userId = String(user.id || "").trim();
+    const logs = ([...(logsByActor.get(userId) || []), ...(logsByActor.get(actor) || [])])
+      .filter((entry, index, list) => list.findIndex((candidate) => candidate.id === entry.id && candidate.at === entry.at) === index)
+      .sort((a, b) => a.atMs - b.atMs);
     const last = logs[logs.length - 1] || null;
     const lastLogin = [...logs].reverse().find((entry) => entry.action === "LOGIN");
     const sessions = [];
@@ -8255,9 +8268,9 @@ async function mirrorStructuredUser(user) {
 }
 
 async function saveStructuredUser(sql, user) {
-  await sql`INSERT INTO crm_users (id, username, name, role, active, operates_as_broker, notifications, password_hash, password_setup, created_at, updated_at, payload)
-    VALUES (${user.id}, ${user.username || ""}, ${user.name || ""}, ${user.role || ""}, ${user.active !== false}, ${Boolean(user.operatesAsBroker)}, ${JSON.stringify(user.notifications || {})}::jsonb, ${user.passwordHash || null}, ${JSON.stringify(user.passwordSetup || null)}::jsonb, ${dbDate(user.createdAt)}, ${dbDate(user.updatedAt)}, ${JSON.stringify(publicUser(user))}::jsonb)
-    ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, name = EXCLUDED.name, role = EXCLUDED.role, active = EXCLUDED.active, operates_as_broker = EXCLUDED.operates_as_broker, notifications = EXCLUDED.notifications, password_hash = EXCLUDED.password_hash, password_setup = EXCLUDED.password_setup, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
+  await sql`INSERT INTO crm_users (id, username, name, role, active, operates_as_broker, notifications, password_hash, password_setup, photo_url, created_at, updated_at, payload)
+    VALUES (${user.id}, ${user.username || ""}, ${user.name || ""}, ${user.role || ""}, ${user.active !== false}, ${Boolean(user.operatesAsBroker)}, ${JSON.stringify(user.notifications || {})}::jsonb, ${user.passwordHash || null}, ${JSON.stringify(user.passwordSetup || null)}::jsonb, ${user.photoUrl || ""}, ${dbDate(user.createdAt)}, ${dbDate(user.updatedAt)}, ${JSON.stringify(publicUser(user))}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, name = EXCLUDED.name, role = EXCLUDED.role, active = EXCLUDED.active, operates_as_broker = EXCLUDED.operates_as_broker, notifications = EXCLUDED.notifications, password_hash = EXCLUDED.password_hash, password_setup = EXCLUDED.password_setup, photo_url = EXCLUDED.photo_url, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
 }
 
 async function deleteStructuredUser(userId) {

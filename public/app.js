@@ -407,6 +407,12 @@ function formatDurationFromMinutes(minutes) {
   return rest ? `${hours}h ${rest}min` : `${hours}h`;
 }
 
+function presenceStatusLabel(item = {}) {
+  if (item.online) return "Online agora";
+  if (item.lastAccessAt) return "Offline";
+  return "Sem registro";
+}
+
 function userPresenceData() {
   const presenceByUser = new Map((state.userPresence || []).map((item) => [item.userId, item]));
   return (state.users || [])
@@ -435,24 +441,25 @@ function renderUserPresenceList() {
       <div class="side-presence-list">
         ${users.map((item) => {
           const name = item.user.name || item.user.username || "Usuário";
+          const statusLabel = presenceStatusLabel(item);
           return `
             <div class="presence-user ${item.online ? "online" : "offline"}">
               ${userAvatarHtml(item.user, "presence-avatar")}
               <span class="presence-name">${escapeHtml(firstName(name))}</span>
               <i class="presence-dot" aria-label="${item.online ? "Online" : "Offline"}"></i>
               <div class="presence-popover">
-                <i class="presence-card-status ${item.online ? "online" : "offline"}"></i>
+                <div class="presence-card-top">
+                  <span class="presence-card-rating">${item.online ? "ON" : "OFF"}</span>
+                  <i class="presence-card-status ${item.online ? "online" : "offline"}"></i>
+                </div>
                 ${userAvatarHtml(item.user, "presence-card-avatar")}
-                <strong>${escapeHtml(name)}</strong>
+                <strong>${escapeHtml(firstName(name))}</strong>
                 <span>${escapeHtml(item.user.role || "")}</span>
-                <dl>
-                  <dt>Último acesso</dt>
-                  <dd>${item.lastAccessAt ? formatDateTime(item.lastAccessAt) : "Sem registro"}</dd>
-                  <dt>Tempo médio</dt>
-                  <dd>${formatDurationFromMinutes(item.averageSessionMinutes)}</dd>
-                  <dt>Status</dt>
-                  <dd>${item.online ? "Online agora" : "Offline"}</dd>
-                </dl>
+                <div class="presence-card-stats">
+                  <div><small>Último acesso</small><b>${item.lastAccessAt ? formatDateTime(item.lastAccessAt) : "Sem registro"}</b></div>
+                  <div><small>Tempo médio</small><b>${formatDurationFromMinutes(item.averageSessionMinutes)}</b></div>
+                  <div><small>Status</small><b>${escapeHtml(statusLabel)}</b></div>
+                </div>
               </div>
             </div>
           `;
@@ -1333,7 +1340,9 @@ function renderOwnProfileModal() {
                 ${photoUrl ? `<img src="${escapeHtml(photoUrl)}" alt="${escapeHtml(user.name || "Usuário")}">` : `<span>${escapeHtml(userInitials(user))}</span>`}
               </div>
               <div class="profile-photo-actions">
+                <label class="file-choice" for="ownProfilePhoto">Escolher foto</label>
                 <input id="ownProfilePhoto" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp">
+                <small data-profile-photo-name>Nenhum arquivo escolhido</small>
                 <button type="button" data-remove-own-photo>Retirar foto</button>
               </div>
             </div>
@@ -1368,6 +1377,8 @@ function bindOwnProfileModal() {
       state.profilePhotoDraft = photoUrl;
       const preview = document.querySelector("[data-profile-photo-preview]");
       if (preview) preview.innerHTML = `<img src="${escapeHtml(photoUrl)}" alt="${escapeHtml(state.user?.name || "Usuário")}">`;
+      const nameLabel = document.querySelector("[data-profile-photo-name]");
+      if (nameLabel) nameLabel.textContent = file.name || "Foto selecionada";
     } catch (error) {
       alert(error.message);
     }
