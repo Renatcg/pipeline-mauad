@@ -459,13 +459,17 @@ function renderUserPresenceList() {
               <span class="presence-name">${escapeHtml(firstName(name))}</span>
               <i class="presence-dot" aria-label="${item.online ? "Online" : "Offline"}"></i>
               <div class="presence-popover">
-                <div class="presence-card-top">
-                  <span class="presence-card-rating">${item.online ? "ON" : "OFF"}</span>
-                  <i class="presence-card-status ${item.online ? "online" : "offline"}"></i>
+                <div class="presence-card-hero">
+                  ${userAvatarHtml(item.user, "presence-card-avatar")}
+                  <span class="presence-card-badge">${item.online ? "Online" : "Offline"}</span>
                 </div>
-                ${userAvatarHtml(item.user, "presence-card-avatar")}
-                <strong>${escapeHtml(firstName(name))}</strong>
-                <span>${escapeHtml(item.user.role || "")}</span>
+                <div class="presence-card-body">
+                  <div class="presence-card-title">
+                    <strong>${escapeHtml(firstName(name))}</strong>
+                    <i class="presence-card-status ${item.online ? "online" : "offline"}"></i>
+                  </div>
+                  <span>${escapeHtml(item.user.role || "")}</span>
+                </div>
                 <div class="presence-card-stats">
                   <div><small>Último acesso</small><b>${item.lastAccessAt ? formatDateTime(item.lastAccessAt) : "Sem registro"}</b></div>
                   <div><small>Tempo médio</small><b>${formatDurationFromMinutes(item.averageSessionMinutes)}</b></div>
