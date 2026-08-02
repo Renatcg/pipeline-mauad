@@ -163,48 +163,80 @@ function userAvatarHtml(user = state.user, className = "user-avatar") {
   return `<span class="${escapeHtml(className)}">${escapeHtml(userInitials(user))}</span>`;
 }
 
-function resizeProfilePhoto(file) {
+function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
-    if (!file?.type?.startsWith("image/")) {
-      reject(new Error("Envie uma imagem válida."));
-      return;
-    }
-    const renderImage = (source, cleanup = () => {}) => {
-      const image = new Image();
-      image.onload = () => {
-        try {
-          const size = 224;
-          const canvas = document.createElement("canvas");
-          canvas.width = size;
-          canvas.height = size;
-          const ctx = canvas.getContext("2d");
-          const scale = Math.max(size / image.width, size / image.height);
-          const width = image.width * scale;
-          const height = image.height * scale;
-          ctx.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
-          cleanup();
-          resolve(canvas.toDataURL("image/jpeg", 0.76));
-        } catch {
-          cleanup();
-          reject(new Error("Não foi possível preparar a imagem."));
-        }
-      };
-      image.onerror = () => {
-        cleanup();
-        reject(new Error("Não foi possível ler a imagem."));
-      };
-      image.src = source;
-    };
-    if (window.URL?.createObjectURL) {
-      const url = URL.createObjectURL(file);
-      renderImage(url, () => URL.revokeObjectURL(url));
-      return;
-    }
     const reader = new FileReader();
-    reader.onload = () => renderImage(reader.result);
+    reader.onload = () => resolve(reader.result);
     reader.onerror = () => reject(new Error("Não foi possível ler a imagem."));
     reader.readAsDataURL(file);
   });
+}
+
+function loadImageFromSource(source) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Não foi possível decodificar a imagem."));
+    image.src = source;
+  });
+}
+
+function cropImageToDataUrl(image) {
+  const size = 224;
+  const sourceWidth = image.width || image.naturalWidth;
+  const sourceHeight = image.height || image.naturalHeight;
+  if (!sourceWidth || !sourceHeight) throw new Error("Imagem sem dimensão válida.");
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  const scale = Math.max(size / sourceWidth, size / sourceHeight);
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
+  ctx.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+  return canvas.toDataURL("image/jpeg", 0.76);
+}
+
+async function resizeProfilePhoto(file) {
+  if (!file?.type?.startsWith("image/")) throw new Error("Envie uma imagem válida.");
+  const lowerName = String(file.name || "").toLowerCase();
+  const supportedRawTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+  const isHeic = file.type.includes("heic") || file.type.includes("heif") || /\.(heic|heif)$/i.test(lowerName);
+  if (isHeic) {
+    throw new Error("Esse formato não é compatível com o navegador. Envie a foto em JPG ou PNG.");
+  }
+
+  if (window.createImageBitmap) {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const dataUrl = cropImageToDataUrl(bitmap);
+      bitmap.close?.();
+      return dataUrl;
+    } catch {}
+  }
+
+  if (window.URL?.createObjectURL) {
+    let url = "";
+    try {
+      url = URL.createObjectURL(file);
+      const image = await loadImageFromSource(url);
+      return cropImageToDataUrl(image);
+    } catch {
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+    }
+  }
+
+  const dataUrl = await readFileAsDataUrl(file);
+  try {
+    const image = await loadImageFromSource(dataUrl);
+    return cropImageToDataUrl(image);
+  } catch {
+    if (supportedRawTypes.has(file.type) && String(dataUrl).length <= 620000) {
+      return dataUrl;
+    }
+    throw new Error("Não foi possível ler a imagem. Envie a foto em JPG ou PNG.");
+  }
 }
 
 async function api(path, options = {}) {
@@ -1301,7 +1333,7 @@ function renderOwnProfileModal() {
                 ${photoUrl ? `<img src="${escapeHtml(photoUrl)}" alt="${escapeHtml(user.name || "Usuário")}">` : `<span>${escapeHtml(userInitials(user))}</span>`}
               </div>
               <div class="profile-photo-actions">
-                <input id="ownProfilePhoto" type="file" accept="image/*">
+                <input id="ownProfilePhoto" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp">
                 <button type="button" data-remove-own-photo>Retirar foto</button>
               </div>
             </div>
