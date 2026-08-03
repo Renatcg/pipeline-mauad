@@ -4110,6 +4110,173 @@ function parseAdLinks(text) {
   return Object.entries(mapping).map(([id, url]) => ({ id, url }));
 }
 
+function makeConfigId(prefix, value) {
+  const base = String(value || prefix || "item")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  return `${prefix}-${base || Date.now()}-${String(Date.now()).slice(-5)}`;
+}
+
+function defaultMetaConversionEvents() {
+  return [
+    { id: "lead_received", name: "Lead recebido", eventName: "Lead", description: "Lead entrou no Pipeline vindo do Meta.", active: true },
+    { id: "lead_contacted", name: "Lead contatado", eventName: "Contact", description: "Primeiro contato comercial real.", active: true },
+    { id: "qualified_lead", name: "Lead qualificado", eventName: "QualifiedLead", description: "Lead com qualidade comercial validada.", active: true },
+    { id: "visit_scheduled", name: "Visita agendada", eventName: "Schedule", description: "Visita ou atendimento presencial/remoto agendado.", active: true },
+    { id: "visit_done", name: "Visita realizada", eventName: "VisitDone", description: "Visita realizada.", active: true },
+    { id: "proposal_sent", name: "Proposta enviada", eventName: "SubmitApplication", description: "Proposta ou simulação enviada.", active: true },
+    { id: "contract_issued", name: "Contrato emitido", eventName: "ContractIssued", description: "Contrato emitido pelo SAM/ERP.", active: true },
+    { id: "purchase", name: "Contrato assinado / venda", eventName: "Purchase", description: "Venda concluída com contrato assinado.", active: true }
+  ];
+}
+
+function normalizeMetaConversions(integrations = {}) {
+  const current = integrations.metaConversions || {};
+  const currentEvents = Array.isArray(current.events) ? current.events : [];
+  const currentIds = new Set(currentEvents.map((event) => event.id));
+  const seeded = defaultMetaConversionEvents().filter((event) => !currentIds.has(event.id));
+  return {
+    enabled: Boolean(current.enabled),
+    apiUrl: current.apiUrl || "https://graph.facebook.com/v25.0/{DATASET_ID}/events",
+    datasetId: current.datasetId || "",
+    tokenLabel: current.tokenLabel || "META_CAPI_ACCESS_TOKEN",
+    testEventCode: current.testEventCode || "",
+    events: [...currentEvents, ...seeded].map((event) => ({
+      id: event.id || makeConfigId("meta-event", event.name || event.eventName || "evento"),
+      name: event.name || event.eventName || "Evento",
+      eventName: event.eventName || "",
+      description: event.description || "",
+      active: event.active !== false
+    })),
+    statusMappings: current.statusMappings || {},
+    tagMappings: current.tagMappings || {}
+  };
+}
+
+function metaConversionEventOptions(events = [], selected = "") {
+  return [
+    '<option value="">Não enviar</option>',
+    ...events
+      .filter((event) => event.active !== false)
+      .map((event) => `<option value="${escapeHtml(event.id)}" ${event.id === selected ? "selected" : ""}>${escapeHtml(event.name)} · ${escapeHtml(event.eventName)}</option>`)
+  ].join("");
+}
+
+function renderMetaConversionEventModal(eventValue = {}, isEditing = false) {
+  return `
+    <div class="modal-backdrop" data-meta-conversion-modal-backdrop>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="metaConversionModalTitle">
+        <div class="panel-head">
+          <h2 id="metaConversionModalTitle">${isEditing ? "Editar evento Meta" : "Novo evento Meta"}</h2>
+          <button type="button" class="icon" data-cancel-settings title="Fechar">×</button>
+        </div>
+        <form id="metaConversionEventForm" class="form-grid">
+          <div class="field"><label>Nome interno</label><input name="name" value="${escapeHtml(eventValue.name || "")}" required autofocus placeholder="Ex.: Lead qualificado"></div>
+          <div class="field"><label>Evento na Meta</label><input name="eventName" value="${escapeHtml(eventValue.eventName || "")}" required placeholder="Ex.: QualifiedLead"></div>
+          <div class="field full"><label>Descrição</label><textarea name="description" placeholder="Quando esse evento deve ser enviado">${escapeHtml(eventValue.description || "")}</textarea></div>
+          <div class="field"><label>Status</label><select name="active"><option value="true" ${eventValue.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${eventValue.active === false ? "selected" : ""}>Inativo</option></select></div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">${isEditing ? "Salvar evento" : "Adicionar evento"}</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function renderMetaConversionSettings(metaConversions) {
+  const events = metaConversions.events || [];
+  const editingId = state.settingsEditing?.startsWith("meta-conversion-event:")
+    ? state.settingsEditing.replace("meta-conversion-event:", "")
+    : "";
+  const editingEvent = events.find((event) => event.id === editingId);
+  const isCreatingEvent = state.settingsEditing === "new-meta-conversion-event";
+  const isEventModalOpen = isCreatingEvent || Boolean(editingEvent);
+  const eventRows = events.map((event) => `
+    <tr>
+      <td>${escapeHtml(event.name)}</td>
+      <td>${escapeHtml(event.eventName)}</td>
+      <td><span class="chip ${event.active === false ? "" : "ok"}">${event.active === false ? "Inativo" : "Ativo"}</span></td>
+      <td>${escapeHtml(event.description || "")}</td>
+      <td>
+        ${renderSettingsActionMenu(`meta-conversion-${event.id}`, [
+          `<button type="button" data-edit-meta-conversion-event="${escapeHtml(event.id)}">Editar</button>`,
+          `<button type="button" data-toggle-meta-conversion-event="${escapeHtml(event.id)}">${event.active === false ? "Ativar" : "Inativar"}</button>`,
+          `<button type="button" class="danger-menu-item" data-delete-meta-conversion-event="${escapeHtml(event.id)}">Excluir</button>`
+        ])}
+      </td>
+    </tr>
+  `).join("");
+  const statusRows = (state.statusDefinitions || []).map((status) => {
+    const mapping = metaConversions.statusMappings?.[status.status] || {};
+    return `
+      <tr>
+        <td>${escapeHtml(status.status)}</td>
+        <td><input type="checkbox" name="statusEnabled:${escapeHtml(status.status)}" ${mapping.enabled ? "checked" : ""}></td>
+        <td><select name="statusEvent:${escapeHtml(status.status)}">${metaConversionEventOptions(events, mapping.eventId || "")}</select></td>
+      </tr>
+    `;
+  }).join("");
+  const tagRows = (state.tagDefinitions || []).map((tag) => {
+    const mapping = metaConversions.tagMappings?.[tag.id] || {};
+    return `
+      <tr>
+        <td><span class="tag-chip" style="--tag-color:${escapeHtml(tag.color || "#0f766e")}">${escapeHtml(tag.name)}</span></td>
+        <td><input type="checkbox" name="tagEnabled:${escapeHtml(tag.id)}" ${mapping.enabled ? "checked" : ""}></td>
+        <td><select name="tagEvent:${escapeHtml(tag.id)}">${metaConversionEventOptions(events, mapping.eventId || "")}</select></td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <section class="integration-help">
+      <div class="panel-head">
+        <div>
+          <h2>Qualidade de Leads / Meta CAPI</h2>
+          <p class="muted">Configuração para retroalimentar o Meta com sinais de qualidade, status, etiquetas e vendas.</p>
+        </div>
+      </div>
+      <form id="metaConversionConfigForm" class="form-grid compact-form">
+        <div class="field"><label>Integração</label><select name="enabled"><option value="false" ${!metaConversions.enabled ? "selected" : ""}>Inativa</option><option value="true" ${metaConversions.enabled ? "selected" : ""}>Ativa</option></select></div>
+        <div class="field"><label>Dataset / Pixel ID</label><input name="datasetId" value="${escapeHtml(metaConversions.datasetId || "")}" placeholder="Ex.: 1234567890"></div>
+        <div class="field full"><label>URL de envio</label><input name="apiUrl" value="${escapeHtml(metaConversions.apiUrl || "")}" placeholder="https://graph.facebook.com/v25.0/{DATASET_ID}/events"><small>Use {DATASET_ID} para o sistema substituir pelo ID cadastrado.</small></div>
+        <div class="field"><label>Token</label><input name="tokenLabel" value="${escapeHtml(metaConversions.tokenLabel || "")}" placeholder="META_CAPI_ACCESS_TOKEN"><small>Nome da variável segura configurada na Vercel.</small></div>
+        <div class="field"><label>Código de teste</label><input name="testEventCode" value="${escapeHtml(metaConversions.testEventCode || "")}" placeholder="TEST12345"></div>
+        <div class="field full"><button class="primary" type="submit">Salvar configuração Meta CAPI</button></div>
+      </form>
+    </section>
+    <section class="integration-help">
+      <div class="panel-head">
+        <h2>Eventos Meta</h2>
+        <button class="primary" type="button" data-new-meta-conversion-event>Novo evento</button>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Nome interno</th><th>Evento Meta</th><th>Status</th><th>Descrição</th><th>Ações</th></tr></thead><tbody>${eventRows || '<tr><td colspan="5" class="empty">Nenhum evento cadastrado.</td></tr>'}</tbody></table>
+      </div>
+    </section>
+    <section class="integration-help">
+      <h2>Mapeamento por status do pipeline</h2>
+      <form id="metaStatusMappingForm">
+        <div class="table-wrap">
+          <table><thead><tr><th>Status</th><th>Enviar</th><th>Evento Meta</th></tr></thead><tbody>${statusRows || '<tr><td colspan="3" class="empty">Nenhum status cadastrado.</td></tr>'}</tbody></table>
+        </div>
+        <div class="row-actions table-actions"><button class="primary" type="submit">Salvar mapeamento de status</button></div>
+      </form>
+    </section>
+    <section class="integration-help">
+      <h2>Mapeamento por etiquetas</h2>
+      <form id="metaTagMappingForm">
+        <div class="table-wrap">
+          <table><thead><tr><th>Etiqueta</th><th>Enviar</th><th>Evento Meta</th></tr></thead><tbody>${tagRows || '<tr><td colspan="3" class="empty">Nenhuma etiqueta cadastrada.</td></tr>'}</tbody></table>
+        </div>
+        <div class="row-actions table-actions"><button class="primary" type="submit">Salvar mapeamento de etiquetas</button></div>
+      </form>
+    </section>
+    ${isEventModalOpen ? renderMetaConversionEventModal(editingEvent || {}, Boolean(editingEvent)) : ""}
+  `;
+}
+
 function renderMetaDiagnostics() {
   if (!state.metaDiagnostics) {
     return '<div class="empty">Execute o diagnóstico para verificar token, Página, webhook e forms monitorados.</div>';
@@ -4148,6 +4315,7 @@ function renderMetaDiagnostics() {
 
 function renderIntegrationSettings() {
   const integrations = state.integrations || {};
+  const metaConversions = normalizeMetaConversions(integrations);
   const metaForms = integrations.metaForms?.forms || [];
   const editIndex = state.settingsEditing?.startsWith("meta-form:") ? Number(state.settingsEditing.replace("meta-form:", "")) : null;
   const isCreatingForm = state.settingsEditing === "new-meta-form";
@@ -4216,13 +4384,24 @@ function renderIntegrationSettings() {
           <div class="field"><label>&nbsp;</label><button class="primary" type="submit">Importar lead</button></div>
         </form>
       </section>
+      ${renderMetaConversionSettings(metaConversions)}
     </section>
     ${isFormModalOpen ? renderMetaFormModal(formValue, editIndex != null) : ""}
   `);
   bindSettingsCommon();
   bindSettingsActionMenus();
+  const saveMetaConversions = async (nextMetaConversions, notice) => {
+    const next = JSON.parse(JSON.stringify(state.integrations || {}));
+    next.metaConversions = nextMetaConversions;
+    state.settingsNotice = notice;
+    await saveIntegrations(next);
+  };
   document.querySelector("[data-new-meta-form]")?.addEventListener("click", () => {
     state.settingsEditing = "new-meta-form";
+    renderSettings();
+  });
+  document.querySelector("[data-new-meta-conversion-event]")?.addEventListener("click", () => {
+    state.settingsEditing = "new-meta-conversion-event";
     renderSettings();
   });
   document.querySelectorAll("[data-meta-forms-tab]").forEach((button) => {
@@ -4236,6 +4415,102 @@ function renderIntegrationSettings() {
     if (event.target !== event.currentTarget) return;
     state.settingsEditing = null;
     renderSettings();
+  });
+  document.querySelector("[data-meta-conversion-modal-backdrop]")?.addEventListener("click", (event) => {
+    if (event.target !== event.currentTarget) return;
+    state.settingsEditing = null;
+    renderSettings();
+  });
+  document.querySelector("#metaConversionConfigForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const nextMetaConversions = normalizeMetaConversions({
+      metaConversions: {
+        ...metaConversions,
+        enabled: form.get("enabled") === "true",
+        apiUrl: String(form.get("apiUrl") || "").trim(),
+        datasetId: String(form.get("datasetId") || "").trim(),
+        tokenLabel: String(form.get("tokenLabel") || "").trim() || "META_CAPI_ACCESS_TOKEN",
+        testEventCode: String(form.get("testEventCode") || "").trim()
+      }
+    });
+    await saveMetaConversions(nextMetaConversions, "Configuração Meta CAPI salva.");
+  });
+  document.querySelector("#metaConversionEventForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const name = String(form.get("name") || "").trim();
+    const eventName = String(form.get("eventName") || "").trim();
+    if (!name || !eventName) return;
+    const editingId = state.settingsEditing?.startsWith("meta-conversion-event:")
+      ? state.settingsEditing.replace("meta-conversion-event:", "")
+      : "";
+    const nextEvent = {
+      id: editingId || makeConfigId("meta-event", name || eventName),
+      name,
+      eventName,
+      description: String(form.get("description") || "").trim(),
+      active: form.get("active") !== "false"
+    };
+    const nextMetaConversions = {
+      ...metaConversions,
+      events: editingId
+        ? metaConversions.events.map((item) => item.id === editingId ? nextEvent : item)
+        : [...metaConversions.events.filter((item) => item.id !== nextEvent.id), nextEvent]
+    };
+    state.settingsEditing = null;
+    await saveMetaConversions(nextMetaConversions, editingId ? "Evento Meta atualizado." : "Evento Meta cadastrado.");
+  });
+  document.querySelectorAll("[data-edit-meta-conversion-event]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `meta-conversion-event:${button.dataset.editMetaConversionEvent}`;
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-toggle-meta-conversion-event]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const eventId = button.dataset.toggleMetaConversionEvent;
+      const nextMetaConversions = {
+        ...metaConversions,
+        events: metaConversions.events.map((item) => item.id === eventId ? { ...item, active: item.active === false } : item)
+      };
+      await saveMetaConversions(nextMetaConversions, "Status do evento Meta atualizado.");
+    });
+  });
+  document.querySelectorAll("[data-delete-meta-conversion-event]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const eventId = button.dataset.deleteMetaConversionEvent;
+      if (!confirm("Excluir este evento Meta?")) return;
+      const nextMetaConversions = {
+        ...metaConversions,
+        events: metaConversions.events.filter((item) => item.id !== eventId),
+        statusMappings: Object.fromEntries(Object.entries(metaConversions.statusMappings || {}).filter(([, mapping]) => mapping.eventId !== eventId)),
+        tagMappings: Object.fromEntries(Object.entries(metaConversions.tagMappings || {}).filter(([, mapping]) => mapping.eventId !== eventId))
+      };
+      await saveMetaConversions(nextMetaConversions, "Evento Meta excluído.");
+    });
+  });
+  document.querySelector("#metaStatusMappingForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const statusMappings = {};
+    (state.statusDefinitions || []).forEach((status) => {
+      const eventId = String(form.get(`statusEvent:${status.status}`) || "").trim();
+      const enabled = form.get(`statusEnabled:${status.status}`) === "on" && Boolean(eventId);
+      if (enabled || eventId) statusMappings[status.status] = { enabled, eventId };
+    });
+    await saveMetaConversions({ ...metaConversions, statusMappings }, "Mapeamento de status salvo.");
+  });
+  document.querySelector("#metaTagMappingForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const tagMappings = {};
+    (state.tagDefinitions || []).forEach((tag) => {
+      const eventId = String(form.get(`tagEvent:${tag.id}`) || "").trim();
+      const enabled = form.get(`tagEnabled:${tag.id}`) === "on" && Boolean(eventId);
+      if (enabled || eventId) tagMappings[tag.id] = { enabled, eventId };
+    });
+    await saveMetaConversions({ ...metaConversions, tagMappings }, "Mapeamento de etiquetas salvo.");
   });
   document.querySelector("#metaFormMonitorForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -4442,6 +4717,7 @@ function renderLogSettings() {
   const matches = (value) => !term || String(value || "").toLowerCase().includes(term);
   const integrationRows = (state.integrationLog || [])
     .filter((item) => {
+      if (String(item.provider || "").toUpperCase() === "META") return false;
       const details = JSON.stringify(item.details || {});
       return [item.provider, item.action, details, item.details?.leadgenId, item.details?.error].some(matches);
     })
@@ -4452,6 +4728,21 @@ function renderLogSettings() {
         <td>${escapeHtml(item.action || "")}</td>
         <td>${escapeHtml(item.details?.leadgenId || item.details?.formId || "")}</td>
         <td>${escapeHtml(item.details?.project || item.details?.error || "")}</td>
+      </tr>
+    `).join("");
+  const metaRows = (state.integrationLog || [])
+    .filter((item) => {
+      if (String(item.provider || "").toUpperCase() !== "META") return false;
+      const details = JSON.stringify(item.details || {});
+      return [item.action, details, item.details?.leadgenId, item.details?.formId, item.details?.pageId, item.details?.error, item.details?.project].some(matches);
+    })
+    .map((item) => `
+      <tr>
+        <td>${escapeHtml(dateTimeLabel(item.at))}</td>
+        <td>${escapeHtml(item.action || "")}</td>
+        <td>${escapeHtml(item.details?.leadgenId || item.details?.formId || item.details?.pageId || "")}</td>
+        <td>${escapeHtml(item.details?.project || item.details?.status || "")}</td>
+        <td>${escapeHtml(item.details?.error || item.details?.message || "")}</td>
       </tr>
     `).join("");
   const auditRows = (state.auditLog || [])
@@ -4522,11 +4813,14 @@ function renderLogSettings() {
         <button class="${state.settingsLogTab === "audit" ? "active" : ""}" data-log-tab="audit">Auditoria</button>
         <button class="${state.settingsLogTab === "fup" ? "active" : ""}" data-log-tab="fup">FUP Lead</button>
         <button class="${state.settingsLogTab === "sam" ? "active" : ""}" data-log-tab="sam">SAM</button>
+        <button class="${state.settingsLogTab === "meta" ? "active" : ""}" data-log-tab="meta">Meta</button>
         <button class="${state.settingsLogTab === "integration" ? "active" : ""}" data-log-tab="integration">Eventos de integração</button>
       </div>
       <div class="table-wrap log-table-wrap">
         ${state.settingsLogTab === "integration"
           ? `<table><thead><tr><th>Data</th><th>Origem</th><th>Evento</th><th>ID</th><th>Detalhe</th></tr></thead><tbody>${integrationRows || '<tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`
+          : state.settingsLogTab === "meta"
+            ? `<table><thead><tr><th>Data</th><th>Evento</th><th>ID</th><th>Status/Projeto</th><th>Detalhe</th></tr></thead><tbody>${metaRows || '<tr><td colspan="5" class="empty">Nenhum log Meta encontrado.</td></tr>'}</tbody></table>`
           : state.settingsLogTab === "sam"
             ? `<table><thead><tr><th>Recebido em</th><th>Evento</th><th>Unidade</th><th>E-mail</th><th>Telefone</th><th>Status</th><th>Lead</th><th>Detalhe</th><th>Ações</th></tr></thead><tbody>${samRows || '<tr><td colspan="9" class="empty">Nenhum evento SAM encontrado.</td></tr>'}</tbody></table>`
           : state.settingsLogTab === "fup"
