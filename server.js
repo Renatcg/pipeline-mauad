@@ -6807,6 +6807,35 @@ async function fastStructuredStateResponse(req, res, url) {
   }
 }
 
+async function fastStructuredPresenceResponse(req, res, url) {
+  if (!DATABASE_URL || req.method !== "GET" || url.pathname !== "/api/presence") return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchemaOnce(sql);
+    const user = await structuredUserFromSession(req, res, sql, { refreshCookie: false, touchPresence: false });
+    if (!user) return true;
+    const [userRows, settingsRows, presenceRows] = await Promise.all([
+      sql`SELECT * FROM crm_users WHERE active = true ORDER BY name ASC, username ASC`,
+      sql`SELECT payload FROM crm_settings WHERE key = 'commercialSettings' LIMIT 1`,
+      sql`SELECT payload FROM crm_access_logs ORDER BY at DESC NULLS LAST LIMIT 1000`
+    ]);
+    const users = userRows.map((row) => publicUser(structuredUserFromAuthRow(row))).filter((item) => item.id);
+    const commercialSettings = normalizeCommercialSettingsPayload(settingsRows[0]?.payload || {});
+    void redisTouchPresence(user, 90 * 1000, req).catch((error) => mirrorStructuredError("redis-presence-poll", error));
+    const userPresence = buildUserPresence(users, presenceRows, sessionTtlMsFromCommercialSettings(commercialSettings), await redisPresenceForUsers(users));
+    return sendJson(res, 200, {
+      users,
+      userPresence,
+      dataSources: { presence: redisEnabled() ? "redis" : "structured" }
+    });
+  } catch (error) {
+    mirrorStructuredError("presence", error);
+    sendJson(res, 500, { error: "Erro ao carregar presença", detail: error.message });
+    return true;
+  }
+}
+
 async function structuredLeadsForState(db, user, scope = "all") {
   const fallbackLeads = visibleLeads(db, user).filter((lead) => leadMatchesScope(lead, scope));
   const fallback = {
@@ -6842,7 +6871,9 @@ async function structuredLeadsForState(db, user, scope = "all") {
   }
 }
 
-async function structuredUserFromSession(req, res, sql) {
+async function structuredUserFromSession(req, res, sql, options = {}) {
+  const refreshCookie = options.refreshCookie !== false;
+  const touchPresence = options.touchPresence !== false;
   const session = readSession(req);
   if (!session) {
     sendJson(res, 401, { error: "Login necessário" });
@@ -6855,8 +6886,8 @@ async function structuredUserFromSession(req, res, sql) {
     return null;
   }
   const ttlMs = await structuredSessionTtlMs(sql);
-  res.setHeader("Set-Cookie", sessionCookie(user.id, ttlMs));
-  void redisTouchPresence(user, ttlMs, req).catch((error) => mirrorStructuredError("redis-presence", error));
+  if (refreshCookie) res.setHeader("Set-Cookie", sessionCookie(user.id, ttlMs));
+  if (touchPresence) void redisTouchPresence(user, ttlMs, req).catch((error) => mirrorStructuredError("redis-presence", error));
   return user;
 }
 
@@ -10344,6 +10375,7 @@ async function handleRequest(req, res) {
     if (await fastStructuredSalesReportRoutes(req, res, url)) return;
     if (await fastStructuredBackupRoutes(req, res, url)) return;
     if (await fastStructuredOperationalRoutes(req, res, url)) return;
+    if (await fastStructuredPresenceResponse(req, res, url)) return;
     if (await fastStructuredStateResponse(req, res, url)) return;
     if (await fastStructuredLeadsResponse(req, res, url)) return;
     if (await fastStructuredManualLeadRoutes(req, res, url)) return;

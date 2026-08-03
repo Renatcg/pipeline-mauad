@@ -1,7 +1,10 @@
 const app = document.querySelector("#app");
 let knowledgeTypingTimer = null;
 let pageSearchRenderTimer = null;
+let presencePollTimer = null;
+let presencePollInFlight = false;
 const MANUAL_BASE_SOURCES = ["Stand", "Lista RMeirelles"];
+const PRESENCE_POLL_INTERVAL_MS = 30000;
 
 const state = {
   user: null,
@@ -299,6 +302,7 @@ function resetInactivityTimer() {
     state.user = null;
     state.loginMessage = "Sessão expirada por inatividade.";
     invalidateLeads();
+    stopPresencePolling();
     try {
       await api("/api/logout", { method: "POST" });
     } catch {}
@@ -482,6 +486,56 @@ function renderUserPresenceList() {
       </div>
     </section>
   `;
+}
+
+function updatePresenceSidebar() {
+  const nav = document.querySelector(".nav");
+  if (!nav) return;
+  const current = nav.querySelector(".side-presence");
+  const markup = renderUserPresenceList();
+  if (!markup) {
+    current?.remove();
+    return;
+  }
+  if (current) {
+    current.outerHTML = markup;
+  } else {
+    nav.insertAdjacentHTML("beforeend", markup);
+  }
+}
+
+async function refreshPresence({ silent = true } = {}) {
+  if (!state.user || presencePollInFlight || document.hidden) return;
+  presencePollInFlight = true;
+  try {
+    const data = await api("/api/presence");
+    if (Array.isArray(data.users) && data.users.length) state.users = data.users;
+    state.userPresence = data.userPresence || [];
+    state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
+    updatePresenceSidebar();
+  } catch (error) {
+    if (!silent && /Login necessário|Usuário inativo/i.test(error.message)) {
+      stopPresencePolling();
+      state.user = null;
+      history.pushState({}, "", "/login");
+      renderLogin("", "Sessão expirada por inatividade.");
+    }
+  } finally {
+    presencePollInFlight = false;
+  }
+}
+
+function startPresencePolling() {
+  if (presencePollTimer) return;
+  presencePollTimer = setInterval(() => {
+    refreshPresence().catch(() => {});
+  }, PRESENCE_POLL_INTERVAL_MS);
+}
+
+function stopPresencePolling() {
+  if (presencePollTimer) clearInterval(presencePollTimer);
+  presencePollTimer = null;
+  presencePollInFlight = false;
 }
 
 function syncRouteFromLocation() {
@@ -1041,6 +1095,7 @@ function renderLogin(error = "", message = "") {
       state.leadsLoadError = "";
       resetInactivityTimer();
       await loadState();
+      startPresencePolling();
       const returnTo = new URLSearchParams(window.location.search).get("returnTo");
       if (returnTo?.startsWith("/")) {
         history.replaceState({}, "", returnTo);
@@ -1329,6 +1384,7 @@ function renderShell(content) {
   });
   document.querySelector("#logout").addEventListener("click", async () => {
     clearInactivityTimer();
+    stopPresencePolling();
     state.user = null;
     await api("/api/logout", { method: "POST" });
     history.pushState({}, "", "/login");
@@ -6151,11 +6207,22 @@ function renderApp() {
     }
     await loadState();
     renderApp();
+    startPresencePolling();
     trackAccess();
   } catch {
     renderLogin();
   }
 })();
+
+document.addEventListener("visibilitychange", () => {
+  if (!state.user) return;
+  if (document.hidden) {
+    stopPresencePolling();
+    return;
+  }
+  refreshPresence({ silent: false }).catch(() => {});
+  startPresencePolling();
+});
 
 window.addEventListener("popstate", () => {
   syncRouteFromLocation();
