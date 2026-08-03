@@ -3580,6 +3580,258 @@ async function metaGraphPost(pathname, params = {}, token = META_PAGE_ACCESS_TOK
   return data;
 }
 
+function defaultMetaConversionEventsServer() {
+  return [
+    { id: "lead_received", name: "Lead recebido", eventName: "Lead", active: true },
+    { id: "lead_contacted", name: "Lead contatado", eventName: "Contact", active: true },
+    { id: "qualified_lead", name: "Lead qualificado", eventName: "QualifiedLead", active: true },
+    { id: "visit_scheduled", name: "Visita agendada", eventName: "Schedule", active: true },
+    { id: "visit_done", name: "Visita realizada", eventName: "VisitDone", active: true },
+    { id: "proposal_sent", name: "Proposta enviada", eventName: "SubmitApplication", active: true },
+    { id: "contract_issued", name: "Contrato emitido", eventName: "ContractIssued", active: true },
+    { id: "purchase", name: "Contrato assinado / venda", eventName: "Purchase", active: true }
+  ];
+}
+
+function normalizeMetaConversionsServer(integrations = {}) {
+  const current = integrations.metaConversions || {};
+  const currentEvents = Array.isArray(current.events) ? current.events : [];
+  const currentIds = new Set(currentEvents.map((event) => event.id));
+  const seeded = defaultMetaConversionEventsServer().filter((event) => !currentIds.has(event.id));
+  return {
+    enabled: Boolean(current.enabled),
+    apiUrl: current.apiUrl || `https://graph.facebook.com/${META_GRAPH_VERSION}/{DATASET_ID}/events`,
+    datasetId: String(current.datasetId || "").trim(),
+    tokenLabel: String(current.tokenLabel || "META_CAPI_ACCESS_TOKEN").trim() || "META_CAPI_ACCESS_TOKEN",
+    testEventCode: String(current.testEventCode || "").trim(),
+    events: [...currentEvents, ...seeded].map((event) => ({
+      id: String(event.id || event.eventName || "").trim(),
+      name: String(event.name || event.eventName || "Evento").trim(),
+      eventName: String(event.eventName || "").trim(),
+      active: event.active !== false
+    })).filter((event) => event.id && event.eventName),
+    statusMappings: current.statusMappings || {},
+    tagMappings: current.tagMappings || {}
+  };
+}
+
+async function structuredMetaConversionsConfig(sql) {
+  const rows = await sql`SELECT payload FROM crm_settings WHERE key = 'integrations' LIMIT 1`;
+  return normalizeMetaConversionsServer(rows[0]?.payload || {});
+}
+
+function activeMetaConversionEvent(config, eventId) {
+  const id = String(eventId || "").trim();
+  if (!id) return null;
+  const event = (config.events || []).find((item) => item.id === id);
+  if (!event || event.active === false || !event.eventName) return null;
+  return event;
+}
+
+function configuredMetaConversionForStatus(config, status) {
+  const mapping = config.statusMappings?.[String(status || "")] || {};
+  if (!config.enabled || mapping.enabled !== true) return null;
+  return activeMetaConversionEvent(config, mapping.eventId);
+}
+
+function configuredMetaConversionForTag(config, tagKey) {
+  const mapping = config.tagMappings?.[String(tagKey || "")] || {};
+  if (!config.enabled || mapping.enabled !== true) return null;
+  return activeMetaConversionEvent(config, mapping.eventId);
+}
+
+function sha256Lower(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "";
+  return crypto.createHash("sha256").update(normalized).digest("hex");
+}
+
+function metaConversionUserData(lead) {
+  const userData = {};
+  const emailHash = sha256Lower(lead.email);
+  const phoneDigits = normalizePhoneDigits(lead.phone);
+  const phoneHash = phoneDigits ? sha256Lower(phoneDigits.startsWith("55") ? phoneDigits : `55${phoneDigits}`) : "";
+  const leadgenId = String(lead.metaLeadId || lead.meta?.leadgenId || "").trim();
+  if (emailHash) userData.em = [emailHash];
+  if (phoneHash) userData.ph = [phoneHash];
+  if (leadgenId) userData.lead_id = leadgenId;
+  return userData;
+}
+
+function metaConversionEndpoint(config) {
+  const rawUrl = String(config.apiUrl || "").trim();
+  if (!rawUrl) throw new Error("URL de envio Meta CAPI não configurada");
+  if (rawUrl.includes("{DATASET_ID}") && !config.datasetId) throw new Error("Dataset / Pixel ID Meta CAPI não configurado");
+  const withDataset = rawUrl.replace(/\{DATASET_ID\}/g, encodeURIComponent(config.datasetId || ""));
+  const url = new URL(withDataset);
+  const token = process.env[config.tokenLabel];
+  if (!token) throw new Error(`${config.tokenLabel} ausente`);
+  url.searchParams.set("access_token", token);
+  return url;
+}
+
+function metaConversionEventPayload({ id, lead, event, sourceType, sourceKey, context = {}, config }) {
+  const eventDate = context.statusAt || context.eventTime || lead.updatedAt || lead.createdAt || new Date().toISOString();
+  const eventTime = Math.floor((Date.parse(eventDate) || Date.now()) / 1000);
+  const userData = metaConversionUserData(lead);
+  const value = parseMoney(lead.unitValue || lead.valorUnidade || "");
+  const data = {
+    event_name: event.eventName,
+    event_time: eventTime,
+    action_source: "system_generated",
+    event_id: id,
+    user_data: userData,
+    custom_data: {
+      crm_lead_id: lead.id || "",
+      meta_leadgen_id: lead.metaLeadId || lead.meta?.leadgenId || "",
+      form_id: lead.meta?.formId || "",
+      ad_id: lead.meta?.adId || "",
+      campaign_id: lead.meta?.campaignId || "",
+      project: lead.desiredProject || lead.project || "",
+      unit: lead.desiredUnit || lead.unit || "",
+      status: lead.status || "",
+      source_type: sourceType,
+      source_key: sourceKey,
+      trigger_source: context.source || "",
+      screen: context.screen || ""
+    }
+  };
+  if (value > 0) {
+    data.custom_data.value = value;
+    data.custom_data.currency = "BRL";
+  }
+  const payload = { data: [data] };
+  if (config.testEventCode) payload.test_event_code = config.testEventCode;
+  return payload;
+}
+
+async function sendStructuredMetaConversionEvent(sql, eventId) {
+  const rows = await sql`SELECT * FROM crm_meta_conversion_events WHERE id = ${eventId} LIMIT 1`;
+  const row = rows[0];
+  if (!row) return null;
+  const config = await structuredMetaConversionsConfig(sql);
+  if (!config.enabled) {
+    await sql`UPDATE crm_meta_conversion_events SET status = 'skipped', last_error = 'Meta CAPI inativa' WHERE id = ${eventId}`;
+    return null;
+  }
+  try {
+    const url = metaConversionEndpoint(config);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 7000);
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(row.payload || {}),
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    const data = await response.json().catch(async () => ({ raw: await response.text().catch(() => "") }));
+    if (!response.ok) throw new Error(data.error?.message || data.message || `Meta CAPI HTTP ${response.status}`);
+    await sql`UPDATE crm_meta_conversion_events
+      SET status = 'sent', attempts = attempts + 1, last_error = null, response = ${JSON.stringify(data)}::jsonb, sent_at = now()
+      WHERE id = ${eventId}`;
+    await structuredIntegration("META", "CAPI_EVENT_SENT", {
+      eventId,
+      leadId: row.lead_id,
+      eventName: row.event_name,
+      sourceType: row.source_type,
+      sourceKey: row.source_key
+    });
+    return data;
+  } catch (error) {
+    const message = error.name === "AbortError" ? "Timeout ao enviar Meta CAPI" : (error.message || "Falha ao enviar Meta CAPI");
+    await sql`UPDATE crm_meta_conversion_events
+      SET status = 'error', attempts = attempts + 1, last_error = ${message}
+      WHERE id = ${eventId}`;
+    await structuredIntegration("META", "CAPI_EVENT_FAILED", {
+      eventId,
+      leadId: row.lead_id,
+      eventName: row.event_name,
+      sourceType: row.source_type,
+      sourceKey: row.source_key,
+      error: message
+    });
+    return null;
+  }
+}
+
+async function enqueueStructuredMetaConversion(sql, actor, lead, event, sourceType, sourceKey, context = {}) {
+  if (!lead?.id || !event?.id || !event.eventName) return null;
+  const hasMetaOrigin = String(lead.source || "").toUpperCase() === "META" || lead.metaLeadId || lead.meta?.leadgenId || lead.meta?.formId;
+  if (!hasMetaOrigin) return null;
+  const userData = metaConversionUserData(lead);
+  if (!Object.keys(userData).length) {
+    await structuredIntegration("META", "CAPI_EVENT_SKIPPED", { leadId: lead.id, eventName: event.eventName, reason: "Lead sem e-mail, telefone ou leadgen_id" });
+    return null;
+  }
+  const id = `meta-capi-${crypto.randomUUID()}`;
+  const payload = metaConversionEventPayload({ id, lead, event, sourceType, sourceKey, context, config: await structuredMetaConversionsConfig(sql) });
+  const inserted = await sql`INSERT INTO crm_meta_conversion_events (
+      id, lead_id, source_type, source_key, event_id, event_name, status, payload, created_at
+    ) VALUES (
+      ${id}, ${lead.id}, ${sourceType}, ${sourceKey}, ${event.id}, ${event.eventName}, 'pending', ${JSON.stringify(payload)}::jsonb, now()
+    )
+    ON CONFLICT (lead_id, source_type, source_key, event_id) DO NOTHING
+    RETURNING id`;
+  const persistedId = inserted[0]?.id;
+  if (!persistedId) return null;
+  await structuredIntegration("META", "CAPI_EVENT_QUEUED", {
+    eventId: persistedId,
+    leadId: lead.id,
+    leadName: lead.name || "",
+    eventName: event.eventName,
+    sourceType,
+    sourceKey,
+    actor: actor?.username || ""
+  });
+  await sendStructuredMetaConversionEvent(sql, persistedId);
+  return persistedId;
+}
+
+async function enqueueStructuredMetaConversionForStatus(sql, actor, lead, fromStatus, toStatus, context = {}) {
+  const nextStatus = String(toStatus || "").trim();
+  if (!nextStatus || nextStatus === String(fromStatus || "").trim()) return null;
+  const config = await structuredMetaConversionsConfig(sql);
+  const event = configuredMetaConversionForStatus(config, nextStatus);
+  if (!event) return null;
+  return enqueueStructuredMetaConversion(sql, actor, lead, event, "status", nextStatus, context);
+}
+
+async function enqueueStructuredMetaConversionsForTags(sql, actor, lead, addedTags = [], context = {}) {
+  const tags = [...new Set((addedTags || []).map((tag) => String(tag || "").trim()).filter(Boolean))];
+  if (!tags.length) return [];
+  const config = await structuredMetaConversionsConfig(sql);
+  if (!config.enabled) return [];
+  const tagRows = await sql`SELECT payload FROM crm_tag_definitions`;
+  const tagDefinitions = tagRows.map((row) => row.payload || {}).filter((tag) => tag.id);
+  const queued = [];
+  for (const tag of tags) {
+    const definition = tagDefinitions.find((item) => item.id === tag || item.name === tag);
+    const event = configuredMetaConversionForTag(config, tag) || configuredMetaConversionForTag(config, definition?.id) || configuredMetaConversionForTag(config, definition?.name);
+    if (!event) continue;
+    const eventId = await enqueueStructuredMetaConversion(sql, actor, lead, event, "tag", definition?.id || tag, {
+      ...context,
+      tag: definition?.name || tag
+    });
+    if (eventId) queued.push(eventId);
+  }
+  return queued;
+}
+
+async function mirrorStructuredMetaConversionForStatus(lead, fromStatus, toStatus, actor = {}, context = {}) {
+  try {
+    const sql = await structuredSqlForMirror();
+    if (!sql) return;
+    await enqueueStructuredMetaConversionForStatus(sql, actor, lead, fromStatus, toStatus, context);
+  } catch (error) {
+    mirrorStructuredError("meta-capi-status", error);
+  }
+}
+
 async function subscribeMetaLeadgenPage(pageId) {
   const id = String(pageId || "").trim();
   if (!id) throw new Error("ID da Página obrigatório");
@@ -3758,6 +4010,11 @@ async function importMetaLeadById(db, actor, leadgenId, webhookValue = {}) {
         adId: created.lead.meta?.adId || "",
         project: created.lead.desiredProject || ""
       }
+    });
+    await mirrorStructuredMetaConversionForStatus(created.lead, "", created.lead.status, actor, {
+      source: "meta",
+      screen: actor?.username === "meta-webhook" ? "meta_webhook" : actor?.username === "meta-cron" ? "meta_cron" : "meta_manual_import",
+      statusAt: created.lead.createdAt || created.lead.meta?.createdTime || created.lead.updatedAt
     });
     audit(db, actor, "CREATE_META_LEAD", { leadId: created.lead.id, leadgenId: id });
     integrationEvent(db, "META", "LEAD_IMPORTED", {
@@ -4034,6 +4291,23 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_access_logs (id text PRIMARY KEY, at timestamptz, actor text, actor_name text, role text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, ip text, user_agent text, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_integration_logs (id text PRIMARY KEY, at timestamptz, provider text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_fup_lead_logs (id text PRIMARY KEY, at timestamptz, lead_id text, lead_name text, actor text, actor_name text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_meta_conversion_events (
+    id text PRIMARY KEY,
+    lead_id text NOT NULL,
+    source_type text NOT NULL,
+    source_key text NOT NULL,
+    event_id text NOT NULL,
+    event_name text NOT NULL,
+    status text NOT NULL DEFAULT 'pending',
+    attempts integer NOT NULL DEFAULT 0,
+    last_error text,
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    response jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    sent_at timestamptz
+  )`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS crm_meta_conversion_events_unique_idx ON crm_meta_conversion_events (lead_id, source_type, source_key, event_id)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_meta_conversion_events_status_idx ON crm_meta_conversion_events (status, created_at DESC)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lead_status_movements (
     id text PRIMARY KEY,
     lead_id text NOT NULL,
@@ -4720,6 +4994,12 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
     statusAt: event.eventDatetime || lead.updatedAt,
     samEventId: event.id,
     details: { eventId: event.eventId, appliedFields, levSaleId: levSale?.id || "" }
+  });
+  await enqueueStructuredMetaConversionForStatus(sql, user, lead, previousStatus, lead.status, {
+    source: "sam",
+    screen: "sam_review",
+    statusAt: event.eventDatetime || lead.updatedAt,
+    samEventId: event.id
   });
   await structuredIntegration("SAM", "LINKED_TO_LEAD", { eventId: event.eventId, samEventId: event.id, leadId: lead.id, from: previousStatus, to: lead.status, levSaleId: levSale?.id || "" });
   await structuredFup(user, lead, "SAM_STATUS_LINKED", { eventId: event.eventId, from: previousStatus, to: lead.status, appliedFields, levSaleId: levSale?.id || "" });
@@ -8184,6 +8464,11 @@ async function fastStructuredLeadAction(req, res, url) {
         statusAt: lead.rescuedAt,
         details: { source: lead.source, assignedTo: lead.assignedName || "" }
       });
+      await enqueueStructuredMetaConversionForStatus(sql, user, lead, previousStatus, lead.status, {
+        source: "base",
+        screen: String(body.movementSource || "base"),
+        statusAt: lead.rescuedAt
+      });
       await structuredAudit(user, "RESCUE_BASE_LEAD", { leadId: lead.id, source: lead.source });
       await structuredFup(user, lead, "RESCUE_BASE_LEAD", { source: lead.source, assignedTo: lead.assignedName || "" });
       return sendJson(res, 200, { lead: publicLead(lead, user), dataSources: { action: "structured" } });
@@ -8264,6 +8549,7 @@ async function fastStructuredLeadAction(req, res, url) {
       const previousAssignedName = lead.assignedName || "";
       const previousOrder = Number(lead.order || 0);
       const previousFavorite = Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite);
+      const previousTags = new Set((lead.tags || []).map((tag) => String(tag || "").trim()).filter(Boolean));
       const hasStatusPayload = Object.prototype.hasOwnProperty.call(body, "status");
       const hasManualSamStatusDate = Object.prototype.hasOwnProperty.call(body, "manualSamStatusDate") || Object.prototype.hasOwnProperty.call(body, "samStatusDate");
       const bodyStatusIsSamOnly = hasStatusPayload && await isStructuredSamOnlyStatus(sql, body.status);
@@ -8329,6 +8615,11 @@ async function fastStructuredLeadAction(req, res, url) {
         for (const tag of lead.tags || []) {
           await sql`INSERT INTO crm_lead_tags (lead_id, tag_id) VALUES (${lead.id}, ${String(tag)}) ON CONFLICT DO NOTHING`;
         }
+        const addedTags = (lead.tags || []).filter((tag) => !previousTags.has(String(tag || "").trim()));
+        await enqueueStructuredMetaConversionsForTags(sql, user, lead, addedTags, {
+          source: "user",
+          screen: String(body.movementSource || "lead_detail")
+        });
       }
       await structuredAudit(user, "UPDATE_LEAD", { leadId: lead.id, changes: body });
       if (Object.prototype.hasOwnProperty.call(body, "assignedTo") && (lead.assignedTo || null) !== previousAssignedTo) {
@@ -8351,6 +8642,11 @@ async function fastStructuredLeadAction(req, res, url) {
           screen: String(body.movementSource || (Object.prototype.hasOwnProperty.call(body, "order") ? "kanban" : "lead_detail")),
           statusAt: manualSamStatusAt || lead.updatedAt,
           details: { manualSamStatusAt, order: Object.prototype.hasOwnProperty.call(body, "order") ? Number(lead.order || 0) : undefined }
+        });
+        await enqueueStructuredMetaConversionForStatus(sql, user, lead, previousStatus, lead.status, {
+          source: manualSamStatusAt ? "manual_sam_history" : "user",
+          screen: String(body.movementSource || (Object.prototype.hasOwnProperty.call(body, "order") ? "kanban" : "lead_detail")),
+          statusAt: manualSamStatusAt || lead.updatedAt
         });
         await structuredFup(user, lead, manualSamStatusAt ? "CHANGE_STATUS_SAM_HISTORICAL" : "CHANGE_STATUS", { from: previousStatus, to: lead.status, manualSamStatusAt });
       } else if (manualSamStatusAt) {
