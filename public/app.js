@@ -4169,6 +4169,11 @@ function metaConversionEventOptions(events = [], selected = "") {
   ].join("");
 }
 
+function metaConversionEventLabel(events = [], eventId = "") {
+  const event = (events || []).find((item) => item.id === eventId);
+  return event ? `${event.name} · ${event.eventName}` : "-";
+}
+
 function renderMetaConversionEventModal(eventValue = {}, isEditing = false) {
   return `
     <div class="modal-backdrop" data-meta-conversion-modal-backdrop>
@@ -4212,26 +4217,6 @@ function renderMetaConversionSettings(metaConversions) {
       </td>
     </tr>
   `).join("");
-  const statusRows = (state.statusDefinitions || []).map((status) => {
-    const mapping = metaConversions.statusMappings?.[status.status] || {};
-    return `
-      <tr>
-        <td>${escapeHtml(status.status)}</td>
-        <td><input type="checkbox" name="statusEnabled:${escapeHtml(status.status)}" ${mapping.enabled ? "checked" : ""}></td>
-        <td><select name="statusEvent:${escapeHtml(status.status)}">${metaConversionEventOptions(events, mapping.eventId || "")}</select></td>
-      </tr>
-    `;
-  }).join("");
-  const tagRows = (state.tagDefinitions || []).map((tag) => {
-    const mapping = metaConversions.tagMappings?.[tag.id] || {};
-    return `
-      <tr>
-        <td><span class="tag-chip" style="--tag-color:${escapeHtml(tag.color || "#0f766e")}">${escapeHtml(tag.name)}</span></td>
-        <td><input type="checkbox" name="tagEnabled:${escapeHtml(tag.id)}" ${mapping.enabled ? "checked" : ""}></td>
-        <td><select name="tagEvent:${escapeHtml(tag.id)}">${metaConversionEventOptions(events, mapping.eventId || "")}</select></td>
-      </tr>
-    `;
-  }).join("");
   return `
     <section class="integration-help">
       <div class="panel-head">
@@ -4254,27 +4239,10 @@ function renderMetaConversionSettings(metaConversions) {
         <h2>Eventos Meta</h2>
         <button class="primary" type="button" data-new-meta-conversion-event>Novo evento</button>
       </div>
+      <p class="muted">Cadastre aqui os códigos técnicos da Meta. Depois associe esses eventos diretamente em Status do pipeline e Etiquetas.</p>
       <div class="table-wrap">
         <table><thead><tr><th>Nome interno</th><th>Evento Meta</th><th>Status</th><th>Descrição</th><th>Ações</th></tr></thead><tbody>${eventRows || '<tr><td colspan="5" class="empty">Nenhum evento cadastrado.</td></tr>'}</tbody></table>
       </div>
-    </section>
-    <section class="integration-help">
-      <h2>Mapeamento por status do pipeline</h2>
-      <form id="metaStatusMappingForm">
-        <div class="table-wrap">
-          <table><thead><tr><th>Status</th><th>Enviar</th><th>Evento Meta</th></tr></thead><tbody>${statusRows || '<tr><td colspan="3" class="empty">Nenhum status cadastrado.</td></tr>'}</tbody></table>
-        </div>
-        <div class="row-actions table-actions"><button class="primary" type="submit">Salvar mapeamento de status</button></div>
-      </form>
-    </section>
-    <section class="integration-help">
-      <h2>Mapeamento por etiquetas</h2>
-      <form id="metaTagMappingForm">
-        <div class="table-wrap">
-          <table><thead><tr><th>Etiqueta</th><th>Enviar</th><th>Evento Meta</th></tr></thead><tbody>${tagRows || '<tr><td colspan="3" class="empty">Nenhuma etiqueta cadastrada.</td></tr>'}</tbody></table>
-        </div>
-        <div class="row-actions table-actions"><button class="primary" type="submit">Salvar mapeamento de etiquetas</button></div>
-      </form>
     </section>
     ${isEventModalOpen ? renderMetaConversionEventModal(editingEvent || {}, Boolean(editingEvent)) : ""}
   `;
@@ -4492,28 +4460,6 @@ function renderIntegrationSettings() {
       };
       await saveMetaConversions(nextMetaConversions, "Evento Meta excluído.");
     });
-  });
-  document.querySelector("#metaStatusMappingForm")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const statusMappings = {};
-    (state.statusDefinitions || []).forEach((status) => {
-      const eventId = String(form.get(`statusEvent:${status.status}`) || "").trim();
-      const enabled = form.get(`statusEnabled:${status.status}`) === "on" && Boolean(eventId);
-      if (enabled || eventId) statusMappings[status.status] = { enabled, eventId };
-    });
-    await saveMetaConversions({ ...metaConversions, statusMappings }, "Mapeamento de status salvo.");
-  });
-  document.querySelector("#metaTagMappingForm")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const tagMappings = {};
-    (state.tagDefinitions || []).forEach((tag) => {
-      const eventId = String(form.get(`tagEvent:${tag.id}`) || "").trim();
-      const enabled = form.get(`tagEnabled:${tag.id}`) === "on" && Boolean(eventId);
-      if (enabled || eventId) tagMappings[tag.id] = { enabled, eventId };
-    });
-    await saveMetaConversions({ ...metaConversions, tagMappings }, "Mapeamento de etiquetas salvo.");
   });
   document.querySelector("#metaFormMonitorForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -6398,17 +6344,22 @@ function renderStatusSettings() {
   const isCreating = state.settingsEditing === "new-status";
   const editIndex = state.settingsEditing?.startsWith("status:") ? Number(state.settingsEditing.replace("status:", "")) : null;
   const editStatus = editIndex != null ? (state.statusDefinitions || [])[editIndex] || { status: state.statuses[editIndex] || "", samCodes: [] } : null;
+  const metaConversions = normalizeMetaConversions(state.integrations || {});
+  const metaEvents = metaConversions.events || [];
   const formValue = editStatus?.status || "";
   const samCodesValue = (editStatus?.samCodes || []).join(", ");
   const advanceModeValue = editStatus?.advanceMode || "manual";
+  const statusMapping = editStatus ? (metaConversions.statusMappings?.[editStatus.status] || {}) : {};
   const rows = state.statuses.map((status, index) => {
     const definition = (state.statusDefinitions || []).find((item) => item.status === status) || {};
+    const mapping = metaConversions.statusMappings?.[status] || {};
     const count = state.leads.filter((lead) => lead.inPipeline && lead.status === status).length;
     return `
       <tr>
         <td>${escapeHtml(status)}</td>
         <td>${escapeHtml((definition.samCodes || []).join(", ") || "-")}</td>
         <td>${escapeHtml(statusAdvanceLabel(status))}</td>
+        <td>${mapping.enabled ? escapeHtml(metaConversionEventLabel(metaEvents, mapping.eventId)) : '<span class="muted-cell">Não enviar</span>'}</td>
         <td>${index + 1}</td>
         <td>${count}</td>
         <td>${renderSettingsActionMenu(`status-${index}`, [
@@ -6432,11 +6383,16 @@ function renderStatusSettings() {
             <option value="manual" ${advanceModeValue === "manual" ? "selected" : ""}>Manual</option>
             <option value="sam_only" ${advanceModeValue === "sam_only" ? "selected" : ""}>Somente pelo SAM</option>
           </select></div>
+          <div class="field"><label>Enviar evento Meta</label><select name="metaConversionEnabled">
+            <option value="false" ${!statusMapping.enabled ? "selected" : ""}>Não</option>
+            <option value="true" ${statusMapping.enabled ? "selected" : ""}>Sim</option>
+          </select></div>
+          <div class="field"><label>Evento Meta associado</label><select name="metaConversionEventId">${metaConversionEventOptions(metaEvents, statusMapping.eventId || "")}</select></div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Status</th><th>Códigos SAM</th><th>Avanço</th><th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nenhum status cadastrado</td></tr>'}</tbody></table>
+        <table><thead><tr><th>Status</th><th>Códigos SAM</th><th>Avanço</th><th>Evento Meta</th><th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhum status cadastrado</td></tr>'}</tbody></table>
       </div>
     </section>
   `);
@@ -6463,7 +6419,13 @@ function renderStatusSettings() {
   document.querySelector("#statusForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const payload = { name: form.get("name"), samCodes: form.get("samCodes"), advanceMode: form.get("advanceMode") };
+    const payload = {
+      name: form.get("name"),
+      samCodes: form.get("samCodes"),
+      advanceMode: form.get("advanceMode"),
+      metaConversionEnabled: form.get("metaConversionEnabled") === "true",
+      metaConversionEventId: String(form.get("metaConversionEventId") || "").trim()
+    };
     if (editIndex != null) {
       const data = await api(`/api/statuses/${editIndex}`, { method: "PATCH", body: JSON.stringify(payload) });
       state.statuses = data.pipelineStatuses || state.statuses;
@@ -6482,13 +6444,18 @@ function renderStatusSettings() {
 function renderTagSettings() {
   const isCreating = state.settingsEditing === "new-tag";
   const editTag = state.tagDefinitions.find((tag) => state.settingsEditing === `tag:${tag.id}`);
+  const metaConversions = normalizeMetaConversions(state.integrations || {});
+  const metaEvents = metaConversions.events || [];
   const formTag = editTag || { name: "", color: "#0f766e" };
+  const tagMapping = editTag ? (metaConversions.tagMappings?.[editTag.id] || {}) : {};
   const rows = state.tagDefinitions.map((tag) => {
     const count = state.leads.filter((lead) => leadTags(lead).includes(tag.name)).length;
+    const mapping = metaConversions.tagMappings?.[tag.id] || {};
     return `
       <tr>
         <td><span class="tag static-tag" style="--tag-color:${escapeHtml(tag.color)}">${escapeHtml(tag.name)}</span></td>
         <td><span class="color-swatch" style="background:${escapeHtml(tag.color)}"></span>${escapeHtml(tag.color)}</td>
+        <td>${mapping.enabled ? escapeHtml(metaConversionEventLabel(metaEvents, mapping.eventId)) : '<span class="muted-cell">Não enviar</span>'}</td>
         <td>${count}</td>
         <td>${renderSettingsActionMenu(`tag-${tag.id}`, [
           `<button type="button" data-edit-tag="${escapeHtml(tag.id)}">Editar</button>`,
@@ -6507,11 +6474,16 @@ function renderTagSettings() {
         <form id="tagForm" class="form-grid editor">
           <div class="field"><label>Nome da etiqueta</label><input name="name" value="${escapeHtml(formTag.name)}" required></div>
           <div class="field"><label>Cor</label><input name="color" type="color" value="${escapeHtml(formTag.color)}"></div>
+          <div class="field"><label>Enviar evento Meta</label><select name="metaConversionEnabled">
+            <option value="false" ${!tagMapping.enabled ? "selected" : ""}>Não</option>
+            <option value="true" ${tagMapping.enabled ? "selected" : ""}>Sim</option>
+          </select></div>
+          <div class="field"><label>Evento Meta associado</label><select name="metaConversionEventId">${metaConversionEventOptions(metaEvents, tagMapping.eventId || "")}</select></div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Etiqueta</th><th>Cor</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="empty">Nenhuma etiqueta cadastrada</td></tr>'}</tbody></table>
+        <table><thead><tr><th>Etiqueta</th><th>Cor</th><th>Evento Meta</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty">Nenhuma etiqueta cadastrada</td></tr>'}</tbody></table>
       </div>
     </section>
   `);
@@ -6539,7 +6511,12 @@ function renderTagSettings() {
   document.querySelector("#tagForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const payload = { name: form.get("name"), color: form.get("color") };
+    const payload = {
+      name: form.get("name"),
+      color: form.get("color"),
+      metaConversionEnabled: form.get("metaConversionEnabled") === "true",
+      metaConversionEventId: String(form.get("metaConversionEventId") || "").trim()
+    };
     const data = editTag
       ? await api(`/api/tags/${editTag.id}`, { method: "PATCH", body: JSON.stringify(payload) })
       : await api("/api/tags", { method: "POST", body: JSON.stringify(payload) });
