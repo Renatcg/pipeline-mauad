@@ -6428,10 +6428,12 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (statusDefinitions.some((status) => status.status.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Status já existe" });
       statusDefinitions.push(normalizeStatusDefinition({ status: name, samCodes: body.samCodes, advanceMode: body.advanceMode }, statusDefinitions.length));
       await replaceStructuredStatuses(sql, statusDefinitions);
-      await updateStructuredMetaConversionMapping(sql, "status", name, {
-        enabled: body.metaConversionEnabled === true,
-        eventId: body.metaConversionEventId
-      });
+      if (canManageSettings(user) && ("metaConversionEnabled" in body || "metaConversionEventId" in body)) {
+        await updateStructuredMetaConversionMapping(sql, "status", name, {
+          enabled: body.metaConversionEnabled === true,
+          eventId: body.metaConversionEventId
+        });
+      }
       await structuredAudit(user, "CREATE_STATUS", { name });
       return sendJson(res, 201, { pipelineStatuses: statusDefinitions.map((status) => status.status), statusDefinitions, dataSources: { action: "structured" } });
     }
@@ -6468,10 +6470,12 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (statuses.some((status, idx) => idx !== index && status.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Status já existe" });
       statusDefinitions[index] = normalizeStatusDefinition({ ...statusDefinitions[index], status: name, samCodes: body.samCodes, advanceMode: body.advanceMode }, index);
       await replaceStructuredStatuses(sql, statusDefinitions);
-      await updateStructuredMetaConversionMapping(sql, "status", name, {
-        enabled: body.metaConversionEnabled === true,
-        eventId: body.metaConversionEventId
-      }, oldName);
+      if (canManageSettings(user) && ("metaConversionEnabled" in body || "metaConversionEventId" in body)) {
+        await updateStructuredMetaConversionMapping(sql, "status", name, {
+          enabled: body.metaConversionEnabled === true,
+          eventId: body.metaConversionEventId
+        }, oldName);
+      }
       const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
         FROM crm_leads l
         LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
@@ -6514,10 +6518,12 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       const tag = { id: `tag-${crypto.randomUUID()}`, name, color: cleanColor(body.color) };
       await sql`INSERT INTO crm_tag_definitions (id, name, color, payload)
         VALUES (${tag.id}, ${tag.name}, ${tag.color}, ${JSON.stringify(tag)}::jsonb)`;
-      await updateStructuredMetaConversionMapping(sql, "tag", tag.id, {
-        enabled: body.metaConversionEnabled === true,
-        eventId: body.metaConversionEventId
-      });
+      if (canManageSettings(user) && ("metaConversionEnabled" in body || "metaConversionEventId" in body)) {
+        await updateStructuredMetaConversionMapping(sql, "tag", tag.id, {
+          enabled: body.metaConversionEnabled === true,
+          eventId: body.metaConversionEventId
+        });
+      }
       await structuredAudit(user, "CREATE_TAG", { name });
       return sendJson(res, 201, { tagDefinitions: [...tags, tag], dataSources: { action: "structured" } });
     }
@@ -6538,10 +6544,12 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       tag.name = name;
       tag.color = cleanColor(body.color);
       await sql`UPDATE crm_tag_definitions SET name = ${tag.name}, color = ${tag.color}, payload = ${JSON.stringify(tag)}::jsonb WHERE id = ${tag.id}`;
-      await updateStructuredMetaConversionMapping(sql, "tag", tag.id, {
-        enabled: body.metaConversionEnabled === true,
-        eventId: body.metaConversionEventId
-      });
+      if (canManageSettings(user) && ("metaConversionEnabled" in body || "metaConversionEventId" in body)) {
+        await updateStructuredMetaConversionMapping(sql, "tag", tag.id, {
+          enabled: body.metaConversionEnabled === true,
+          eventId: body.metaConversionEventId
+        });
+      }
       if (oldName && oldName !== name) {
         await sql`UPDATE crm_lead_tags SET tag_id = ${name} WHERE tag_id = ${oldName}`;
         const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
@@ -7204,9 +7212,7 @@ async function fastStructuredStateResponse(req, res, url) {
       users: stateDb.users,
       userPresence,
       leads: [],
-      integrations: canManageSettings(user)
-        ? stateDb.integrations
-        : (canManagePipelineSettings(user) ? { metaConversions: stateDb.integrations.metaConversions || {} } : null),
+      integrations: canManageSettings(user) ? stateDb.integrations : null,
       baseAccess: canManagePipelineSettings(user) ? stateDb.baseAccess : null,
       permissions: canManagePipelineSettings(user) ? stateDb.permissions : null,
       currentPermissions: stateDb.permissions.users?.[user.id] || {},

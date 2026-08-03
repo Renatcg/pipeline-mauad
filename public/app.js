@@ -6344,7 +6344,8 @@ function renderStatusSettings() {
   const isCreating = state.settingsEditing === "new-status";
   const editIndex = state.settingsEditing?.startsWith("status:") ? Number(state.settingsEditing.replace("status:", "")) : null;
   const editStatus = editIndex != null ? (state.statusDefinitions || [])[editIndex] || { status: state.statuses[editIndex] || "", samCodes: [] } : null;
-  const metaConversions = normalizeMetaConversions(state.integrations || {});
+  const canEditMetaIntegration = canManageSystemSettings();
+  const metaConversions = canEditMetaIntegration ? normalizeMetaConversions(state.integrations || {}) : normalizeMetaConversions({});
   const metaEvents = metaConversions.events || [];
   const formValue = editStatus?.status || "";
   const samCodesValue = (editStatus?.samCodes || []).join(", ");
@@ -6359,7 +6360,7 @@ function renderStatusSettings() {
         <td>${escapeHtml(status)}</td>
         <td>${escapeHtml((definition.samCodes || []).join(", ") || "-")}</td>
         <td>${escapeHtml(statusAdvanceLabel(status))}</td>
-        <td>${mapping.enabled ? escapeHtml(metaConversionEventLabel(metaEvents, mapping.eventId)) : '<span class="muted-cell">Não enviar</span>'}</td>
+        ${canEditMetaIntegration ? `<td>${mapping.enabled ? escapeHtml(metaConversionEventLabel(metaEvents, mapping.eventId)) : '<span class="muted-cell">Não enviar</span>'}</td>` : ""}
         <td>${index + 1}</td>
         <td>${count}</td>
         <td>${renderSettingsActionMenu(`status-${index}`, [
@@ -6383,16 +6384,18 @@ function renderStatusSettings() {
             <option value="manual" ${advanceModeValue === "manual" ? "selected" : ""}>Manual</option>
             <option value="sam_only" ${advanceModeValue === "sam_only" ? "selected" : ""}>Somente pelo SAM</option>
           </select></div>
+          ${canEditMetaIntegration ? `
           <div class="field"><label>Enviar evento Meta</label><select name="metaConversionEnabled">
             <option value="false" ${!statusMapping.enabled ? "selected" : ""}>Não</option>
             <option value="true" ${statusMapping.enabled ? "selected" : ""}>Sim</option>
           </select></div>
           <div class="field"><label>Evento Meta associado</label><select name="metaConversionEventId">${metaConversionEventOptions(metaEvents, statusMapping.eventId || "")}</select></div>
+          ` : ""}
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Status</th><th>Códigos SAM</th><th>Avanço</th><th>Evento Meta</th><th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhum status cadastrado</td></tr>'}</tbody></table>
+        <table><thead><tr><th>Status</th><th>Códigos SAM</th><th>Avanço</th>${canEditMetaIntegration ? "<th>Evento Meta</th>" : ""}<th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || `<tr><td colspan="${canEditMetaIntegration ? 7 : 6}" class="empty">Nenhum status cadastrado</td></tr>`}</tbody></table>
       </div>
     </section>
   `);
@@ -6422,10 +6425,12 @@ function renderStatusSettings() {
     const payload = {
       name: form.get("name"),
       samCodes: form.get("samCodes"),
-      advanceMode: form.get("advanceMode"),
-      metaConversionEnabled: form.get("metaConversionEnabled") === "true",
-      metaConversionEventId: String(form.get("metaConversionEventId") || "").trim()
+      advanceMode: form.get("advanceMode")
     };
+    if (canEditMetaIntegration) {
+      payload.metaConversionEnabled = form.get("metaConversionEnabled") === "true";
+      payload.metaConversionEventId = String(form.get("metaConversionEventId") || "").trim();
+    }
     if (editIndex != null) {
       const data = await api(`/api/statuses/${editIndex}`, { method: "PATCH", body: JSON.stringify(payload) });
       state.statuses = data.pipelineStatuses || state.statuses;
@@ -6444,7 +6449,8 @@ function renderStatusSettings() {
 function renderTagSettings() {
   const isCreating = state.settingsEditing === "new-tag";
   const editTag = state.tagDefinitions.find((tag) => state.settingsEditing === `tag:${tag.id}`);
-  const metaConversions = normalizeMetaConversions(state.integrations || {});
+  const canEditMetaIntegration = canManageSystemSettings();
+  const metaConversions = canEditMetaIntegration ? normalizeMetaConversions(state.integrations || {}) : normalizeMetaConversions({});
   const metaEvents = metaConversions.events || [];
   const formTag = editTag || { name: "", color: "#0f766e" };
   const tagMapping = editTag ? (metaConversions.tagMappings?.[editTag.id] || {}) : {};
@@ -6455,7 +6461,7 @@ function renderTagSettings() {
       <tr>
         <td><span class="tag static-tag" style="--tag-color:${escapeHtml(tag.color)}">${escapeHtml(tag.name)}</span></td>
         <td><span class="color-swatch" style="background:${escapeHtml(tag.color)}"></span>${escapeHtml(tag.color)}</td>
-        <td>${mapping.enabled ? escapeHtml(metaConversionEventLabel(metaEvents, mapping.eventId)) : '<span class="muted-cell">Não enviar</span>'}</td>
+        ${canEditMetaIntegration ? `<td>${mapping.enabled ? escapeHtml(metaConversionEventLabel(metaEvents, mapping.eventId)) : '<span class="muted-cell">Não enviar</span>'}</td>` : ""}
         <td>${count}</td>
         <td>${renderSettingsActionMenu(`tag-${tag.id}`, [
           `<button type="button" data-edit-tag="${escapeHtml(tag.id)}">Editar</button>`,
@@ -6474,16 +6480,18 @@ function renderTagSettings() {
         <form id="tagForm" class="form-grid editor">
           <div class="field"><label>Nome da etiqueta</label><input name="name" value="${escapeHtml(formTag.name)}" required></div>
           <div class="field"><label>Cor</label><input name="color" type="color" value="${escapeHtml(formTag.color)}"></div>
+          ${canEditMetaIntegration ? `
           <div class="field"><label>Enviar evento Meta</label><select name="metaConversionEnabled">
             <option value="false" ${!tagMapping.enabled ? "selected" : ""}>Não</option>
             <option value="true" ${tagMapping.enabled ? "selected" : ""}>Sim</option>
           </select></div>
           <div class="field"><label>Evento Meta associado</label><select name="metaConversionEventId">${metaConversionEventOptions(metaEvents, tagMapping.eventId || "")}</select></div>
+          ` : ""}
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Etiqueta</th><th>Cor</th><th>Evento Meta</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty">Nenhuma etiqueta cadastrada</td></tr>'}</tbody></table>
+        <table><thead><tr><th>Etiqueta</th><th>Cor</th>${canEditMetaIntegration ? "<th>Evento Meta</th>" : ""}<th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || `<tr><td colspan="${canEditMetaIntegration ? 5 : 4}" class="empty">Nenhuma etiqueta cadastrada</td></tr>`}</tbody></table>
       </div>
     </section>
   `);
@@ -6513,10 +6521,12 @@ function renderTagSettings() {
     const form = new FormData(event.currentTarget);
     const payload = {
       name: form.get("name"),
-      color: form.get("color"),
-      metaConversionEnabled: form.get("metaConversionEnabled") === "true",
-      metaConversionEventId: String(form.get("metaConversionEventId") || "").trim()
+      color: form.get("color")
     };
+    if (canEditMetaIntegration) {
+      payload.metaConversionEnabled = form.get("metaConversionEnabled") === "true";
+      payload.metaConversionEventId = String(form.get("metaConversionEventId") || "").trim();
+    }
     const data = editTag
       ? await api(`/api/tags/${editTag.id}`, { method: "PATCH", body: JSON.stringify(payload) })
       : await api("/api/tags", { method: "POST", body: JSON.stringify(payload) });
