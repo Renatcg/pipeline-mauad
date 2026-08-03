@@ -3759,6 +3759,76 @@ async function sendStructuredMetaConversionEvent(sql, eventId) {
   }
 }
 
+function publicMetaConversionEvent(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    leadId: row.lead_id,
+    leadName: row.lead_name || "",
+    sourceType: row.source_type,
+    sourceKey: row.source_key,
+    eventId: row.event_id,
+    eventName: row.event_name,
+    status: row.status,
+    attempts: Number(row.attempts || 0),
+    lastError: row.last_error || "",
+    payload: row.payload || {},
+    response: row.response || null,
+    createdAt: row.created_at,
+    sentAt: row.sent_at
+  };
+}
+
+async function metaCapiDiagnostics(sql) {
+  const config = await structuredMetaConversionsConfig(sql);
+  const tokenName = config.tokenLabel || "META_CAPI_ACCESS_TOKEN";
+  const tokenConfigured = Boolean(process.env[tokenName]);
+  const endpointOk = (() => {
+    try {
+      metaConversionEndpoint({ ...config, tokenLabel: tokenConfigured ? tokenName : "__MISSING_META_CAPI_TOKEN__" });
+      return true;
+    } catch (error) {
+      return false;
+    }
+  })();
+  const queueRows = await sql`
+    SELECT status, count(*)::int AS total
+    FROM crm_meta_conversion_events
+    GROUP BY status
+  `;
+  const latestRows = await sql`
+    SELECT e.*, l.name AS lead_name
+    FROM crm_meta_conversion_events e
+    LEFT JOIN crm_leads l ON l.id = e.lead_id
+    ORDER BY e.created_at DESC NULLS LAST
+    LIMIT 5
+  `;
+  const queue = Object.fromEntries(queueRows.map((row) => [row.status || "unknown", Number(row.total || 0)]));
+  return {
+    checkedAt: new Date().toISOString(),
+    checks: [
+      { label: "Integração Meta CAPI ativa", ok: config.enabled === true, detail: config.enabled ? "Ativa" : "Inativa" },
+      { label: "Dataset / Pixel ID configurado", ok: Boolean(config.datasetId), detail: config.datasetId ? "Configurado" : "Não configurado" },
+      { label: `Token ${tokenName}`, ok: tokenConfigured, detail: tokenConfigured ? "Configurado na Vercel" : "Ausente na Vercel" },
+      { label: "URL de envio válida", ok: endpointOk, detail: endpointOk ? "OK" : "Revise URL, Dataset / Pixel ID e token" },
+      { label: "Eventos ativos", ok: (config.events || []).some((event) => event.active !== false), detail: `${(config.events || []).filter((event) => event.active !== false).length} ativo(s)` }
+    ],
+    queue,
+    latest: latestRows.map(publicMetaConversionEvent).filter(Boolean)
+  };
+}
+
+async function metaCapiRowsForState(sql) {
+  const rows = await sql`
+    SELECT e.*, l.name AS lead_name
+    FROM crm_meta_conversion_events e
+    LEFT JOIN crm_leads l ON l.id = e.lead_id
+    ORDER BY e.created_at DESC NULLS LAST
+    LIMIT 500
+  `;
+  return rows.map(publicMetaConversionEvent).filter(Boolean);
+}
+
 async function enqueueStructuredMetaConversion(sql, actor, lead, event, sourceType, sourceKey, context = {}) {
   if (!lead?.id || !event?.id || !event.eventName) return null;
   const hasMetaOrigin = String(lead.source || "").toUpperCase() === "META" || lead.metaLeadId || lead.meta?.leadgenId || lead.meta?.formId;
@@ -6121,6 +6191,39 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       }
     }
 
+    if (url.pathname === "/api/integrations/meta/capi-diagnostics" && method === "POST") {
+      if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      try {
+        const diagnostics = await metaCapiDiagnostics(sql);
+        await structuredAudit(user, "DIAGNOSE_META_CAPI", {
+          queue: diagnostics.queue,
+          checks: diagnostics.checks.map((check) => ({ label: check.label, ok: check.ok }))
+        });
+        return sendJson(res, 200, { ok: true, diagnostics, dataSources: { action: "structured" } });
+      } catch (error) {
+        await structuredIntegration("META", "CAPI_DIAGNOSTIC_ERROR", { error: error.message });
+        return sendJson(res, 400, { error: error.message });
+      }
+    }
+
+    const capiResendMatch = url.pathname.match(/^\/api\/integrations\/meta\/capi-events\/([^/]+)\/resend$/);
+    if (capiResendMatch && method === "POST") {
+      if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const eventId = decodeURIComponent(capiResendMatch[1]);
+      const existing = await sql`SELECT id FROM crm_meta_conversion_events WHERE id = ${eventId} LIMIT 1`;
+      if (!existing[0]) return sendJson(res, 404, { error: "Evento não encontrado" });
+      await sendStructuredMetaConversionEvent(sql, eventId);
+      const rows = await sql`
+        SELECT e.*, l.name AS lead_name
+        FROM crm_meta_conversion_events e
+        LEFT JOIN crm_leads l ON l.id = e.lead_id
+        WHERE e.id = ${eventId}
+        LIMIT 1
+      `;
+      await structuredAudit(user, "RESEND_META_CAPI_EVENT", { eventId });
+      return sendJson(res, 200, { ok: true, event: publicMetaConversionEvent(rows[0]), dataSources: { action: "structured" } });
+    }
+
     if (url.pathname === "/api/knowledge" && method === "POST") {
       if (!canCreateKnowledge(user)) return sendJson(res, 403, { error: "Sem permissão" });
       const body = await readBody(req);
@@ -6973,6 +7076,7 @@ async function fastStructuredStateResponse(req, res, url) {
       accessRows,
       fupRows,
       samRows,
+      metaConversionRows,
       saleRows,
       receiptRows,
       settlementRows,
@@ -6992,6 +7096,7 @@ async function fastStructuredStateResponse(req, res, url) {
       canManageSettings(user) ? sql`SELECT payload FROM crm_access_logs ORDER BY at DESC NULLS LAST LIMIT 1000` : Promise.resolve([]),
       (canManageSettings(user) || canAccessCommercialSalesReport(user)) ? sql`SELECT payload FROM crm_fup_lead_logs ORDER BY at DESC NULLS LAST LIMIT 1000` : Promise.resolve([]),
       canManageSettings(user) ? sql`SELECT * FROM crm_sam_events ORDER BY created_at DESC NULLS LAST LIMIT 500` : Promise.resolve([]),
+      canManageSettings(user) ? metaCapiRowsForState(sql) : Promise.resolve([]),
       (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? sql`SELECT payload FROM crm_lev_sales ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_receipts ORDER BY paid_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? sql`SELECT payload FROM crm_lev_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
@@ -7068,6 +7173,7 @@ async function fastStructuredStateResponse(req, res, url) {
       integrationLog: integrationRows.map((row) => row.payload || {}).filter((item) => item.at),
       auditLog: auditRows.map((row) => row.payload || {}).filter((item) => item.at),
       samEvents: samRows.map(samEventFromRow).filter((event) => event.id),
+      metaConversionEvents: metaConversionRows,
       accessLog: accessRows.map((row) => row.payload || {}).filter((item) => item.at),
       fupLeadLog: fupRows.map((row) => row.payload || {}).filter((item) => item.at),
       dataSources: {

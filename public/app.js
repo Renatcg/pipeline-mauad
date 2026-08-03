@@ -35,6 +35,7 @@ const state = {
   accessLog: [],
   fupLeadLog: [],
   integrationLog: [],
+  metaConversionEvents: [],
   samEvents: [],
   levFinance: null,
   commercialSettings: {},
@@ -46,6 +47,7 @@ const state = {
   canManageKnowledge: false,
   canCreateKnowledge: false,
   metaDiagnostics: null,
+  metaCapiDiagnostics: null,
   view: "kanban",
   leadId: null,
   previousView: "kanban",
@@ -1210,6 +1212,7 @@ async function loadState() {
   state.accessibleBaseSources = data.accessibleBaseSources || [];
   state.actionableBaseSources = data.actionableBaseSources || [];
   state.integrationLog = data.integrationLog || [];
+  state.metaConversionEvents = data.metaConversionEvents || [];
   state.samEvents = data.samEvents || [];
   state.auditLog = data.auditLog;
   state.accessLog = data.accessLog || [];
@@ -4712,6 +4715,46 @@ function samEventDetailLabel(event) {
   return "";
 }
 
+function metaCapiStatusLabel(status) {
+  const labels = {
+    pending: "Pendente",
+    sent: "Enviado",
+    error: "Erro",
+    skipped: "Ignorado"
+  };
+  return labels[status] || status || "Pendente";
+}
+
+function metaCapiSourceLabel(event) {
+  const sourceType = String(event.sourceType || "").toLowerCase();
+  if (sourceType === "status") return `Status: ${event.sourceKey || "-"}`;
+  if (sourceType === "tag") return `Etiqueta: ${event.sourceKey || "-"}`;
+  if (sourceType === "manual_test") return "Teste manual";
+  return event.sourceKey || event.sourceType || "-";
+}
+
+function renderMetaCapiDiagnostics() {
+  const diagnostics = state.metaCapiDiagnostics;
+  if (!diagnostics) return "";
+  const checks = (diagnostics.checks || []).map((check) => `
+    <tr>
+      <td>${escapeHtml(check.label)}</td>
+      <td><span class="chip ${check.ok ? "success-chip" : ""}">${check.ok ? "OK" : "Atenção"}</span></td>
+      <td>${escapeHtml(check.detail || "")}</td>
+    </tr>
+  `).join("");
+  const queue = diagnostics.queue || {};
+  return `
+    <div class="sub-panel">
+      <h3>Diagnóstico Meta CAPI</h3>
+      <p class="muted">Atualizado em ${escapeHtml(dateTimeLabel(diagnostics.checkedAt))} · Pendente ${Number(queue.pending || 0).toLocaleString("pt-BR")} · Erro ${Number(queue.error || 0).toLocaleString("pt-BR")} · Enviado ${Number(queue.sent || 0).toLocaleString("pt-BR")}</p>
+      <div class="table-wrap compact-table">
+        <table><thead><tr><th>Item</th><th>Status</th><th>Detalhe</th></tr></thead><tbody>${checks || '<tr><td colspan="3" class="empty">Sem diagnóstico.</td></tr>'}</tbody></table>
+      </div>
+    </div>
+  `;
+}
+
 function renderLogSettings() {
   const term = state.settingsLogSearch.trim().toLowerCase();
   const matches = (value) => !term || String(value || "").toLowerCase().includes(term);
@@ -4745,6 +4788,27 @@ function renderLogSettings() {
         <td>${escapeHtml(item.details?.error || item.details?.message || "")}</td>
       </tr>
     `).join("");
+  const metaCapiRows = (state.metaConversionEvents || [])
+    .filter((event) => {
+      const details = JSON.stringify(event.payload || {});
+      return [event.leadName, event.leadId, event.eventName, event.eventId, event.sourceType, event.sourceKey, event.status, event.lastError, metaCapiSourceLabel(event), details].some(matches);
+    })
+    .map((event) => {
+      const canResend = ["pending", "error", "skipped"].includes(String(event.status || ""));
+      return `
+        <tr>
+          <td>${escapeHtml(dateTimeLabel(event.createdAt))}</td>
+          <td>${event.leadId ? `<button type="button" class="link-button" data-open-meta-capi-lead="${escapeHtml(event.leadId)}">${escapeHtml(event.leadName || event.leadId)}</button>` : '<span class="muted-cell">Sem lead</span>'}</td>
+          <td>${escapeHtml(event.eventName || "")}</td>
+          <td>${escapeHtml(metaCapiSourceLabel(event))}</td>
+          <td><span class="chip">${escapeHtml(metaCapiStatusLabel(event.status))}</span></td>
+          <td>${Number(event.attempts || 0).toLocaleString("pt-BR")}</td>
+          <td>${escapeHtml(event.sentAt ? dateTimeLabel(event.sentAt) : "")}</td>
+          <td>${escapeHtml(event.lastError || "")}</td>
+          <td>${canResend ? `<button type="button" data-meta-capi-resend="${escapeHtml(event.id)}">Reenviar</button>` : '<span class="muted-cell">-</span>'}</td>
+        </tr>
+      `;
+    }).join("");
   const auditRows = (state.auditLog || [])
     .filter((item) => {
       const details = JSON.stringify(item.details || {});
@@ -4806,6 +4870,7 @@ function renderLogSettings() {
         <h2>Logs</h2>
         <div class="row-actions">
           ${state.settingsLogTab === "fup" ? '<button class="danger-button" type="button" data-clear-fup-log>Limpar FUP Lead</button>' : ""}
+          ${state.settingsLogTab === "metaCapi" ? '<button type="button" data-meta-capi-diagnose>Diagnosticar CAPI</button>' : ""}
           <input id="settingsLogSearch" class="settings-search" placeholder="Pesquisar nos logs" value="${escapeHtml(state.settingsLogSearch)}">
         </div>
       </div>
@@ -4814,13 +4879,17 @@ function renderLogSettings() {
         <button class="${state.settingsLogTab === "fup" ? "active" : ""}" data-log-tab="fup">FUP Lead</button>
         <button class="${state.settingsLogTab === "sam" ? "active" : ""}" data-log-tab="sam">SAM</button>
         <button class="${state.settingsLogTab === "meta" ? "active" : ""}" data-log-tab="meta">Meta</button>
+        <button class="${state.settingsLogTab === "metaCapi" ? "active" : ""}" data-log-tab="metaCapi">Fila Meta CAPI</button>
         <button class="${state.settingsLogTab === "integration" ? "active" : ""}" data-log-tab="integration">Eventos de integração</button>
       </div>
+      ${state.settingsLogTab === "metaCapi" ? renderMetaCapiDiagnostics() : ""}
       <div class="table-wrap log-table-wrap">
         ${state.settingsLogTab === "integration"
           ? `<table><thead><tr><th>Data</th><th>Origem</th><th>Evento</th><th>ID</th><th>Detalhe</th></tr></thead><tbody>${integrationRows || '<tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`
           : state.settingsLogTab === "meta"
             ? `<table><thead><tr><th>Data</th><th>Evento</th><th>ID</th><th>Status/Projeto</th><th>Detalhe</th></tr></thead><tbody>${metaRows || '<tr><td colspan="5" class="empty">Nenhum log Meta encontrado.</td></tr>'}</tbody></table>`
+          : state.settingsLogTab === "metaCapi"
+            ? `<table><thead><tr><th>Criado em</th><th>Lead</th><th>Evento</th><th>Origem</th><th>Status</th><th>Tentativas</th><th>Enviado em</th><th>Erro</th><th>Ações</th></tr></thead><tbody>${metaCapiRows || '<tr><td colspan="9" class="empty">Nenhum evento CAPI encontrado.</td></tr>'}</tbody></table>`
           : state.settingsLogTab === "sam"
             ? `<table><thead><tr><th>Recebido em</th><th>Evento</th><th>Unidade</th><th>E-mail</th><th>Telefone</th><th>Status</th><th>Lead</th><th>Detalhe</th><th>Ações</th></tr></thead><tbody>${samRows || '<tr><td colspan="9" class="empty">Nenhum evento SAM encontrado.</td></tr>'}</tbody></table>`
           : state.settingsLogTab === "fup"
@@ -4857,7 +4926,39 @@ function renderLogSettings() {
       alert(error.message);
     }
   });
+  document.querySelector("[data-meta-capi-diagnose]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Diagnosticando...");
+      const result = await api("/api/integrations/meta/capi-diagnostics", { method: "POST", body: JSON.stringify({}) });
+      state.metaCapiDiagnostics = result.diagnostics || null;
+      renderLogSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
   bindSettingsActionMenus();
+  document.querySelectorAll("[data-open-meta-capi-lead]").forEach((button) => {
+    button.addEventListener("click", () => routeTo("lead", button.dataset.openMetaCapiLead));
+  });
+  document.querySelectorAll("[data-meta-capi-resend]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        setButtonBusy(button, true, "Reenviando...");
+        const result = await api(`/api/integrations/meta/capi-events/${encodeURIComponent(button.dataset.metaCapiResend)}/resend`, { method: "POST", body: JSON.stringify({}) });
+        if (result.event) {
+          state.metaConversionEvents = (state.metaConversionEvents || []).map((event) => event.id === result.event.id ? result.event : event);
+        } else {
+          await loadState();
+        }
+        renderLogSettings();
+      } catch (error) {
+        setButtonBusy(button, false);
+        alert(error.message);
+      }
+    });
+  });
   document.querySelectorAll("[data-open-sam-lead]").forEach((button) => {
     button.addEventListener("click", () => routeTo("lead", button.dataset.openSamLead));
   });
