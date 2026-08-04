@@ -15,6 +15,7 @@ const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL || "";
 const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
 const REDIS_KEY_PREFIX = process.env.REDIS_KEY_PREFIX || "pipeline-mauad";
 const REDIS_TIMEOUT_MS = Number(process.env.REDIS_TIMEOUT_MS || 800);
+const REDIS_CONFIG_TTL_SECONDS = Number(process.env.REDIS_CONFIG_TTL_SECONDS || 120);
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor", "Gerente Financeiro", "Auxiliar Financeiro", "Gestor de Tráfego", "Coordenador de Marketing"];
 const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
 const PERMISSION_SCREENS = [
@@ -2669,6 +2670,14 @@ async function redisDelete(key) {
   await redisPipeline([["DEL", key]]);
 }
 
+async function invalidateStructuredConfigCache() {
+  if (!redisEnabled()) return;
+  await redisPipeline([
+    ["DEL", redisKey("config", "state")],
+    ["DEL", redisKey("settings", "commercial")]
+  ]);
+}
+
 async function cachedCommercialSettings(sql) {
   const key = redisKey("settings", "commercial");
   const cached = await redisGetJson(key);
@@ -5204,6 +5213,7 @@ async function saveStructuredPermissions(sql, permissions) {
       }
     }
   }
+  void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
 }
 
 async function structuredNotificationDb(sql) {
@@ -5270,10 +5280,70 @@ async function structuredSettingsMap(sql) {
   return Object.fromEntries(rows.map((row) => [row.key, row.payload || {}]));
 }
 
+async function structuredConfigStateBundle(sql) {
+  const [userRows, projectRows, statusRows, tagRows, sourceRows, formRows, permissionRows, articleRows, settingsRows] = await Promise.all([
+    sql`SELECT * FROM crm_users ORDER BY name ASC, username ASC`,
+    sql`SELECT name, position, payload FROM crm_projects ORDER BY position ASC, name ASC`,
+    sql`SELECT status, position, payload FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`,
+    sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`,
+    sql`SELECT name FROM crm_base_sources ORDER BY name ASC`,
+    sql`SELECT payload FROM crm_meta_forms ORDER BY archived ASC, name ASC`,
+    sql`SELECT owner_type, owner_id, resource_id, can_access, can_act FROM crm_permissions`,
+    sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
+    sql`SELECT key, payload FROM crm_settings`
+  ]);
+  const settings = Object.fromEntries(settingsRows.map((row) => [row.key, row.payload || {}]));
+  const users = userRows.map((row) => publicUser(structuredUserFromAuthRow(row))).filter((item) => item.id);
+  const projectDefinitions = projectRows.map((row, index) => normalizeProjectDefinition({ ...(row.payload || {}), name: row.name }, Number(row.position ?? index))).filter((item) => item.name);
+  const statusDefinitions = statusRows.map((row, index) => normalizeStatusDefinition({ ...(row.payload || {}), status: row.status }, Number(row.position ?? index))).filter((item) => item.status);
+  const projects = projectDefinitions.map((item) => item.name);
+  const pipelineStatuses = statusDefinitions.map((item) => item.status);
+  const tagDefinitions = tagRows.map((row) => row.payload || {}).filter((item) => item.id);
+  const baseSources = sourceRows.map((row) => row.name).filter(Boolean);
+  const forms = formRows.map((row) => row.payload || {}).filter((item) => item.id);
+  const permissions = structuredPermissionsFromRows(permissionRows);
+  const commercialSettings = normalizeCommercialSettingsPayload(settings.commercialSettings || {});
+  const integrations = {
+    ...(settings.integrations || {}),
+    metaForms: {
+      ...(settings.integrations?.metaForms || {}),
+      enabled: forms.length > 0,
+      forms
+    }
+  };
+  return {
+    source: "structured",
+    settings,
+    users,
+    projectDefinitions,
+    statusDefinitions,
+    projects: projects.length ? projects : DEFAULT_PROJECTS,
+    pipelineStatuses,
+    tagDefinitions: tagDefinitions.length ? tagDefinitions : DEFAULT_TAG_DEFINITIONS,
+    baseSources,
+    forms,
+    permissions,
+    integrations,
+    knowledgeArticles: articleRows.map((row) => row.payload || {}).filter((item) => item.id),
+    knowledgeChatSessions: Array.isArray(settings.knowledgeChatSessions) ? settings.knowledgeChatSessions : [],
+    commercialSettings
+  };
+}
+
+async function cachedStructuredConfigState(sql) {
+  const key = redisKey("config", "state");
+  const cached = await redisGetJson(key);
+  if (cached?.users && cached?.settings) return { ...cached, source: "redis" };
+  const bundle = await structuredConfigStateBundle(sql);
+  void redisSetJson(key, bundle, REDIS_CONFIG_TTL_SECONDS).catch((error) => mirrorStructuredError("redis-config-cache", error));
+  return bundle;
+}
+
 async function saveStructuredSetting(sql, key, payload) {
   await sql`INSERT INTO crm_settings (key, payload, updated_at)
     VALUES (${key}, ${JSON.stringify(payload || {})}::jsonb, now())
     ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`;
+  void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
 }
 
 async function updateStructuredMetaConversionMapping(sql, type, key, mapping = {}, previousKey = "") {
@@ -5679,6 +5749,7 @@ async function saveStructuredMetaForms(sql, integrations = {}) {
       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, project = EXCLUDED.project, archived = EXCLUDED.archived, ad_url = EXCLUDED.ad_url, payload = EXCLUDED.payload`;
   }
   await saveStructuredSetting(sql, "integrations", integrations || {});
+  void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
   return {
     ...(integrations || {}),
     metaForms: {
@@ -5699,6 +5770,7 @@ async function saveStructuredKnowledgeArticle(sql, article) {
   await sql`INSERT INTO crm_knowledge_articles (id, title, category, published, updated_at, payload)
     VALUES (${article.id}, ${article.title || ""}, ${article.category || ""}, ${article.published !== false}, ${dbDate(article.updatedAt)}, ${JSON.stringify(article)}::jsonb)
     ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, category = EXCLUDED.category, published = EXCLUDED.published, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
+  void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
 }
 
 async function structuredConfigDb(sql, { includeLeads = false } = {}) {
@@ -6111,6 +6183,7 @@ async function replaceStructuredProjects(sql, projects) {
     await sql`INSERT INTO crm_projects (name, position, payload)
       VALUES (${project.name}, ${position}, ${JSON.stringify(project)}::jsonb)`;
   }
+  void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
 }
 
 async function replaceStructuredStatuses(sql, statuses) {
@@ -6120,6 +6193,7 @@ async function replaceStructuredStatuses(sql, statuses) {
     if (!definition.status) continue;
     await sql`INSERT INTO crm_pipeline_statuses (status, position, payload) VALUES (${definition.status}, ${position}, ${JSON.stringify(definition)}::jsonb)`;
   }
+  void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
 }
 
 async function fastStructuredSettingsRoutes(req, res, url) {
@@ -6340,6 +6414,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       const article = rows[0]?.payload;
       if (!article?.id) return notFound(res);
       await sql`DELETE FROM crm_knowledge_articles WHERE id = ${article.id}`;
+      void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
       await structuredAudit(user, "DELETE_KNOWLEDGE_ARTICLE", { articleId: article.id, title: article.title });
       const db = await structuredConfigDb(sql);
       return sendJson(res, 200, { knowledgeArticles: visibleKnowledgeArticles(db, user), dataSources: { action: "structured" } });
@@ -6394,6 +6469,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
           VALUES (${form.id}, ${form.name || ""}, ${form.project || ""}, ${Boolean(form.archived)}, ${form.adUrl || ""}, ${JSON.stringify(form)}::jsonb)
           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, project = EXCLUDED.project, archived = EXCLUDED.archived, ad_url = EXCLUDED.ad_url, payload = EXCLUDED.payload`;
       }
+      void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
       await structuredAudit(user, "UPDATE_PROJECT", { oldName, name });
       return sendJson(res, 200, { projects: projectDefinitions.map((project) => project.name), projectDefinitions, dataSources: { action: "structured" } });
     }
@@ -6415,6 +6491,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
           VALUES (${form.id}, ${form.name || ""}, ${form.project || ""}, ${Boolean(form.archived)}, ${form.adUrl || ""}, ${JSON.stringify(form)}::jsonb)
           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, project = EXCLUDED.project, archived = EXCLUDED.archived, ad_url = EXCLUDED.ad_url, payload = EXCLUDED.payload`;
       }
+      void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
       await structuredAudit(user, "DELETE_PROJECT", { name: deleted });
       return sendJson(res, 200, { projects: projectDefinitions.map((project) => project.name), projectDefinitions, dataSources: { action: "structured" } });
     }
@@ -6524,6 +6601,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
           eventId: body.metaConversionEventId
         });
       }
+      void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
       await structuredAudit(user, "CREATE_TAG", { name });
       return sendJson(res, 201, { tagDefinitions: [...tags, tag], dataSources: { action: "structured" } });
     }
@@ -6564,6 +6642,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
           await saveStructuredLead(sql, lead);
         }
       }
+      void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
       await structuredAudit(user, "UPDATE_TAG", { oldName, name });
       const nextRows = await sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`;
       return sendJson(res, 200, { tagDefinitions: nextRows.map((row) => row.payload || {}).filter((item) => item.id), dataSources: { action: "structured" } });
@@ -6588,6 +6667,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
         lead.updatedAt = new Date().toISOString();
         await saveStructuredLead(sql, lead);
       }
+      void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
       await structuredAudit(user, "DELETE_TAG", { name: tag.name });
       const nextRows = await sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`;
       return sendJson(res, 200, { tagDefinitions: nextRows.map((row) => row.payload || {}).filter((item) => item.id), dataSources: { action: "structured" } });
@@ -7119,13 +7199,7 @@ async function fastStructuredStateResponse(req, res, url) {
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
     const [
-      userRows,
-      projectRows,
-      statusRows,
-      tagRows,
-      sourceRows,
-      formRows,
-      permissionRows,
+      configBundle,
       integrationRows,
       auditRows,
       accessRows,
@@ -7135,17 +7209,9 @@ async function fastStructuredStateResponse(req, res, url) {
       saleRows,
       receiptRows,
       settlementRows,
-      articleRows,
-      settingsRows,
       presenceRows
     ] = await Promise.all([
-      sql`SELECT * FROM crm_users ORDER BY name ASC, username ASC`,
-      sql`SELECT name, position, payload FROM crm_projects ORDER BY position ASC, name ASC`,
-      sql`SELECT status, position, payload FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`,
-      sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`,
-      sql`SELECT name FROM crm_base_sources ORDER BY name ASC`,
-      sql`SELECT payload FROM crm_meta_forms ORDER BY archived ASC, name ASC`,
-      sql`SELECT owner_type, owner_id, resource_id, can_access, can_act FROM crm_permissions`,
+      cachedStructuredConfigState(sql),
       canManageSettings(user) ? sql`SELECT payload FROM crm_integration_logs ORDER BY at DESC NULLS LAST LIMIT 50` : Promise.resolve([]),
       canManageSettings(user) ? sql`SELECT payload FROM crm_audit_logs ORDER BY at DESC NULLS LAST LIMIT 25` : Promise.resolve([]),
       canManageSettings(user) ? sql`SELECT payload FROM crm_access_logs ORDER BY at DESC NULLS LAST LIMIT 1000` : Promise.resolve([]),
@@ -7155,30 +7221,24 @@ async function fastStructuredStateResponse(req, res, url) {
       (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? sql`SELECT payload FROM crm_lev_sales ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_receipts ORDER BY paid_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? sql`SELECT payload FROM crm_lev_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
-      sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
-      sql`SELECT key, payload FROM crm_settings`,
       sql`SELECT payload FROM crm_access_logs ORDER BY at DESC NULLS LAST LIMIT 2000`
     ]);
-    const settings = Object.fromEntries(settingsRows.map((row) => [row.key, row.payload || {}]));
-    const users = userRows.map((row) => publicUser(structuredUserFromAuthRow(row))).filter((item) => item.id);
-    const projectDefinitions = projectRows.map((row, index) => normalizeProjectDefinition({ ...(row.payload || {}), name: row.name }, Number(row.position ?? index))).filter((item) => item.name);
-    const statusDefinitions = statusRows.map((row, index) => normalizeStatusDefinition({ ...(row.payload || {}), status: row.status }, Number(row.position ?? index))).filter((item) => item.status);
-    const projects = projectDefinitions.map((item) => item.name);
-    const pipelineStatuses = statusDefinitions.map((item) => item.status);
-    const tagDefinitions = tagRows.map((row) => row.payload || {}).filter((item) => item.id);
-    const baseSources = sourceRows.map((row) => row.name).filter(Boolean);
-    const forms = formRows.map((row) => row.payload || {}).filter((item) => item.id);
-    const permissions = structuredPermissionsFromRows(permissionRows);
-    const commercialSettings = normalizeCommercialSettingsPayload(settings.commercialSettings || {});
+    const {
+      settings,
+      users,
+      projectDefinitions,
+      statusDefinitions,
+      projects,
+      pipelineStatuses,
+      tagDefinitions,
+      baseSources,
+      permissions,
+      commercialSettings,
+      integrations,
+      knowledgeArticles,
+      knowledgeChatSessions
+    } = configBundle;
     const userPresence = buildUserPresence(users, presenceRows, sessionTtlMsFromCommercialSettings(commercialSettings), await redisPresenceForUsers(users));
-    const integrations = {
-      ...(settings.integrations || {}),
-      metaForms: {
-        ...(settings.integrations?.metaForms || {}),
-        enabled: forms.length > 0,
-        forms
-      }
-    };
     const stateDb = {
       roles: ROLES,
       users,
@@ -7189,8 +7249,8 @@ async function fastStructuredStateResponse(req, res, url) {
       integrations,
       permissions,
       baseAccess: structuredBaseAccessFromPermissions(permissions, baseSources.length ? baseSources : allBaseSources({ leads: [] })),
-      knowledgeArticles: articleRows.map((row) => row.payload || {}).filter((item) => item.id),
-      knowledgeChatSessions: Array.isArray(settings.knowledgeChatSessions) ? settings.knowledgeChatSessions : [],
+      knowledgeArticles,
+      knowledgeChatSessions,
       commercialSettings,
       levFinance: {
         settings: settings.levFinanceSettings || {},
@@ -7234,7 +7294,7 @@ async function fastStructuredStateResponse(req, res, url) {
       dataSources: {
         state: "structured",
         logs: "structured",
-        config: "structured",
+        config: configBundle.source || "structured",
         presence: redisEnabled() ? "redis" : "structured"
       },
       commercialSettings: stateDb.commercialSettings,
@@ -7665,6 +7725,7 @@ async function fastStructuredUserPermissionRoutes(req, res, url) {
       await sql`DELETE FROM crm_permissions WHERE owner_type = 'user' AND owner_id = ${target.id}`;
       await sql`DELETE FROM crm_lead_favorites WHERE user_id = ${target.id}`;
       await sql`DELETE FROM crm_users WHERE id = ${target.id}`;
+      void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
       await structuredAudit(user, "DELETE_USER", { userId: target.id });
       return sendJson(res, 200, { ok: true, dataSources: { action: "structured" } });
     }
@@ -8909,6 +8970,7 @@ async function saveStructuredUser(sql, user) {
   await sql`INSERT INTO crm_users (id, username, name, role, active, operates_as_broker, notifications, password_hash, password_setup, photo_url, created_at, updated_at, payload)
     VALUES (${user.id}, ${user.username || ""}, ${user.name || ""}, ${user.role || ""}, ${user.active !== false}, ${Boolean(user.operatesAsBroker)}, ${JSON.stringify(user.notifications || {})}::jsonb, ${user.passwordHash || null}, ${JSON.stringify(user.passwordSetup || null)}::jsonb, ${user.photoUrl || ""}, ${dbDate(user.createdAt)}, ${dbDate(user.updatedAt)}, ${JSON.stringify(publicUser(user))}::jsonb)
     ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, name = EXCLUDED.name, role = EXCLUDED.role, active = EXCLUDED.active, operates_as_broker = EXCLUDED.operates_as_broker, notifications = EXCLUDED.notifications, password_hash = EXCLUDED.password_hash, password_setup = EXCLUDED.password_setup, photo_url = EXCLUDED.photo_url, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
+  void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
 }
 
 async function deleteStructuredUser(userId) {
@@ -8916,6 +8978,7 @@ async function deleteStructuredUser(userId) {
     const sql = await structuredSqlForMirror();
     if (!sql) return;
     await sql`DELETE FROM crm_users WHERE id = ${userId}`;
+    void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
   } catch (error) {
     mirrorStructuredError("delete-user", error);
   }
@@ -9127,6 +9190,7 @@ async function syncStructuredDataset(db, actor, key, options = {}) {
     if (shouldReset) await clearStructuredDataset(sql, key);
     const summary = { dataset: key, reset: shouldReset, ...(await insertStructuredDataset(sql, db, key)) };
     await sql`UPDATE crm_structured_sync_runs SET status = 'success', finished_at = now(), summary = ${JSON.stringify(summary)}::jsonb WHERE id = ${runId}`;
+    void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
     audit(db, actor, "SYNC_STRUCTURED_DATASET", summary);
     return { runId, summary };
   } catch (error) {
@@ -9144,6 +9208,7 @@ async function resetStructuredDataset(db, actor, key) {
   const summary = { dataset: key, resetOnly: true };
   const runId = crypto.randomUUID();
   await sql`INSERT INTO crm_structured_sync_runs (id, status, finished_at, summary) VALUES (${runId}, 'reset', now(), ${JSON.stringify(summary)}::jsonb)`;
+  void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
   audit(db, actor, "RESET_STRUCTURED_DATASET", summary);
   return { runId, summary };
 }
@@ -9281,6 +9346,7 @@ async function syncStructuredDb(db, actor) {
       summary.knowledgeArticles += 1;
     }
     await sql`UPDATE crm_structured_sync_runs SET status = 'success', finished_at = now(), summary = ${JSON.stringify(summary)}::jsonb WHERE id = ${runId}`;
+    void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
     audit(db, actor, "SYNC_STRUCTURED_DATABASE", summary);
     return { runId, summary };
   } catch (error) {
