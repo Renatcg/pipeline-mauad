@@ -3366,25 +3366,94 @@ function settingsTabButton(tab, label) {
   return `<button class="${state.settingsTab === tab ? "active" : ""}" data-settings-tab="${tab}">${label}</button>`;
 }
 
+function settingsMainTabButton(group) {
+  return `<button class="${group.tabs.some((tab) => tab.id === state.settingsTab) ? "active" : ""}" data-settings-main-tab="${group.id}">${group.label}</button>`;
+}
+
+function availableSettingsGroups() {
+  const groups = [
+    {
+      id: "users",
+      label: "Usuários",
+      tabs: [
+        ...(canManageUsers() ? [{ id: "users", label: "Usuários" }] : []),
+        ...(canManagePipelineSettings() ? [{ id: "permissions", label: "Permissões" }] : [])
+      ]
+    },
+    {
+      id: "pipeline",
+      label: "Pipeline",
+      tabs: [
+        ...(canManagePipelineSettings() ? [{ id: "statuses", label: "Status Pipeline" }] : []),
+        ...(canManagePipelineSettings() ? [{ id: "tags", label: "Etiquetas" }] : []),
+        ...(canManagePipelineSettings() ? [{ id: "projects", label: "Empreendimentos" }] : []),
+        ...(canManageCommercialSettings() ? [{ id: "commercial", label: "Configurações comerciais" }] : [])
+      ]
+    },
+    {
+      id: "integrations",
+      label: "Integrações",
+      tabs: canManageSystemSettings() ? [{ id: "integrations", label: "Integrações" }] : []
+    },
+    {
+      id: "logs",
+      label: "Logs",
+      tabs: canManageSystemSettings() ? [{ id: "logs", label: "Logs" }] : []
+    },
+    {
+      id: "levFinance",
+      label: "Financeiro Lev",
+      tabs: canManageLevFinanceSettings() ? [{ id: "levFinance", label: "Financeiro Lev" }] : []
+    },
+    {
+      id: "backup",
+      label: "Backup",
+      tabs: canManageSystemSettings() ? [{ id: "backup", label: "Backup" }] : []
+    },
+    {
+      id: "structuredDb",
+      label: "Banco estruturado",
+      tabs: canManageSystemSettings() ? [{ id: "structuredDb", label: "Banco estruturado" }] : []
+    },
+    {
+      id: "knowledge",
+      label: "Base de conhecimento",
+      tabs: canManageSystemSettings() ? [{ id: "knowledge", label: "Base de conhecimento" }] : []
+    }
+  ].filter((group) => group.tabs.length);
+  return groups;
+}
+
+function activeSettingsGroup(groups = availableSettingsGroups()) {
+  return groups.find((group) => group.tabs.some((tab) => tab.id === state.settingsTab)) || groups[0] || null;
+}
+
 function settingsLayout(content) {
+  const groups = availableSettingsGroups();
+  const activeGroup = activeSettingsGroup(groups);
   renderShell(`
     ${renderViewHead("Configurações", "Cadastros administrativos do sistema")}
       <div class="tabs">
-        ${canManageUsers() ? settingsTabButton("users", "Usuários") : ""}
-        ${canManageSystemSettings() ? settingsTabButton("integrations", "Integrações") : ""}
-        ${canManagePipelineSettings() ? settingsTabButton("statuses", "Status do pipeline") : ""}
-        ${canManagePipelineSettings() ? settingsTabButton("tags", "Etiquetas") : ""}
-        ${canManagePipelineSettings() ? settingsTabButton("permissions", "Permissões") : ""}
-        ${canManageSystemSettings() ? settingsTabButton("logs", "Logs") : ""}
-        ${canManagePipelineSettings() ? settingsTabButton("projects", "Empreendimentos") : ""}
-        ${canManageLevFinanceSettings() ? settingsTabButton("levFinance", "Financeiro Lev") : ""}
-        ${canManageCommercialSettings() ? settingsTabButton("commercial", "Configurações comerciais") : ""}
-        ${canManageSystemSettings() ? settingsTabButton("backup", "Backup") : ""}
-        ${canManageSystemSettings() ? settingsTabButton("structuredDb", "Banco estruturado") : ""}
-        ${canManageSystemSettings() ? settingsTabButton("knowledge", "Base de conhecimento") : ""}
-    </div>
+        ${groups.map(settingsMainTabButton).join("")}
+      </div>
+      ${activeGroup && activeGroup.tabs.length > 1 ? `
+        <div class="tabs compact-tabs settings-subtabs">
+          ${activeGroup.tabs.map((tab) => settingsTabButton(tab.id, tab.label)).join("")}
+        </div>
+      ` : ""}
     ${content}
   `);
+  document.querySelectorAll("[data-settings-main-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const group = groups.find((item) => item.id === button.dataset.settingsMainTab);
+      const firstTab = group?.tabs?.[0]?.id;
+      if (!firstTab) return;
+      state.settingsTab = firstTab;
+      state.settingsEditing = null;
+      state.settingsNotice = "";
+      renderSettings();
+    });
+  });
   document.querySelectorAll("[data-settings-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       state.settingsTab = button.dataset.settingsTab;
@@ -3400,7 +3469,10 @@ function renderSettings() {
   if (["statuses", "tags", "projects", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "commercial" && !canManageCommercialSettings()) state.settingsTab = "users";
-  if (state.settingsTab === "users" && !canManageUsers()) state.settingsTab = canManageLevFinanceSettings() ? "levFinance" : "knowledge";
+  if (state.settingsTab === "users" && !canManageUsers()) {
+    const fallbackGroup = activeSettingsGroup();
+    state.settingsTab = fallbackGroup?.tabs?.[0]?.id || "knowledge";
+  }
   if (state.settingsTab === "integrations") return renderIntegrationSettings();
   if (state.settingsTab === "statuses") return renderStatusSettings();
   if (state.settingsTab === "tags") return renderTagSettings();
@@ -3472,6 +3544,7 @@ function permissionResources() {
     { id: "screen:sheet", label: "Planilha", type: "screen" },
     { id: "screen:bases", label: "Bases", type: "screen" },
     { id: "screen:dashboard", label: "Dashboard", type: "screen" },
+    { id: "screen:salesReport", label: "Relatório Comercial", type: "screen" },
     { id: "screen:finance", label: "Financeiro Lev", type: "screen" },
     { id: "screen:settings", label: "Configurações", type: "screen" },
     { id: "screen:knowledge", label: "Ajuda", type: "screen" },
