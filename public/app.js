@@ -6394,7 +6394,7 @@ function renderLevMauadEmailPreviewModal(pendingSales = []) {
           </div>
           <div class="row-actions modal-actions">
             <button class="secondary" type="button" data-close-lev-email-preview>Fechar</button>
-            <button class="primary" type="button" data-send-lev-mauad-from-preview ${sales.length ? "" : "disabled"}>Enviar agora</button>
+            <button class="primary" type="button" data-send-lev-mauad-test-from-preview ${sales.length ? "" : "disabled"}>Enviar teste para renat.cg@gmail.com</button>
           </div>
         </div>
       </section>
@@ -6647,12 +6647,23 @@ function bindLevFinanceControls() {
       alert(error.message);
     }
   };
+  const sendLevToMauadTest = async (button) => {
+    try {
+      setButtonBusy(button, true, "Enviando teste...");
+      const data = await api("/api/lev-finance/send-to-mauad-test", { method: "POST" });
+      alert(`Teste enviado para ${data.to || "renat.cg@gmail.com"} com ${data.count || 0} registro(s).`);
+      setButtonBusy(button, false);
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  };
   document.querySelector("[data-preview-lev-mauad-email]")?.addEventListener("click", () => {
     state.levMauadEmailPreview = true;
     renderLevFinanceView();
   });
   document.querySelector("[data-send-lev-mauad]")?.addEventListener("click", (event) => sendLevToMauad(event.currentTarget));
-  document.querySelector("[data-send-lev-mauad-from-preview]")?.addEventListener("click", (event) => sendLevToMauad(event.currentTarget));
+  document.querySelector("[data-send-lev-mauad-test-from-preview]")?.addEventListener("click", (event) => sendLevToMauadTest(event.currentTarget));
   document.querySelectorAll("[data-close-lev-email-preview]").forEach((button) => {
     button.addEventListener("click", () => {
       state.levMauadEmailPreview = false;

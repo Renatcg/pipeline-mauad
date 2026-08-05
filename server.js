@@ -1997,9 +1997,12 @@ async function sendLevProvisionEmail(db, sale) {
   return sendEmailWithCc(settings.provisionTo, settings.provisionCc, `Aprovisionamento comissão Lev - ${sale.unit}`, html);
 }
 
-async function sendLevMauadPendingEmail(sql, db, sales = []) {
+async function sendLevMauadPendingEmail(sql, db, sales = [], options = {}) {
   const settings = db.levFinance?.settings || {};
   if (!sales.length) return { sent: false, reason: "Nenhuma venda pendente para enviar" };
+  const to = String(options.to || settings.provisionTo || "").trim();
+  const cc = options.cc !== undefined ? options.cc : settings.provisionCc;
+  if (!to) return { sent: false, reason: "E-mail destinatário não configurado" };
   const projects = await structuredProjectDefinitions(sql).catch(() => []);
   const projectForSale = (sale) => projectNameForUnit(sale.unit, projects) || sale.project || sale.projectName || "Empreendimento não identificado";
   const groups = new Map();
@@ -2044,7 +2047,7 @@ async function sendLevMauadPendingEmail(sql, db, sales = []) {
       <p style="margin-top:28px">Obrigado.</p>
     </div>
   `;
-  return sendEmailWithCcFrom(LEV_FINANCE_EMAIL_FROM, settings.provisionTo, settings.provisionCc, "Autorização de comissões Lev - vendas confirmadas", html);
+  return sendEmailWithCcFrom(LEV_FINANCE_EMAIL_FROM, to, cc, `${options.subjectPrefix || ""}Autorização de comissões Lev - vendas confirmadas`, html);
 }
 
 function leadUrl(lead) {
@@ -7034,6 +7037,19 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
       return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), email, count: pendingSales.length, dataSources: { action: "structured" } });
     }
 
+    if (method === "POST" && url.pathname === "/api/lev-finance/send-to-mauad-test") {
+      const testTo = "renat.cg@gmail.com";
+      const pendingSales = stateDb.levFinance.sales.filter((sale) => isLikelyLevUnit(sale.unit) && levRecordIsPendingMauad(sale) && levRecordIsConfirmedForMauad(sale));
+      if (!pendingSales.length) return sendJson(res, 400, { error: "Nenhuma venda confirmada para testar" });
+      const email = await sendLevMauadPendingEmail(sql, stateDb, pendingSales, { to: testTo, cc: "", subjectPrefix: "[TESTE] " });
+      if (!email.sent) {
+        await structuredIntegration("LEV_FINANCE", "MAUAD_PENDING_TEST_EMAIL_FAILED", { reason: email.reason, count: pendingSales.length, to: testTo });
+        return sendJson(res, 400, { error: email.reason || "Não foi possível enviar o teste para o e-mail autorizado" });
+      }
+      await structuredAudit(user, "SEND_LEV_PENDING_TEST_TO_MAUAD", { count: pendingSales.length, emailId: email.id || "", to: testTo });
+      return sendJson(res, 200, { email, count: pendingSales.length, to: testTo, dataSources: { action: "structured" } });
+    }
+
     const levRecordMatch = url.pathname.match(/^\/api\/lev-finance\/records\/([^/]+)$/);
     if (levRecordMatch && method === "PATCH") {
       const body = await readBody(req);
@@ -8625,7 +8641,8 @@ async function importStructuredLevSalesToUnits(sql) {
   for (const record of records) {
     const unitCode = normalizeLevUnit(record.unit || "");
     const status = String(record.status || "").toLocaleLowerCase("pt-BR");
-    if (!isLikelyLevUnit(unitCode) || status.includes("ignorada")) continue;
+    if (!unitCode || /[,.]/.test(unitCode) || unitCode.includes("R$") || status.includes("ignorada")) continue;
+    if (!projectNameForUnit(unitCode, projectDefinitions)) continue;
     const current = byUnit.get(unitCode) || {};
     byUnit.set(unitCode, {
       ...current,
