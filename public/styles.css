@@ -2706,6 +2706,18 @@ th {
   line-height: 1;
 }
 
+.action-menu-button.menu-label-button {
+  width: auto;
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 800;
+}
+
 .action-menu-button:hover,
 .action-menu.open .action-menu-button {
   background: #eef7f6;
@@ -2725,6 +2737,78 @@ th {
   border-radius: 8px;
   background: white;
   box-shadow: var(--shadow);
+}
+
+.email-preview-modal {
+  width: min(1040px, 100%);
+}
+
+.email-preview-window {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.email-preview-toolbar,
+.email-preview-fields,
+.email-preview-body {
+  padding: 16px 18px;
+}
+
+.email-preview-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  border-bottom: 1px solid var(--line);
+  background: #f8fafc;
+}
+
+.email-preview-toolbar h2 {
+  margin: 6px 0 0;
+}
+
+.email-chip {
+  display: inline-flex;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: #e6fffb;
+  color: var(--brand);
+  font-weight: 800;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.email-preview-fields {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.email-preview-fields div {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 12px;
+}
+
+.email-preview-fields span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.email-preview-body {
+  max-height: 56vh;
+  overflow: auto;
+  line-height: 1.5;
+}
+
+.email-preview-project {
+  margin-top: 22px;
+}
+
+.email-preview-table {
+  width: 100%;
 }
 
 .action-menu.measuring .action-menu-list {

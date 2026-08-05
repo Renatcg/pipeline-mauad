@@ -1827,8 +1827,6 @@ function saleFromSettlement(db, settlement) {
   const commissionPercent = Number(db.levFinance.settings?.commissionPercent || 0);
   const settlementStatus = levStatusKeyServer(settlement.status);
   const hasInvoiceStatus = settlementStatus.includes("nf emitida")
-    || settlementStatus.includes("nf/provisionamento")
-    || settlementStatus.includes("provisionamento solicitado")
     || Boolean(settlement.invoiceNumber || settlement.invoiceIssuedAt);
   const sale = {
     id: `lev-sale-${crypto.randomUUID()}`,
@@ -1877,9 +1875,11 @@ function levRecordIsAwaitingAuthorization(item) {
 function levRecordIsNfIssued(item) {
   const key = levStatusKeyServer(item?.status);
   return key.includes("nf emitida")
-    || key.includes("nf/provisionamento")
-    || key.includes("provisionamento solicitado")
     || Boolean(item?.invoiceNumber || item?.invoiceIssuedAt);
+}
+
+function levRecordIsConfirmedForMauad(item) {
+  return Boolean(item?.eligible) || levStatusKeyServer(item?.status).includes("confirmad");
 }
 
 function levRecordIsPendingMauad(item) {
@@ -2038,13 +2038,13 @@ async function sendLevMauadPendingEmail(sql, db, sales = []) {
     <div style="font-family:Arial,sans-serif;color:#101828;line-height:1.5">
       <h2>Solicitação de autorização - Comissões Lev</h2>
       <p>Prezados,</p>
-      <p>Segue a relação de vendas pendentes para autorização, agrupadas por empreendimento.</p>
+      <p>Segue a relação de vendas confirmadas para autorização, agrupadas por empreendimento.</p>
       <p><strong>Total geral da NF de comissões:</strong> ${escapeHtml(formatCurrency(totalCommission))}</p>
       ${projectBlocks}
       <p style="margin-top:28px">Obrigado.</p>
     </div>
   `;
-  return sendEmailWithCcFrom(LEV_FINANCE_EMAIL_FROM, settings.provisionTo, settings.provisionCc, "Autorização de comissões Lev - vendas pendentes", html);
+  return sendEmailWithCcFrom(LEV_FINANCE_EMAIL_FROM, settings.provisionTo, settings.provisionCc, "Autorização de comissões Lev - vendas confirmadas", html);
 }
 
 function leadUrl(lead) {
@@ -7013,8 +7013,8 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
     }
 
     if (method === "POST" && url.pathname === "/api/lev-finance/send-to-mauad") {
-      const pendingSales = stateDb.levFinance.sales.filter((sale) => isLikelyLevUnit(sale.unit) && levRecordIsPendingMauad(sale));
-      if (!pendingSales.length) return sendJson(res, 400, { error: "Nenhuma venda pendente para enviar" });
+      const pendingSales = stateDb.levFinance.sales.filter((sale) => isLikelyLevUnit(sale.unit) && levRecordIsPendingMauad(sale) && levRecordIsConfirmedForMauad(sale));
+      if (!pendingSales.length) return sendJson(res, 400, { error: "Nenhuma venda confirmada para enviar" });
       const email = await sendLevMauadPendingEmail(sql, stateDb, pendingSales);
       if (!email.sent) {
         await structuredIntegration("LEV_FINANCE", "MAUAD_PENDING_EMAIL_FAILED", { reason: email.reason, count: pendingSales.length });
@@ -7047,21 +7047,17 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
       } else if (action === "confirm") {
         targetSale = targetSale || saleFromSettlement(stateDb, settlement);
         targetSale.eligible = true;
-        targetSale.status = "NF/provisionamento solicitado";
+        targetSale.status = "Confirmada";
         targetSale.confirmedAt = new Date().toISOString();
         targetSale.confirmedBy = user.username;
-        targetSale.provisionDate = provisionDateFromPaymentSchedule(stateDb.levFinance.settings, new Date());
         targetSale.commissionPercent = Number(stateDb.levFinance.settings.commissionPercent || targetSale.commissionPercent || 0);
         targetSale.commissionValue = Number(targetSale.contractValue || 0) * (targetSale.commissionPercent / 100);
-        upsertLevSettlement(stateDb, targetSale, "NF/provisionamento solicitado", "Venda confirmada no Financeiro Lev");
-        const email = await sendLevProvisionEmail(stateDb, targetSale);
-        if (email.sent) targetSale.provisionEmailSentAt = new Date().toISOString();
-        else await structuredIntegration("LEV_FINANCE", "PROVISION_EMAIL_FAILED", { saleId: targetSale.id, unit: targetSale.unit, reason: email.reason });
+        upsertLevSettlement(stateDb, targetSale, "Confirmada", "Venda confirmada para envio em lote à Mauad");
         targetSale.updatedAt = new Date().toISOString();
         await mirrorLevSaleToStructuredLead(sql, targetSale);
         await persistStructuredLevFinance(sql, stateDb.levFinance);
-        await structuredAudit(user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: targetSale.id, unit: targetSale.unit, provisionDate: targetSale.provisionDate, emailSent: email.sent });
-        return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), email, dataSources: { action: "structured" } });
+        await structuredAudit(user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: targetSale.id, unit: targetSale.unit, batchEmailPending: true });
+        return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), email: { sent: false, reason: "Envio em lote pendente" }, dataSources: { action: "structured" } });
       } else if (action === "invoice_issued") {
         targetSale = targetSale || saleFromSettlement(stateDb, settlement);
         targetSale.eligible = true;
@@ -7132,20 +7128,17 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
       const sale = stateDb.levFinance.sales.find((item) => item.id === levConfirmMatch[1]);
       if (!sale) return notFound(res);
       sale.eligible = true;
+      sale.status = "Confirmada";
       sale.confirmedAt = new Date().toISOString();
       sale.confirmedBy = user.username;
-      sale.provisionDate = provisionDateFromPaymentSchedule(stateDb.levFinance.settings, new Date());
       sale.commissionPercent = Number(stateDb.levFinance.settings.commissionPercent || sale.commissionPercent || 0);
       sale.commissionValue = Number(sale.contractValue || 0) * (sale.commissionPercent / 100);
-      upsertLevSettlement(stateDb, sale, "NF/provisionamento solicitado", "Venda confirmada no Financeiro Lev");
-      const email = await sendLevProvisionEmail(stateDb, sale);
-      if (email.sent) sale.provisionEmailSentAt = new Date().toISOString();
-      else await structuredIntegration("LEV_FINANCE", "PROVISION_EMAIL_FAILED", { saleId: sale.id, unit: sale.unit, reason: email.reason });
+      upsertLevSettlement(stateDb, sale, "Confirmada", "Venda confirmada para envio em lote à Mauad");
       sale.updatedAt = new Date().toISOString();
       await mirrorLevSaleToStructuredLead(sql, sale);
       await persistStructuredLevFinance(sql, stateDb.levFinance);
-      await structuredAudit(user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: sale.id, unit: sale.unit, provisionDate: sale.provisionDate, emailSent: email.sent });
-      return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), email, dataSources: { action: "structured" } });
+      await structuredAudit(user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: sale.id, unit: sale.unit, batchEmailPending: true });
+      return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), email: { sent: false, reason: "Envio em lote pendente" }, dataSources: { action: "structured" } });
     }
 
     return false;
@@ -10347,20 +10340,16 @@ async function routeApi(req, res, db) {
     } else if (action === "confirm") {
       targetSale = targetSale || saleFromSettlement(db, settlement);
       targetSale.eligible = true;
-      targetSale.status = "NF/provisionamento solicitado";
+      targetSale.status = "Confirmada";
       targetSale.confirmedAt = new Date().toISOString();
       targetSale.confirmedBy = user.username;
-      targetSale.provisionDate = provisionDateFromPaymentSchedule(db.levFinance.settings, new Date());
       targetSale.commissionPercent = Number(db.levFinance.settings.commissionPercent || targetSale.commissionPercent || 0);
       targetSale.commissionValue = Number(targetSale.contractValue || 0) * (targetSale.commissionPercent / 100);
-      upsertLevSettlement(db, targetSale, "NF/provisionamento solicitado", "Venda confirmada no Financeiro Lev");
-      const email = await sendLevProvisionEmail(db, targetSale);
-      if (email.sent) targetSale.provisionEmailSentAt = new Date().toISOString();
-      else integrationEvent(db, "LEV_FINANCE", "PROVISION_EMAIL_FAILED", { saleId: targetSale.id, unit: targetSale.unit, reason: email.reason });
+      upsertLevSettlement(db, targetSale, "Confirmada", "Venda confirmada para envio em lote à Mauad");
       targetSale.updatedAt = new Date().toISOString();
-      audit(db, user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: targetSale.id, unit: targetSale.unit, provisionDate: targetSale.provisionDate, emailSent: email.sent });
+      audit(db, user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: targetSale.id, unit: targetSale.unit, batchEmailPending: true });
       await saveDb(db);
-      return sendJson(res, 200, { levFinance: publicLevFinance(db), email });
+      return sendJson(res, 200, { levFinance: publicLevFinance(db), email: { sent: false, reason: "Envio em lote pendente" } });
     } else if (action === "invoice_issued") {
       targetSale = targetSale || saleFromSettlement(db, settlement);
       targetSale.eligible = true;
@@ -10412,22 +10401,16 @@ async function routeApi(req, res, db) {
     const sale = db.levFinance.sales.find((item) => item.id === levConfirmMatch[1]);
     if (!sale) return notFound(res);
     sale.eligible = true;
+    sale.status = "Confirmada";
     sale.confirmedAt = new Date().toISOString();
     sale.confirmedBy = user.username;
-    sale.provisionDate = provisionDateFromPaymentSchedule(db.levFinance.settings, new Date());
     sale.commissionPercent = Number(db.levFinance.settings.commissionPercent || sale.commissionPercent || 0);
     sale.commissionValue = Number(sale.contractValue || 0) * (sale.commissionPercent / 100);
-    upsertLevSettlement(db, sale, "NF/provisionamento solicitado", "Venda confirmada no Financeiro Lev");
-    const email = await sendLevProvisionEmail(db, sale);
-    if (email.sent) {
-      sale.provisionEmailSentAt = new Date().toISOString();
-    } else {
-      integrationEvent(db, "LEV_FINANCE", "PROVISION_EMAIL_FAILED", { saleId: sale.id, unit: sale.unit, reason: email.reason });
-    }
+    upsertLevSettlement(db, sale, "Confirmada", "Venda confirmada para envio em lote à Mauad");
     sale.updatedAt = new Date().toISOString();
-    audit(db, user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: sale.id, unit: sale.unit, provisionDate: sale.provisionDate, emailSent: email.sent });
+    audit(db, user, "CONFIRM_LEV_SALE_ELIGIBILITY", { saleId: sale.id, unit: sale.unit, batchEmailPending: true });
     await saveDb(db);
-    return sendJson(res, 200, { levFinance: publicLevFinance(db), email });
+    return sendJson(res, 200, { levFinance: publicLevFinance(db), email: { sent: false, reason: "Envio em lote pendente" } });
   }
 
   if (method === "POST" && url.pathname === "/api/leads/check-duplicate") {

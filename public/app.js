@@ -41,6 +41,7 @@ const state = {
   samEvents: [],
   levFinance: null,
   commercialSettings: {},
+  levMauadEmailPreview: false,
   structuredDbDiagnostics: null,
   dataSources: {},
   knowledgeCategories: [],
@@ -1566,8 +1567,17 @@ function renderMultiFilter(id, label, selected, options) {
   `;
 }
 
+function availabilityStatusKey(status) {
+  return String(status || "")
+    .toLocaleLowerCase("pt-BR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 function unitStatusStyle(status) {
-  const definition = (state.statusDefinitions || []).find((item) => item.status === status);
+  const key = availabilityStatusKey(status || "Disponível");
+  if (!key || key === availabilityStatusKey("Disponível") || key === availabilityStatusKey("Livre")) return "#22c55e";
+  const definition = (state.statusDefinitions || []).find((item) => availabilityStatusKey(item.status) === key);
   return definition?.availabilityColor || "#e5e7eb";
 }
 
@@ -3811,10 +3821,11 @@ function renderSettings() {
   return renderUserSettings();
 }
 
-function renderSettingsActionMenu(menuId, actions) {
+function renderSettingsActionMenu(menuId, actions, label = "⋮") {
+  const isIconOnly = label === "⋮";
   return `
     <div class="action-menu">
-      <button type="button" class="action-menu-button" data-settings-action-menu="${escapeHtml(menuId)}" title="Ações" aria-label="Ações">⋮</button>
+      <button type="button" class="action-menu-button ${isIconOnly ? "" : "menu-label-button"}" data-settings-action-menu="${escapeHtml(menuId)}" title="${isIconOnly ? "Ações" : escapeHtml(label)}" aria-label="${isIconOnly ? "Ações" : escapeHtml(label)}">${escapeHtml(label)}</button>
       <div class="action-menu-list">
         ${actions.filter(Boolean).join("")}
       </div>
@@ -5803,7 +5814,8 @@ function dateTimeLabel(value) {
 function levSettlementClass(status) {
   const normalized = levStatusKey(status);
   if (normalized.includes("paga")) return "status-active";
-  if (normalized.includes("nf emitida") || normalized.includes("nf/provisionamento") || normalized.includes("provisionamento solicitado")) return "chip chip-info";
+  if (normalized.includes("nf emitida")) return "chip chip-info";
+  if (normalized.includes("confirmad") || normalized.includes("aguardando autorizacao")) return "chip chip-info";
   if (normalized.includes("nao contabilizada")) return "chip chip-warning";
   return "chip";
 }
@@ -6266,6 +6278,14 @@ function isLevAwaitingAuthorization(item) {
   return levStatusKey(item?.status).includes("aguardando autorizacao");
 }
 
+function isLevConfirmedForMauad(item) {
+  return Boolean(item?.eligible) || levStatusKey(item?.status).includes("confirmad");
+}
+
+function levMauadEligiblePendingSales(sales = []) {
+  return sales.filter((sale) => isLevConfirmedForMauad(sale));
+}
+
 function levFinanceRow(item, options = {}) {
   if (options.readOnly) {
     const detail = [
@@ -6312,6 +6332,73 @@ function levFinanceRow(item, options = {}) {
       <td><span class="${levSettlementClass(item.status)}">${escapeHtml(item.status || options.statusLabel || "")}</span>${detail ? `<br><small>${detail}</small>` : ""}</td>
       <td>${renderSettingsActionMenu(`lev-${recordKey}`, actions)}</td>
     </tr>
+  `;
+}
+
+function renderLevMauadEmailPreviewModal(pendingSales = []) {
+  if (!state.levMauadEmailPreview) return "";
+  const finance = state.levFinance || { settings: {} };
+  const settings = finance.settings || {};
+  const sales = levMauadEligiblePendingSales(pendingSales);
+  const groups = sales.reduce((map, sale) => {
+    const project = saleProjectName(sale);
+    if (!map.has(project)) map.set(project, []);
+    map.get(project).push(sale);
+    return map;
+  }, new Map());
+  const totalCommission = sales.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0);
+  const projectBlocks = [...groups.entries()].map(([project, items]) => {
+    const projectCommission = items.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0);
+    const rows = items.map((sale) => `
+      <tr>
+        <td>${escapeHtml(sale.unit || "-")}</td>
+        <td>${escapeHtml(sale.client || "-")}</td>
+        <td>${escapeHtml(dateTimeLabel(sale.signedAt) || "-")}</td>
+        <td>${money(sale.contractValue)}</td>
+        <td>${money(sale.commissionValue)}</td>
+        <td>${escapeHtml(sale.realEstate || "-")}</td>
+      </tr>
+    `).join("");
+    return `
+      <section class="email-preview-project">
+        <h3>${escapeHtml(project)}</h3>
+        <p><strong>Total da NF de comissões:</strong> ${money(projectCommission)}</p>
+        <div class="table-wrap"><table class="email-preview-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Comissão Lev</th><th>Imobiliária</th></tr></thead><tbody>${rows}</tbody></table></div>
+      </section>
+    `;
+  }).join("");
+  return `
+    <div class="modal-backdrop" data-lev-email-preview-backdrop>
+      <section class="modal-card wide-modal email-preview-modal" role="dialog" aria-modal="true" aria-labelledby="levEmailPreviewTitle">
+        <div class="email-preview-window">
+          <div class="email-preview-toolbar">
+            <div>
+              <span class="email-chip">Prévia</span>
+              <h2 id="levEmailPreviewTitle">Novo e-mail</h2>
+            </div>
+            <button class="ghost-button" type="button" data-close-lev-email-preview>Fechar</button>
+          </div>
+          <div class="email-preview-fields">
+            <div><span>Para</span><strong>${escapeHtml(settings.provisionTo || "Não configurado")}</strong></div>
+            <div><span>Cc</span><strong>${escapeHtml(settings.provisionCc || "-")}</strong></div>
+            <div><span>Assunto</span><strong>Autorização de comissões Lev - vendas confirmadas</strong></div>
+          </div>
+          <div class="email-preview-body">
+            ${sales.length ? `
+              <p>Prezados,</p>
+              <p>Segue a relação de vendas confirmadas para autorização, agrupadas por empreendimento.</p>
+              <p><strong>Total geral da NF de comissões:</strong> ${money(totalCommission)}</p>
+              ${projectBlocks}
+              <p>Obrigado.</p>
+            ` : `<p class="empty">Nenhuma venda confirmada para envio. Confirme os registros pendentes antes de enviar para a Mauad.</p>`}
+          </div>
+          <div class="row-actions modal-actions">
+            <button class="secondary" type="button" data-close-lev-email-preview>Fechar</button>
+            <button class="primary" type="button" data-send-lev-mauad-from-preview ${sales.length ? "" : "disabled"}>Enviar agora</button>
+          </div>
+        </div>
+      </section>
+    </div>
   `;
 }
 
@@ -6415,8 +6502,6 @@ function renderLevFinanceView() {
   const isNfIssued = (item) => {
     const key = levStatusKey(item.status);
     return key.includes("nf emitida")
-      || key.includes("nf/provisionamento")
-      || key.includes("provisionamento solicitado")
       || Boolean(item.invoiceNumber || item.invoiceIssuedAt);
   };
   const isPaid = (item) => Boolean(item.paid || item.paidAt || levStatusKey(item.status) === "paga");
@@ -6468,7 +6553,10 @@ function renderLevFinanceView() {
     ${renderViewHead("Financeiro Lev", "Controle de vendas, recebimentos e comissão da Lev", {
       actions: `
         <input id="levImageInput" type="file" accept="image/*" hidden>
-        ${state.levFinanceTab === "pending" && pendingSales.length ? `<button class="secondary" type="button" id="sendLevToMauadButton">Enviar para Mauad</button>` : ""}
+        ${state.levFinanceTab === "pending" && pendingSales.length ? renderSettingsActionMenu("lev-send-mauad", [
+          `<button type="button" data-preview-lev-mauad-email>Visualizar e-mail antes de enviar</button>`,
+          `<button type="button" data-send-lev-mauad>Enviar</button>`
+        ], "Enviar Mauad") : ""}
         <button class="primary" type="button" id="submitLevImageButton">Submeter imagem</button>
       `
     })}
@@ -6503,6 +6591,7 @@ function renderLevFinanceView() {
     </section>
     ${renderLevExtractionModal()}
     ${renderLevFinanceModal()}
+    ${renderLevMauadEmailPreviewModal(pendingSales)}
   `);
   bindLevFinanceControls();
 }
@@ -6543,19 +6632,37 @@ function bindLevFinanceControls() {
   document.querySelector("#submitLevImageButton")?.addEventListener("click", () => {
     document.querySelector("#levImageInput")?.click();
   });
-  document.querySelector("#sendLevToMauadButton")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    if (!confirm("Enviar todos os registros pendentes para a Mauad em um único e-mail?")) return;
+  const sendLevToMauad = async (button) => {
+    if (!confirm("Enviar as vendas confirmadas para a Mauad em um único e-mail?")) return;
     try {
       setButtonBusy(button, true, "Enviando...");
       const data = await api("/api/lev-finance/send-to-mauad", { method: "POST" });
       state.levFinance = data.levFinance;
       state.levFinanceTab = "awaiting";
+      state.levMauadEmailPreview = false;
       alert(`Enviado para a Mauad: ${data.count || 0} registro(s).`);
       renderLevFinanceView();
     } catch (error) {
       setButtonBusy(button, false);
       alert(error.message);
+    }
+  };
+  document.querySelector("[data-preview-lev-mauad-email]")?.addEventListener("click", () => {
+    state.levMauadEmailPreview = true;
+    renderLevFinanceView();
+  });
+  document.querySelector("[data-send-lev-mauad]")?.addEventListener("click", (event) => sendLevToMauad(event.currentTarget));
+  document.querySelector("[data-send-lev-mauad-from-preview]")?.addEventListener("click", (event) => sendLevToMauad(event.currentTarget));
+  document.querySelectorAll("[data-close-lev-email-preview]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.levMauadEmailPreview = false;
+      renderLevFinanceView();
+    });
+  });
+  document.querySelector("[data-lev-email-preview-backdrop]")?.addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) {
+      state.levMauadEmailPreview = false;
+      renderLevFinanceView();
     }
   });
   document.querySelector("#levImageInput")?.addEventListener("change", async (event) => {
@@ -6634,11 +6741,11 @@ function bindLevFinanceControls() {
         return;
       }
       if (action === "confirm") {
-        if (!confirm("Confirmar venda, elegibilidade e enviar e-mail de aprovisionamento?")) return;
+        if (!confirm("Confirmar esta venda como elegível para envio em lote à Mauad?")) return;
         try {
           const data = await api(`/api/lev-finance/records/${encodeURIComponent(key)}`, { method: "PATCH", body: JSON.stringify({ action: "confirm" }) });
           state.levFinance = data.levFinance;
-          if (!data.email?.sent) alert(`Venda confirmada, mas o e-mail não foi enviado: ${data.email?.reason || "falha desconhecida"}`);
+          alert("Venda confirmada para envio em lote à Mauad.");
           renderLevFinanceView();
         } catch (error) {
           alert(error.message);
@@ -6683,12 +6790,12 @@ function bindLevFinanceControls() {
   });
   document.querySelectorAll("[data-confirm-lev-sale]").forEach((button) => {
     button.addEventListener("click", async () => {
-      if (!confirm("Confirmar venda, elegibilidade e enviar e-mail de aprovisionamento?")) return;
+      if (!confirm("Confirmar esta venda como elegível para envio em lote à Mauad?")) return;
       try {
-        setButtonBusy(button, true, "Enviando...");
+        setButtonBusy(button, true, "Confirmando...");
         const data = await api(`/api/lev-finance/sales/${button.dataset.confirmLevSale}/confirm`, { method: "POST" });
         state.levFinance = data.levFinance;
-        if (!data.email?.sent) alert(`Venda confirmada, mas o e-mail não foi enviado: ${data.email?.reason || "falha desconhecida"}`);
+        alert("Venda confirmada para envio em lote à Mauad.");
         renderLevFinanceView();
       } catch (error) {
         setButtonBusy(button, false);
