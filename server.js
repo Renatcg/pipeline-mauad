@@ -4425,6 +4425,27 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_previous_source_idx ON crm_leads (previous_pipeline_source)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_source_status_idx ON crm_leads (source_status)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_odysseia_status_idx ON crm_leads (odysseia_status)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_opportunities (
+    id text PRIMARY KEY,
+    lead_id text NOT NULL,
+    status text,
+    in_pipeline boolean NOT NULL DEFAULT true,
+    assigned_to text,
+    assigned_name text,
+    project text,
+    unit text,
+    unit_sam_code text,
+    unit_value text,
+    source text,
+    created_at timestamptz,
+    updated_at timestamptz,
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb
+  )`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_opportunities_lead_idx ON crm_opportunities (lead_id)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_opportunities_status_idx ON crm_opportunities (status)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_opportunities_assigned_idx ON crm_opportunities (assigned_to)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_opportunities_project_idx ON crm_opportunities (project)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_opportunities_unit_idx ON crm_opportunities (unit_sam_code)`;
   await sql`UPDATE crm_leads SET
       source = COALESCE(NULLIF(source, ''), NULLIF(payload->>'source', ''), NULLIF(payload->>'origem', ''), NULLIF(payload->>'origin', ''), ''),
       base_source_before_pipeline = COALESCE(NULLIF(base_source_before_pipeline, ''), NULLIF(payload->>'baseSourceBeforePipeline', ''), NULLIF(payload->>'base_source_before_pipeline', ''), ''),
@@ -5146,6 +5167,34 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
   if (!nextStatus) {
     throw new Error("Código SAM sem status de pipeline vinculado.");
   }
+  const existingOpportunities = await materializeLegacyOpportunityIfNeeded(sql, lead);
+  const eventUnit = normalizeUnitForMatch(fields.unit || event.unit || "");
+  let opportunity = existingOpportunities.find((item) => {
+    const values = [item.unitSamCode, item.unit, item.desiredUnit].map(normalizeUnitForMatch).filter(Boolean);
+    return eventUnit && values.includes(eventUnit);
+  });
+  const previousOpportunityStatus = opportunity?.status || previousStatus;
+  if (!opportunity) {
+    opportunity = leadOpportunitySnapshot(lead, {
+      source: "SAM",
+      status: nextStatus,
+      project: fields.project || event.project || projectNameForUnit(eventUnit, projectDefinitions),
+      unit: fields.unit || eventUnit,
+      unitSamCode: eventUnit,
+      unitValue: fields.unitValue || event.rawContractValue || event.contractValue || "",
+      inPipeline: true
+    });
+    existingOpportunities.push(opportunity);
+  } else {
+    opportunity.status = nextStatus;
+    if (fields.project || event.project) opportunity.project = fields.project || event.project;
+    if (fields.unit || eventUnit) {
+      opportunity.unit = fields.unit || opportunity.unit || eventUnit;
+      opportunity.unitSamCode = eventUnit || opportunity.unitSamCode || normalizeUnitForMatch(opportunity.unit);
+    }
+    if (fields.unitValue || event.rawContractValue || event.contractValue) opportunity.unitValue = fields.unitValue || event.rawContractValue || String(event.contractValue || "");
+    opportunity.updatedAt = new Date().toISOString();
+  }
   lead.status = nextStatus;
   lead.inPipeline = true;
   const appliedFields = applySamDataToLead(lead, event, fields, projectDefinitions);
@@ -5163,6 +5212,8 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
   event.resolution = "linked";
   event.resolvedAt = lead.updatedAt;
   event.resolvedBy = user.username;
+  await saveStructuredOpportunity(sql, opportunity);
+  lead.opportunities = existingOpportunities.map((item) => item.id === opportunity.id ? opportunity : item);
   await saveStructuredLead(sql, lead);
   await upsertStructuredUnitFromLeadSam(sql, lead, event, projectDefinitions);
   const levSale = await upsertStructuredLevSaleFromSam(sql, lead, event, fields);
@@ -5177,7 +5228,7 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
     screen: "sam_review",
     statusAt: event.eventDatetime || lead.updatedAt,
     samEventId: event.id,
-    details: { eventId: event.eventId, appliedFields, levSaleId: levSale?.id || "" }
+    details: { eventId: event.eventId, appliedFields, levSaleId: levSale?.id || "", opportunityId: opportunity.id, opportunityFromStatus: previousOpportunityStatus }
   });
   await enqueueStructuredMetaConversionForStatus(sql, user, lead, previousStatus, lead.status, {
     source: "sam",
@@ -5185,8 +5236,8 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
     statusAt: event.eventDatetime || lead.updatedAt,
     samEventId: event.id
   });
-  await structuredIntegration("SAM", "LINKED_TO_LEAD", { eventId: event.eventId, samEventId: event.id, leadId: lead.id, from: previousStatus, to: lead.status, levSaleId: levSale?.id || "" });
-  await structuredFup(user, lead, "SAM_STATUS_LINKED", { eventId: event.eventId, from: previousStatus, to: lead.status, appliedFields, levSaleId: levSale?.id || "" });
+  await structuredIntegration("SAM", "LINKED_TO_LEAD", { eventId: event.eventId, samEventId: event.id, leadId: lead.id, opportunityId: opportunity.id, unit: opportunity.unitSamCode || opportunity.unit, from: previousOpportunityStatus, to: opportunity.status, levSaleId: levSale?.id || "" });
+  await structuredFup(user, lead, "SAM_STATUS_LINKED", { eventId: event.eventId, opportunityId: opportunity.id, unit: opportunity.unitSamCode || opportunity.unit, from: previousOpportunityStatus, to: opportunity.status, appliedFields, levSaleId: levSale?.id || "" });
   return { previousStatus, nextStatus: lead.status, appliedFields, levSale };
 }
 
@@ -8158,6 +8209,88 @@ function structuredLeadFromRow(row, favorite = false, tags = []) {
   return lead;
 }
 
+function structuredOpportunityFromRow(row) {
+  const payload = row?.payload || {};
+  return {
+    ...payload,
+    id: row.id || payload.id,
+    leadId: row.lead_id || payload.leadId || "",
+    status: row.status || payload.status || "",
+    inPipeline: Boolean(row.in_pipeline ?? payload.inPipeline ?? true),
+    assignedTo: row.assigned_to || payload.assignedTo || "",
+    assignedName: row.assigned_name || payload.assignedName || "",
+    project: row.project || payload.project || payload.desiredProject || "",
+    unit: row.unit || payload.unit || payload.desiredUnit || "",
+    unitSamCode: row.unit_sam_code || payload.unitSamCode || payload.samUnitCode || "",
+    unitValue: row.unit_value || payload.unitValue || payload.value || "",
+    source: row.source || payload.source || "",
+    createdAt: row.created_at || payload.createdAt || "",
+    updatedAt: row.updated_at || payload.updatedAt || ""
+  };
+}
+
+async function structuredOpportunitiesForLeadIds(sql, leadIds = []) {
+  const ids = [...new Set(leadIds.filter(Boolean))];
+  if (!ids.length) return new Map();
+  const rows = await sql`SELECT * FROM crm_opportunities WHERE lead_id = ANY(${ids}) ORDER BY created_at ASC NULLS LAST, id ASC`;
+  return rows.reduce((map, row) => {
+    const opportunity = structuredOpportunityFromRow(row);
+    if (!map.has(opportunity.leadId)) map.set(opportunity.leadId, []);
+    map.get(opportunity.leadId).push(opportunity);
+    return map;
+  }, new Map());
+}
+
+async function attachStructuredOpportunities(sql, leads = []) {
+  const byLead = await structuredOpportunitiesForLeadIds(sql, leads.map((lead) => lead.id));
+  return leads.map((lead) => ({
+    ...lead,
+    opportunities: byLead.get(lead.id) || []
+  }));
+}
+
+function leadOpportunitySnapshot(lead, overrides = {}) {
+  const project = overrides.project ?? (lead.desiredProject || lead.project || "");
+  const unit = overrides.unit ?? (lead.desiredUnit || lead.unit || "");
+  return {
+    id: overrides.id || `opp-${crypto.randomUUID()}`,
+    leadId: lead.id,
+    name: lead.name || "",
+    source: overrides.source ?? (lead.source || ""),
+    status: overrides.status ?? (lead.status || ""),
+    inPipeline: overrides.inPipeline ?? Boolean(lead.inPipeline),
+    assignedTo: overrides.assignedTo ?? (lead.assignedTo || ""),
+    assignedName: overrides.assignedName ?? (lead.assignedName || ""),
+    project,
+    unit,
+    unitSamCode: overrides.unitSamCode ?? normalizeUnitForMatch(unit),
+    unitValue: overrides.unitValue ?? (lead.unitValue || lead.value || ""),
+    createdAt: overrides.createdAt || new Date().toISOString(),
+    updatedAt: overrides.updatedAt || new Date().toISOString(),
+    legacyMaterialized: Boolean(overrides.legacyMaterialized)
+  };
+}
+
+function opportunityHasMeaning(opportunity) {
+  return Boolean(opportunity?.status || opportunity?.project || opportunity?.unit || opportunity?.unitSamCode || opportunity?.assignedTo || opportunity?.unitValue);
+}
+
+async function saveStructuredOpportunity(sql, opportunity) {
+  await sql`INSERT INTO crm_opportunities (id, lead_id, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_sam_code, unit_value, source, created_at, updated_at, payload)
+    VALUES (${opportunity.id}, ${opportunity.leadId}, ${opportunity.status || ""}, ${Boolean(opportunity.inPipeline)}, ${opportunity.assignedTo || null}, ${opportunity.assignedName || ""}, ${opportunity.project || ""}, ${opportunity.unit || ""}, ${opportunity.unitSamCode || ""}, ${opportunity.unitValue || ""}, ${opportunity.source || ""}, ${dbDate(opportunity.createdAt)}, ${dbDate(opportunity.updatedAt)}, ${JSON.stringify(opportunity)}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, in_pipeline = EXCLUDED.in_pipeline, assigned_to = EXCLUDED.assigned_to, assigned_name = EXCLUDED.assigned_name, project = EXCLUDED.project, unit = EXCLUDED.unit, unit_sam_code = EXCLUDED.unit_sam_code, unit_value = EXCLUDED.unit_value, source = EXCLUDED.source, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload`;
+}
+
+async function materializeLegacyOpportunityIfNeeded(sql, lead) {
+  const existing = await structuredOpportunitiesForLeadIds(sql, [lead.id]);
+  const opportunities = existing.get(lead.id) || [];
+  if (opportunities.length) return opportunities;
+  const legacy = leadOpportunitySnapshot(lead, { legacyMaterialized: true, createdAt: lead.createdAt || new Date().toISOString(), updatedAt: lead.updatedAt || new Date().toISOString() });
+  if (!opportunityHasMeaning(legacy)) return [];
+  await saveStructuredOpportunity(sql, legacy);
+  return [legacy];
+}
+
 async function structuredLeadById(sql, leadId, user) {
   const rows = await sql`SELECT l.*, COALESCE(f.favorite, false) AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
     FROM crm_leads l
@@ -8170,6 +8303,7 @@ async function structuredLeadById(sql, leadId, user) {
   const commentRows = await sql`SELECT payload FROM crm_lead_comments WHERE lead_id = ${leadId} ORDER BY created_at DESC NULLS LAST`;
   const lead = structuredLeadFromRow(rows[0], rows[0].favorite, rows[0].tags);
   lead.comments = commentRows.map((row) => row.payload || {}).filter((comment) => comment.id);
+  lead.opportunities = (await structuredOpportunitiesForLeadIds(sql, [leadId])).get(leadId) || [];
   lead.favoritesByUser[user.id] = Boolean(rows[0].favorite);
   return lead;
 }
@@ -9002,8 +9136,9 @@ async function fastStructuredLeadsResponse(req, res, url) {
             CASE WHEN ${sortKey} = 'source' AND ${sortDirection} = 'desc' THEN lower(l.source) END DESC NULLS LAST,
             lower(l.name) ASC NULLS LAST
           LIMIT ${pageLimit} OFFSET ${pageOffset}`;
+      const leads = await attachStructuredOpportunities(sql, rows.map((row) => structuredLeadFromRow(row, row.favorite, row.tags)));
       return sendJson(res, 200, {
-        leads: rows.map((row) => publicStructuredLeadSummary(row, user)),
+        leads: leads.map((lead) => publicLeadSummary(lead, user)),
         scope,
         page: {
           total: Number(page.total || 0),
@@ -9026,7 +9161,7 @@ async function fastStructuredLeadsResponse(req, res, url) {
       }).some((source) => allowedSources.includes(source)));
     }
     return sendJson(res, 200, {
-      leads: rows.map((row) => publicStructuredLeadSummary(row, user)),
+      leads: (await attachStructuredOpportunities(sql, rows.map((row) => structuredLeadFromRow(row, row.favorite, row.tags)))).map((lead) => publicLeadSummary(lead, user)),
       scope,
       dataSources: { leads: "structured" }
     });
@@ -9270,15 +9405,17 @@ async function fastStructuredLeadAction(req, res, url) {
   const rescueMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rescue$/);
   const rollbackMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/rollback$/);
   const sendToLevFinanceMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/send-to-lev-finance$/);
+  const opportunityCreateMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/opportunities$/);
+  const opportunityUpdateMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/opportunities\/([^/]+)$/);
   const commentMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments$/);
   const commentDeleteMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/comments\/([^/]+)$/);
-  if (!leadMatch && !rescueMatch && !rollbackMatch && !sendToLevFinanceMatch && !commentMatch && !commentDeleteMatch) return false;
+  if (!leadMatch && !rescueMatch && !rollbackMatch && !sendToLevFinanceMatch && !opportunityCreateMatch && !opportunityUpdateMatch && !commentMatch && !commentDeleteMatch) return false;
   try {
     const sql = await getSql();
     if (!sql) return false;
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
-    const leadId = decodeURIComponent(leadMatch?.[1] || rescueMatch?.[1] || rollbackMatch?.[1] || sendToLevFinanceMatch?.[1] || commentMatch?.[1] || commentDeleteMatch?.[1] || "");
+    const leadId = decodeURIComponent(leadMatch?.[1] || rescueMatch?.[1] || rollbackMatch?.[1] || sendToLevFinanceMatch?.[1] || opportunityCreateMatch?.[1] || opportunityUpdateMatch?.[1] || commentMatch?.[1] || commentDeleteMatch?.[1] || "");
     const lead = await structuredLeadById(sql, leadId, user);
     if (!lead) {
       notFound(res);
@@ -9381,8 +9518,87 @@ async function fastStructuredLeadAction(req, res, url) {
       }
     }
 
+    if (opportunityCreateMatch && req.method === "POST") {
+      if (!canEditLead(user, lead) || !lead.inPipeline) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const previousOpportunities = await materializeLegacyOpportunityIfNeeded(sql, lead);
+      const assignedUser = body.assignedTo ? await activeStructuredBroker(sql, body.assignedTo) : null;
+      if (body.assignedTo && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
+      const opportunity = leadOpportunitySnapshot(lead, {
+        status: body.status || await firstStructuredPipelineStatus(sql) || lead.status || "",
+        project: body.project || body.desiredProject || "",
+        unit: body.unit || body.desiredUnit || "",
+        unitSamCode: normalizeUnitForMatch(body.unitSamCode || body.samUnitCode || body.unit || body.desiredUnit),
+        unitValue: body.unitValue || "",
+        assignedTo: assignedUser?.id || (user.role === "Corretor" ? user.id : ""),
+        assignedName: assignedUser?.name || (user.role === "Corretor" ? user.name : ""),
+        source: body.source || "Manual",
+        inPipeline: true
+      });
+      await saveStructuredOpportunity(sql, opportunity);
+      lead.inPipeline = true;
+      lead.updatedAt = opportunity.updatedAt;
+      await saveStructuredLead(sql, lead);
+      lead.opportunities = [...previousOpportunities, opportunity];
+      await structuredAudit(user, "CREATE_OPPORTUNITY", { leadId: lead.id, opportunityId: opportunity.id, project: opportunity.project, unit: opportunity.unitSamCode || opportunity.unit });
+      await structuredFup(user, lead, "CREATE_OPPORTUNITY", { opportunityId: opportunity.id, project: opportunity.project, unit: opportunity.unitSamCode || opportunity.unit, status: opportunity.status });
+      return sendJson(res, 201, { lead: publicLead(lead, user), opportunity, dataSources: { action: "structured" } });
+    }
+
+    if (opportunityUpdateMatch && req.method === "PATCH") {
+      if (!canAccessStructuredLead(user, lead)) return sendJson(res, 403, { error: "Sem permissão" });
+      const opportunityId = decodeURIComponent(opportunityUpdateMatch[2]);
+      const opportunities = (await structuredOpportunitiesForLeadIds(sql, [lead.id])).get(lead.id) || [];
+      const opportunity = opportunities.find((item) => item.id === opportunityId);
+      if (!opportunity) return sendJson(res, 404, { error: "Oportunidade não encontrada" });
+      if (user.role === "Corretor" && opportunity.assignedTo !== user.id && lead.assignedTo !== user.id) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const previousStatus = opportunity.status || "";
+      const previousAssignedTo = opportunity.assignedTo || "";
+      const previousAssignedName = opportunity.assignedName || "";
+      if (Object.prototype.hasOwnProperty.call(body, "assignedTo")) {
+        const assignedUser = body.assignedTo ? await activeStructuredBroker(sql, body.assignedTo) : null;
+        if (body.assignedTo && !assignedUser) return sendJson(res, 400, { error: "Corretor ativo inválido" });
+        opportunity.assignedTo = assignedUser?.id || "";
+        opportunity.assignedName = assignedUser?.name || "";
+      }
+      for (const key of ["status", "project", "unit", "unitValue", "order"]) {
+        if (Object.prototype.hasOwnProperty.call(body, key)) opportunity[key] = body[key];
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "unitSamCode")) opportunity.unitSamCode = normalizeUnitForMatch(body.unitSamCode);
+      else if (Object.prototype.hasOwnProperty.call(body, "unit")) opportunity.unitSamCode = normalizeUnitForMatch(body.unit);
+      opportunity.updatedAt = new Date().toISOString();
+      await saveStructuredOpportunity(sql, opportunity);
+      lead.updatedAt = opportunity.updatedAt;
+      await saveStructuredLead(sql, lead);
+      lead.opportunities = opportunities.map((item) => item.id === opportunity.id ? opportunity : item);
+      if (opportunity.status && opportunity.status !== previousStatus) {
+        await recordStructuredLeadStatusMovement(sql, {
+          actor: user,
+          lead,
+          fromStatus: previousStatus,
+          toStatus: opportunity.status,
+          movementType: Object.prototype.hasOwnProperty.call(body, "order") ? "manual_drag" : "manual",
+          source: "opportunity",
+          screen: String(body.movementSource || "kanban"),
+          statusAt: opportunity.updatedAt,
+          details: { opportunityId: opportunity.id, unit: opportunity.unitSamCode || opportunity.unit }
+        });
+        await structuredFup(user, lead, "CHANGE_OPPORTUNITY_STATUS", { opportunityId: opportunity.id, from: previousStatus, to: opportunity.status, unit: opportunity.unitSamCode || opportunity.unit });
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "assignedTo") && (opportunity.assignedTo || "") !== previousAssignedTo) {
+        await structuredFup(user, lead, opportunity.assignedTo ? "ASSIGN_OPPORTUNITY_BROKER" : "UNASSIGN_OPPORTUNITY_BROKER", { opportunityId: opportunity.id, from: previousAssignedName, to: opportunity.assignedName || "" });
+        if (opportunity.assignedTo) {
+          const assignedUser = await activeStructuredBroker(sql, opportunity.assignedTo);
+          if (assignedUser) await notifyLeadAssignment(await structuredNotificationDb(sql), { ...lead, assignedTo: opportunity.assignedTo, assignedName: opportunity.assignedName, desiredProject: opportunity.project, desiredUnit: opportunity.unitSamCode || opportunity.unit, unitValue: opportunity.unitValue }, assignedUser, Boolean(previousAssignedTo));
+        }
+      }
+      return sendJson(res, 200, { lead: publicLead(lead, user), opportunity, dataSources: { action: "structured" } });
+    }
+
     if (leadMatch && req.method === "DELETE") {
       if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      await sql`DELETE FROM crm_opportunities WHERE lead_id = ${lead.id}`;
       await sql`DELETE FROM crm_lead_comments WHERE lead_id = ${lead.id}`;
       await sql`DELETE FROM crm_lead_tags WHERE lead_id = ${lead.id}`;
       await sql`DELETE FROM crm_lead_favorites WHERE lead_id = ${lead.id}`;

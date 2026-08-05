@@ -1321,6 +1321,56 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.opportunity-badge {
+  position: relative;
+  display: inline-flex;
+  margin-left: 4px;
+  color: #d97706;
+  font-size: 11px;
+  font-weight: 900;
+  vertical-align: top;
+}
+
+.opportunity-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 12;
+  width: 250px;
+  display: none;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+
+.opportunity-badge:hover .opportunity-popover,
+.opportunity-badge:focus .opportunity-popover {
+  display: grid;
+}
+
+.opportunity-popover > strong {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.opportunity-popover span {
+  display: grid;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.opportunity-popover b {
+  color: var(--ink);
+}
+
 .card-right-actions {
   position: absolute;
   top: 5px;
@@ -1542,6 +1592,36 @@ textarea {
 .card-info-preview-item span {
   color: var(--muted);
   font-size: 11px;
+}
+
+.opportunity-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.opportunity-row {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.opportunity-row.implicit {
+  border-style: dashed;
+}
+
+.opportunity-row strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.opportunity-row span,
+.opportunity-row small {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .card[data-open-lead],

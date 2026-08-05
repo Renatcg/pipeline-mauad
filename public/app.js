@@ -94,6 +94,7 @@ const state = {
   createLeadDraft: null,
   createLeadDuplicate: null,
   createLeadImpactPrompt: false,
+  creatingOpportunityForLeadId: "",
   baseSource: "TODOS",
   baseSort: { key: "name", direction: "asc" },
   basePageIndex: 0,
@@ -618,7 +619,10 @@ function filteredLeads() {
   return state.leads.filter((lead) => {
     if (state.favoritesOnly && !lead.favorite) return false;
     if (!term) return true;
-    return [lead.name, lead.phone, lead.email, lead.assistant, lead.assignedName, lead.externalId, lead.status]
+    const opportunityText = realLeadOpportunities(lead)
+      .flatMap((opportunity) => [opportunity.project, opportunity.unit, opportunity.unitSamCode, opportunity.assignedName, opportunity.status])
+      .join(" ");
+    return [lead.name, lead.phone, lead.email, lead.assistant, lead.assignedName, lead.externalId, lead.status, opportunityText]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(term));
   });
@@ -787,15 +791,24 @@ function allCommercialSales() {
     }
     byUnit.set(key, merged);
   };
-  (state.leads || [])
-    .filter((lead) => lead.inPipeline && isContractSignedStatus(lead.status))
-    .forEach((lead) => add({
-      ...lead,
-      leadId: lead.id,
-      unit: lead.unit || lead.desiredUnit || "",
-      contractValue: lead.contractValue || lead.unitValue || lead.value || "",
-      signedAt: leadContractSignedAt(lead)
-    }));
+  (state.leads || []).forEach((lead) => {
+    const opportunities = realLeadOpportunities(lead);
+    const items = opportunities.length ? opportunities : [implicitLeadOpportunity(lead)];
+    items
+      .filter((item) => lead.inPipeline && isContractSignedStatus(item.status || lead.status))
+      .forEach((item) => add({
+        ...lead,
+        ...item,
+        id: item.id || lead.id,
+        leadId: lead.id,
+        leadName: lead.name,
+        unit: item.unitSamCode || item.unit || lead.unit || lead.desiredUnit || "",
+        desiredUnit: item.unit || item.unitSamCode || lead.desiredUnit || "",
+        project: item.project || leadProjectValue(lead),
+        contractValue: item.contractValue || item.unitValue || lead.contractValue || lead.unitValue || lead.value || "",
+        signedAt: item.contractSignedAt || item.signedAt || leadContractSignedAt(lead) || item.updatedAt
+      }));
+  });
   return [...byUnit.values()].filter((sale) => saleSignedAt(sale));
 }
 
@@ -849,14 +862,69 @@ function leadMatchesFrequencyFilter(lead) {
   return !state.frequencyFilters.length || state.frequencyFilters.includes(frequencyBucketForLead(lead));
 }
 
+function realLeadOpportunities(lead) {
+  return Array.isArray(lead?.opportunities) ? lead.opportunities.filter((item) => item?.id) : [];
+}
+
+function implicitLeadOpportunity(lead) {
+  return {
+    id: "",
+    leadId: lead.id,
+    implicit: true,
+    status: lead.status,
+    assignedTo: lead.assignedTo,
+    assignedName: lead.assignedName,
+    project: leadProjectValue(lead),
+    unit: lead.desiredUnit || lead.unit || "",
+    unitSamCode: lead.unit || lead.desiredUnit || "",
+    unitValue: lead.unitValue || lead.value || "",
+    createdAt: lead.createdAt,
+    updatedAt: lead.updatedAt,
+    source: lead.source
+  };
+}
+
+function pipelineItemFromOpportunity(lead, opportunity, allOpportunities = []) {
+  const project = opportunity.project || leadProjectValue(lead);
+  return {
+    ...lead,
+    parentLeadId: lead.id,
+    opportunityId: opportunity.id || "",
+    pipelineItemId: opportunity.id ? `${lead.id}::${opportunity.id}` : lead.id,
+    isOpportunityItem: Boolean(opportunity.id),
+    opportunity,
+    opportunityCount: allOpportunities.length,
+    opportunityList: allOpportunities,
+    status: opportunity.status || lead.status,
+    assignedTo: opportunity.assignedTo || "",
+    assignedName: opportunity.assignedName || "",
+    project,
+    desiredProject: project,
+    unit: opportunity.unitSamCode || opportunity.unit || lead.unit || "",
+    desiredUnit: opportunity.unit || opportunity.unitSamCode || lead.desiredUnit || "",
+    unitValue: opportunity.unitValue || lead.unitValue || "",
+    source: opportunity.source || lead.source,
+    createdAt: opportunity.createdAt || lead.createdAt,
+    updatedAt: opportunity.updatedAt || lead.updatedAt
+  };
+}
+
+function pipelineItemsFromLead(lead) {
+  const opportunities = realLeadOpportunities(lead);
+  if (!opportunities.length) return [pipelineItemFromOpportunity(lead, implicitLeadOpportunity(lead), [])];
+  return opportunities
+    .filter((opportunity) => opportunity.inPipeline !== false)
+    .map((opportunity) => pipelineItemFromOpportunity(lead, opportunity, opportunities));
+}
+
 function pipelineLeads() {
-  return filteredLeads().filter((lead) => {
-    if (!lead.inPipeline) return false;
-    if (state.user?.role === "Corretor" && lead.assignedTo !== state.user.id) return false;
-    if (state.projectFilters.length && !state.projectFilters.includes(leadProjectValue(lead) || "__none__")) return false;
-    if (state.brokerFilters.length && !state.brokerFilters.includes(lead.assignedTo || "__none__")) return false;
-    if (!leadMatchesDateFilter(lead)) return false;
-    if (!leadMatchesFrequencyFilter(lead)) return false;
+  return filteredLeads().flatMap((lead) => pipelineItemsFromLead(lead)).filter((item) => {
+    if (!item.inPipeline) return false;
+    if (state.user?.role === "Corretor" && item.assignedTo !== state.user.id) return false;
+    if (state.projectFilters.length && !state.projectFilters.includes(leadProjectValue(item) || "__none__")) return false;
+    if (state.brokerFilters.length && !state.brokerFilters.includes(item.assignedTo || "__none__")) return false;
+    if (!leadMatchesDateFilter(item)) return false;
+    if (!leadMatchesFrequencyFilter(item)) return false;
     return true;
   });
 }
@@ -1386,6 +1454,7 @@ function renderShell(content) {
       </section>
     </section>
     ${state.creatingLead ? renderCreateLeadModal() : ""}
+    ${state.creatingOpportunityForLeadId ? renderOpportunityModal() : ""}
     ${state.editingOwnProfile ? renderOwnProfileModal() : ""}
   `;
   document.body.classList.toggle("modal-open", Boolean(document.querySelector(".modal-backdrop")));
@@ -1401,6 +1470,7 @@ function renderShell(content) {
   });
   bindPageFilters();
   bindCreateLeadModal();
+  bindOpportunityModal();
   bindOwnProfileModal();
   document.querySelector("[data-edit-own-profile]")?.addEventListener("click", () => {
     state.profilePhotoDraft = null;
@@ -1746,8 +1816,44 @@ function blockDefinitionsForProject(projectName) {
   return (projectDefinitionByName(projectName).blockDefinitions || []).slice().sort((a, b) => sortAlphaNumeric(a.block, b.block));
 }
 
+function availabilityLeadUnitSnapshots(projectName) {
+  const snapshots = new Map();
+  (state.leads || []).forEach((lead) => {
+    pipelineItemsFromLead(lead).forEach((item) => {
+      const itemProject = leadProjectValue(item);
+      if (projectName && itemProject && itemProject !== projectName) return;
+      const samCode = availabilityNormalizeUnit(item.unitSamCode || item.unit || item.desiredUnit);
+      if (!samCode) return;
+      snapshots.set(samCode, {
+        leadId: lead.id,
+        leadName: lead.name,
+        status: item.status,
+        project: itemProject,
+        unitValue: item.unitValue || lead.unitValue || lead.value || "",
+        signedAt: item.contractSignedAt || lead.contractSignedAt || item.updatedAt || lead.updatedAt || "",
+        purchaseBuyerName: lead.name
+      });
+    });
+  });
+  return snapshots;
+}
+
+function mergeAvailabilityUnitSnapshot(unit, snapshot) {
+  if (!snapshot) return unit;
+  return {
+    ...unit,
+    status: snapshot.status || unit.status,
+    leadId: snapshot.leadId || unit.leadId,
+    buyerName: snapshot.leadName || unit.buyerName,
+    purchaseBuyerName: snapshot.purchaseBuyerName || unit.purchaseBuyerName,
+    purchaseSignedAt: snapshot.signedAt || unit.purchaseSignedAt,
+    purchaseValue: snapshot.unitValue || unit.purchaseValue
+  };
+}
+
 function virtualUnitsForProject(projectName) {
   const existingByKey = new Map(unitsForAvailabilityProject(projectName).map((unit) => [`${padUnitPart(unit.block, 2)}:${String(unit.floor || "")}:${padUnitPart(unit.column, 2)}`, unit]));
+  const unitStatusBySamCode = availabilityLeadUnitSnapshots(projectName);
   const virtualUnits = [];
   blockDefinitionsForProject(projectName).forEach((block) => {
     const floorCount = Number(block.floorCount || 0);
@@ -1760,6 +1866,7 @@ function virtualUnitsForProject(projectName) {
         const key = `${blockCode}:${floor}:${columnCode}`;
         const generated = generatedUnitCodes(projectName, block.block, floor, column);
         const existing = existingByKey.get(key) || {};
+        const snapshot = unitStatusBySamCode.get(availabilityNormalizeUnit(existing.samCode || generated.samCode));
         const unit = existing.id ? existing : {
           id: `virtual:${projectName}:${key}`,
           project: projectName,
@@ -1773,12 +1880,14 @@ function virtualUnitsForProject(projectName) {
           floorKind: block.hasPenthouse && floor === totalFloors ? "Cobertura" : "Tipo",
           structureType: block.structureType || "Bloco"
         };
-        virtualUnits.push(unit);
+        virtualUnits.push(mergeAvailabilityUnitSnapshot(unit, snapshot));
       }
     }
   });
   if (virtualUnits.length) return virtualUnits;
-  return unitsForAvailabilityProject(projectName);
+  return unitsForAvailabilityProject(projectName).map((unit) => (
+    mergeAvailabilityUnitSnapshot(unit, unitStatusBySamCode.get(availabilityNormalizeUnit(unit.samCode)))
+  ));
 }
 
 function selectedAvailabilityUnit() {
@@ -1919,7 +2028,7 @@ function renderAvailability() {
 }
 
 function pipelineFilterBaseLeads(skipKey = "") {
-  return filteredLeads().filter((lead) => {
+  return filteredLeads().flatMap((lead) => pipelineItemsFromLead(lead)).filter((lead) => {
     if (!lead.inPipeline) return false;
     if (state.user?.role === "Corretor" && lead.assignedTo !== state.user.id) return false;
     if (skipKey !== "projectFilters" && state.projectFilters.length && !state.projectFilters.includes(leadProjectValue(lead) || "__none__")) return false;
@@ -2370,6 +2479,19 @@ async function patchLead(leadId, payload) {
   return result.lead;
 }
 
+async function patchPipelineItem(item, payload) {
+  if (item?.opportunityId) {
+    const result = await api(`/api/leads/${encodeURIComponent(item.id)}/opportunities/${encodeURIComponent(item.opportunityId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    });
+    const lead = state.leads.find((leadItem) => leadItem.id === item.id);
+    if (lead) Object.assign(lead, result.lead);
+    return result.lead;
+  }
+  return patchLead(item.id, payload);
+}
+
 async function fetchLeadDetail(leadId) {
   const result = await api(`/api/leads/${encodeURIComponent(leadId)}`);
   const index = state.leads.findIndex((item) => item.id === leadId);
@@ -2394,11 +2516,11 @@ function brokerRedirectControl(lead) {
   if (!canAssign) return "";
   const brokers = activeBrokers();
   return `
-    <div class="broker-menu" data-assign-menu="${escapeHtml(lead.id)}">
-      <button class="broker-menu-button" data-toggle-assign-menu="${escapeHtml(lead.id)}" title="Ações do lead" ${brokers.length ? "" : "disabled"}>⋮</button>
+    <div class="broker-menu" data-assign-menu="${escapeHtml(lead.pipelineItemId || lead.id)}">
+      <button class="broker-menu-button" data-toggle-assign-menu="${escapeHtml(lead.pipelineItemId || lead.id)}" title="Ações do lead" ${brokers.length ? "" : "disabled"}>⋮</button>
       <div class="broker-menu-list">
-        ${canAssign ? `<button data-assign-broker="${escapeHtml(lead.id)}" data-broker-id="" ${lead.assignedTo ? "" : "disabled"}>Sem corretor</button>` : ""}
-        ${canAssign ? brokers.map((broker) => `<button data-assign-broker="${escapeHtml(lead.id)}" data-broker-id="${escapeHtml(broker.id)}" ${broker.id === lead.assignedTo ? "disabled" : ""}>${escapeHtml(broker.name)}</button>`).join("") : ""}
+        ${canAssign ? `<button data-assign-broker="${escapeHtml(lead.id)}" data-opportunity-id="${escapeHtml(lead.opportunityId || "")}" data-broker-id="" ${lead.assignedTo ? "" : "disabled"}>Sem corretor</button>` : ""}
+        ${canAssign ? brokers.map((broker) => `<button data-assign-broker="${escapeHtml(lead.id)}" data-opportunity-id="${escapeHtml(lead.opportunityId || "")}" data-broker-id="${escapeHtml(broker.id)}" ${broker.id === lead.assignedTo ? "disabled" : ""}>${escapeHtml(broker.name)}</button>`).join("") : ""}
       </div>
     </div>
   `;
@@ -2452,11 +2574,25 @@ function leadCardInfoActions(lead) {
 function leadCard(lead) {
   const broker = activeBrokerForLead(lead);
   const project = leadProjectValue(lead) || "Sem empreendimento";
+  const opportunities = Array.isArray(lead.opportunityList) ? lead.opportunityList : [];
+  const opportunityPopover = opportunities.length > 1 ? `
+    <span class="opportunity-badge" tabindex="0">(${opportunities.length})
+      <span class="opportunity-popover">
+        <strong>Oportunidades</strong>
+        ${opportunities.map((opportunity) => `
+          <span>
+            <b>${escapeHtml(opportunity.project || "Sem empreendimento")}</b>
+            ${escapeHtml(opportunity.unitSamCode || opportunity.unit || "Sem unidade")} · ${escapeHtml(opportunity.assignedName || "Sem corretor")}
+          </span>
+        `).join("")}
+      </span>
+    </span>
+  ` : "";
   return `
-    <article class="card" draggable="true" data-lead="${escapeHtml(lead.id)}" data-open-lead="${escapeHtml(lead.id)}">
+    <article class="card" draggable="true" data-lead="${escapeHtml(lead.pipelineItemId || lead.id)}" data-open-lead="${escapeHtml(lead.id)}">
       <div class="card-title">
         <button class="favorite-inline" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button>
-        <strong>${escapeHtml(lead.name)}</strong>
+        <strong>${escapeHtml(lead.name)}${opportunityPopover}</strong>
         <div class="card-right-actions">
           ${brokerRedirectControl(lead)}
           ${leadCardInfoActions(lead)}
@@ -2559,17 +2695,20 @@ function bindLeadActions() {
       event.stopPropagation();
       const lead = state.leads.find((item) => item.id === button.dataset.assignBroker);
       if (!lead) return;
+      const item = button.dataset.opportunityId
+        ? pipelineItemsFromLead(lead).find((candidate) => candidate.opportunityId === button.dataset.opportunityId) || lead
+        : lead;
       const assignedTo = button.dataset.brokerId || null;
-      const previous = { assignedTo: lead.assignedTo, assignedName: lead.assignedName };
+      const previous = { assignedTo: item.assignedTo, assignedName: item.assignedName };
       const broker = state.users.find((user) => user.id === assignedTo);
-      lead.assignedTo = assignedTo;
-      lead.assignedName = broker?.name || "";
+      item.assignedTo = assignedTo;
+      item.assignedName = broker?.name || "";
       try {
         setButtonBusy(button, true, "Direcionando...");
-        await patchLead(lead.id, { assignedTo });
+        await patchPipelineItem(item, { assignedTo });
         renderApp();
       } catch (error) {
-        Object.assign(lead, previous);
+        Object.assign(item, previous);
         alert(error.message);
         renderApp();
       }
@@ -2644,7 +2783,8 @@ function bindDragDrop() {
     column.addEventListener("drop", async (event) => {
       if (!draggedId) return;
       event.preventDefault();
-      const lead = state.leads.find((item) => item.id === draggedId);
+      const currentItems = pipelineLeads();
+      const lead = currentItems.find((item) => (item.pipelineItemId || item.id) === draggedId);
       const status = column.dataset.status;
       if (!lead) return;
       let manualSamStatusDate = "";
@@ -2665,19 +2805,15 @@ function bindDragDrop() {
       const insertIndex = beforeCard ? cards.indexOf(beforeCard) : cards.length;
       const orderedIds = cards.map((card) => card.dataset.lead);
       orderedIds.splice(insertIndex, 0, draggedId);
-      const aboveLead = insertIndex > 0 ? state.leads.find((item) => item.id === orderedIds[insertIndex - 1]) : null;
-      const belowLead = insertIndex < orderedIds.length - 1 ? state.leads.find((item) => item.id === orderedIds[insertIndex + 1]) : null;
+      const aboveLead = insertIndex > 0 ? currentItems.find((item) => (item.pipelineItemId || item.id) === orderedIds[insertIndex - 1]) : null;
+      const belowLead = insertIndex < orderedIds.length - 1 ? currentItems.find((item) => (item.pipelineItemId || item.id) === orderedIds[insertIndex + 1]) : null;
       const aboveOrder = Number(aboveLead?.order || 0);
       const belowOrder = Number(belowLead?.order || 0);
       let nextOrder = Date.now();
       if (aboveLead && belowLead) nextOrder = (aboveOrder + belowOrder) / 2;
       else if (aboveLead) nextOrder = aboveOrder - 1000;
       else if (belowLead) nextOrder = Math.max(Date.now(), belowOrder + 1000);
-      const result = await api(`/api/leads/${lead.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status, order: nextOrder, movementSource: "kanban", ...(manualSamStatusDate ? { manualSamStatusDate } : {}) })
-      });
-      Object.assign(lead, result.lead);
+      await patchPipelineItem(lead, { status, order: nextOrder, movementSource: "kanban", ...(manualSamStatusDate ? { manualSamStatusDate } : {}) });
       renderApp();
     });
   });
@@ -2963,6 +3099,7 @@ function bindBasePagination() {
 
 function leadProjectValue(lead) {
   if (lead.desiredProject) return lead.desiredProject;
+  if (lead.project) return lead.project;
   const project = String(lead.project || "");
   if (project.toLowerCase().includes("guinle")) return "Reserva Guinle";
   if (project.toLowerCase().includes("golf")) return "Golf Club Resort";
@@ -3075,9 +3212,23 @@ function renderCommentComposer() {
 }
 
 function renderLeadInterest(project, lead) {
+  const opportunities = realLeadOpportunities(lead);
+  const displayed = opportunities.length ? opportunities : [implicitLeadOpportunity(lead)];
   return `
     <div class="panel">
-      <h2>Interesse</h2>
+      <div class="panel-head">
+        <h2>${opportunities.length ? "Oportunidades" : "Interesse"}</h2>
+        <button type="button" class="tiny primary" data-add-opportunity="${escapeHtml(lead.id)}">Adicionar</button>
+      </div>
+      <div class="opportunity-list">
+        ${displayed.map((opportunity, index) => `
+          <article class="opportunity-row ${opportunity.implicit ? "implicit" : ""}">
+            <strong>${escapeHtml(opportunity.project || project || "Sem empreendimento")}</strong>
+            <span>${escapeHtml(opportunity.unitSamCode || opportunity.unit || "Sem unidade")} · ${escapeHtml(opportunity.status || lead.status || "Sem status")}</span>
+            <small>${escapeHtml(opportunity.assignedName || "Sem corretor")}${displayed.length > 1 ? ` · #${index + 1}` : ""}</small>
+          </article>
+        `).join("")}
+      </div>
       <div class="interest-grid">
         <div class="field"><label>Empreendimento desejado</label><select name="desiredProject" form="leadDetailForm">
           <option value="">Selecione</option>
@@ -3088,6 +3239,71 @@ function renderLeadInterest(project, lead) {
       </div>
     </div>
   `;
+}
+
+function renderOpportunityModal() {
+  const lead = state.leads.find((item) => item.id === state.creatingOpportunityForLeadId);
+  if (!lead) return "";
+  const brokerOptions = `<option value="">Sem corretor</option>${activeBrokers().map((broker) => `<option value="${escapeHtml(broker.id)}">${escapeHtml(broker.name)}</option>`).join("")}`;
+  return `
+    <div class="modal-backdrop" data-opportunity-backdrop>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="opportunityModalTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="opportunityModalTitle">Adicionar oportunidade</h2>
+            <p class="modal-subtitle">${escapeHtml(lead.name || "")}</p>
+          </div>
+          <button type="button" class="icon" data-close-opportunity-modal title="Fechar">×</button>
+        </div>
+        <form id="opportunityForm" class="form-grid">
+          <div class="field"><label>Empreendimento</label><select name="project" required>
+            <option value="">Selecione</option>
+            ${projectOptions("")}
+          </select></div>
+          <div class="field"><label>Status</label><select name="status">${statusOptionsHtml(state.statuses[0] || lead.status || "", { allowSamOnly: canManageLeads() })}</select></div>
+          <div class="field"><label>Unidade</label><input name="unit"></div>
+          <div class="field"><label>Valor da unidade</label><input name="unitValue"></div>
+          <div class="field"><label>Corretor</label><select name="assignedTo">${brokerOptions}</select></div>
+          <div class="field full"><div class="row-actions modal-actions"><button class="secondary" type="button" data-close-opportunity-modal>Cancelar</button><button class="primary" type="submit">Salvar oportunidade</button></div></div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function bindOpportunityModal() {
+  document.querySelectorAll("[data-add-opportunity]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.creatingOpportunityForLeadId = button.dataset.addOpportunity;
+      renderApp();
+    });
+  });
+  document.querySelectorAll("[data-close-opportunity-modal], [data-opportunity-backdrop]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (event.target !== element && element.hasAttribute("data-opportunity-backdrop")) return;
+      state.creatingOpportunityForLeadId = "";
+      renderApp();
+    });
+  });
+  document.querySelector("#opportunityForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const leadId = state.creatingOpportunityForLeadId;
+    const button = event.currentTarget.querySelector("button[type='submit']");
+    const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const result = await api(`/api/leads/${encodeURIComponent(leadId)}/opportunities`, {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      upsertLeadInState(result.lead);
+      state.creatingOpportunityForLeadId = "";
+      renderLeadDetail();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
 }
 
 function renderLeadDetail() {
