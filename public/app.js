@@ -3571,6 +3571,8 @@ function availableSettingsGroups() {
         ...(canManagePipelineSettings() ? [{ id: "statuses", label: "Status Pipeline" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "tags", label: "Etiquetas" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "projects", label: "Empreendimentos" }] : []),
+        ...(canManagePipelineSettings() ? [{ id: "architectureOptions", label: "Arquitetura" }] : []),
+        ...(canManagePipelineSettings() ? [{ id: "typologyOptions", label: "Tipologia" }] : []),
         ...(canManageCommercialSettings() ? [{ id: "commercial", label: "Configurações comerciais" }] : [])
       ]
     },
@@ -3650,7 +3652,7 @@ function settingsLayout(content) {
 
 function renderSettings() {
   if (["integrations", "logs", "knowledge", "backup", "structuredDb"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
-  if (["statuses", "tags", "projects", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
+  if (["statuses", "tags", "projects", "architectureOptions", "typologyOptions", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "commercial" && !canManageCommercialSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) {
@@ -3663,6 +3665,8 @@ function renderSettings() {
   if (state.settingsTab === "permissions") return renderPermissionSettings();
   if (state.settingsTab === "logs") return renderLogSettings();
   if (state.settingsTab === "projects") return renderProjectSettings();
+  if (state.settingsTab === "architectureOptions") return renderAvailabilityOptionSettings("architecture");
+  if (state.settingsTab === "typologyOptions") return renderAvailabilityOptionSettings("typology");
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
   if (state.settingsTab === "commercial") return renderCommercialSettings();
   if (state.settingsTab === "backup") return renderBackupSettings();
@@ -5999,6 +6003,9 @@ function structuredDbLabel(key) {
     favorites: "Favoritos",
     statuses: "Status do pipeline",
     projects: "Empreendimentos",
+    projectDefinitions: "Empreendimentos",
+    unitDefinitions: "Unidades",
+    availabilitySettings: "Configurações de disponibilidade",
     baseSources: "Origens de base",
     metaForms: "Forms Meta",
     permissions: "Permissões",
@@ -6555,18 +6562,105 @@ function bindLevFinanceControls() {
   });
 }
 
+function renderAvailabilityOptionSettings(kind) {
+  const isArchitecture = kind === "architecture";
+  const key = isArchitecture ? "architectureOptions" : "typologyOptions";
+  const title = isArchitecture ? "Arquitetura" : "Tipologia";
+  const description = isArchitecture
+    ? "Opções usadas no cadastro das unidades."
+    : "Tipologias usadas no cadastro das unidades.";
+  const availabilitySettings = state.availabilitySettings || { architectureOptions: [], typologyOptions: [] };
+  const value = (availabilitySettings[key] || []).join("\n");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>${escapeHtml(title)}</h2>
+          <p class="muted-copy">${escapeHtml(description)}</p>
+        </div>
+      </div>
+      <form id="availabilityOptionsForm" class="form-grid editor compact-editor" data-availability-options-kind="${escapeHtml(kind)}">
+        <div class="field full"><label>Opções</label><textarea name="options" rows="8" placeholder="Uma opção por linha">${escapeHtml(value)}</textarea></div>
+        <div class="field full"><button class="primary" type="submit">Salvar</button></div>
+      </form>
+    </section>
+  `);
+  document.querySelector("#availabilityOptionsForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const nextSettings = {
+      ...(state.availabilitySettings || {}),
+      [key]: form.get("options")
+    };
+    const data = await api("/api/availability-settings", {
+      method: "PUT",
+      body: JSON.stringify(nextSettings)
+    });
+    state.availabilitySettings = data.availabilitySettings || state.availabilitySettings;
+    await loadState();
+    renderSettings();
+  });
+}
+
+function renderUnitSettingsModal(project, unitRows, unitForm, editUnit, isCreatingUnit, availabilitySettings, selectOptions, optionTags) {
+  if (!project) return "";
+  const formOpen = isCreatingUnit || editUnit;
+  return `
+    <div class="modal-backdrop" data-unit-modal-backdrop>
+      <section class="modal-card wide-modal unit-settings-modal" role="dialog" aria-modal="true" aria-labelledby="unitSettingsTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="unitSettingsTitle">Unidades</h2>
+            <p class="modal-subtitle">${escapeHtml(project)}</p>
+          </div>
+          <div class="row-actions">
+            <button class="primary" type="button" data-new-unit>${formOpen ? "Nova unidade" : "Cadastrar unidade"}</button>
+            <button class="ghost-button" type="button" data-close-unit-modal>Fechar</button>
+          </div>
+        </div>
+        ${formOpen ? `
+          <form id="unitForm" class="form-grid editor unit-editor">
+            <div class="field"><label>Empreendimento</label><select name="project" required>${selectOptions(state.projects || [], unitForm.project)}</select></div>
+            <div class="field"><label>Unidade</label><input name="unit" value="${escapeHtml(unitForm.unit)}" placeholder="Ex.: GCR060107" required></div>
+            <div class="field"><label>Bloco/Quadra</label><input name="block" value="${escapeHtml(unitForm.block)}" placeholder="Ex.: 1"></div>
+            <div class="field"><label>Andar</label><input name="floor" value="${escapeHtml(unitForm.floor)}" placeholder="Ex.: 6"></div>
+            <div class="field"><label>Coluna</label><input name="column" value="${escapeHtml(unitForm.column)}" placeholder="Ex.: 07"></div>
+            <div class="field"><label>Código SAM</label><input name="samCode" value="${escapeHtml(unitForm.samCode)}"></div>
+            <div class="field"><label>Área útil</label><input name="usefulArea" value="${escapeHtml(unitForm.usefulArea)}"></div>
+            <div class="field"><label>Área privativa</label><input name="privateArea" value="${escapeHtml(unitForm.privateArea)}"></div>
+            <div class="field"><label>Posição</label><select name="sunPosition">${selectOptions(["Sol manhã", "Sol tarde"], unitForm.sunPosition)}</select></div>
+            <div class="field"><label>Tipo</label><select name="unitType">${selectOptions(["Casa", "Apartamento"], unitForm.unitType)}</select></div>
+            <div class="field"><label>Arquitetura</label><input name="architecture" list="architectureOptions" value="${escapeHtml(unitForm.architecture)}"><datalist id="architectureOptions">${optionTags(availabilitySettings.architectureOptions)}</datalist></div>
+            <div class="field"><label>Tipologia</label><input name="typology" list="typologyOptions" value="${escapeHtml(unitForm.typology)}"><datalist id="typologyOptions">${optionTags(availabilitySettings.typologyOptions)}</datalist></div>
+            <div class="field"><label>Fração ideal</label><input name="idealFraction" value="${escapeHtml(unitForm.idealFraction)}"></div>
+            <div class="field"><label>Vista</label><select name="view">${selectOptions(["Livre", "Impedida"], unitForm.view)}</select></div>
+            <div class="field"><label>Status</label><select name="status">${selectOptions(state.statuses || [], unitForm.status, "Disponível")}</select></div>
+            <div class="field"><label>Cliente comprador</label><input name="buyerName" value="${escapeHtml(unitForm.buyerName)}"></div>
+            <div class="field"><label>ID do lead vinculado</label><input name="leadId" value="${escapeHtml(unitForm.leadId)}"></div>
+            <div class="field"><label>Planta (JPG/PNG/PDF)</label><input type="file" name="floorPlan" accept="image/png,image/jpeg,application/pdf">${unitForm.floorPlanName ? `<small>Atual: ${escapeHtml(unitForm.floorPlanName)}</small>` : ""}</div>
+            <div class="field full"><div class="row-actions modal-actions"><button class="secondary" type="button" data-cancel-unit>Cancelar</button><button class="primary" type="submit">Salvar unidade</button></div></div>
+          </form>
+        ` : ""}
+        <div class="table-wrap">
+          <table><thead><tr><th>Unidade</th><th>Bloco</th><th>Andar</th><th>Coluna</th><th>Status</th><th>Cliente</th><th>Ações</th></tr></thead><tbody>${unitRows || '<tr><td colspan="7" class="empty">Nenhuma unidade cadastrada</td></tr>'}</tbody></table>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function renderProjectSettings() {
   const isCreating = state.settingsEditing === "new-project";
   const editIndex = state.settingsEditing?.startsWith("project:") ? Number(state.settingsEditing.replace("project:", "")) : null;
   const editProject = editIndex != null ? (state.projectDefinitions || [])[editIndex] || { name: state.projects[editIndex] || "", unitPrefixes: [] } : null;
-  const editUnit = state.editUnitId ? (state.unitDefinitions || []).find((unit) => unit.id === state.editUnitId) : null;
+  const unitModalProject = state.settingsEditing?.startsWith("units:") ? state.settingsEditing.replace("units:", "") : "";
+  const isCreatingUnit = state.editUnitId === "__new__";
+  const editUnit = state.editUnitId && !isCreatingUnit ? (state.unitDefinitions || []).find((unit) => unit.id === state.editUnitId) : null;
   const formValue = editProject?.name || "";
   const prefixValue = (editProject?.unitPrefixes || []).join(", ");
   const availabilitySettings = state.availabilitySettings || { architectureOptions: [], typologyOptions: [] };
-  const architectureValue = (availabilitySettings.architectureOptions || []).join("\n");
-  const typologyValue = (availabilitySettings.typologyOptions || []).join("\n");
   const unitForm = editUnit || {
-    project: state.selectedAvailabilityProject || state.projects[0] || "",
+    project: unitModalProject || state.selectedAvailabilityProject || state.projects[0] || "",
     unit: "",
     block: "1",
     floor: "",
@@ -6605,15 +6699,15 @@ function renderProjectSettings() {
         <td>${leadCount}</td>
         <td>${formCount}</td>
         <td>${renderSettingsActionMenu(`project-${index}`, [
+          `<button type="button" data-open-project-units="${escapeHtml(project)}">Unidades</button>`,
           `<button type="button" data-edit-project="${index}">Editar</button>`,
           `<button type="button" class="danger-menu-item" data-delete-project="${index}">Excluir</button>`
         ])}</td>
       </tr>
     `;
   }).join("");
-  const unitRows = (state.unitDefinitions || []).map((unit) => `
+  const unitRows = (state.unitDefinitions || []).filter((unit) => !unitModalProject || unit.project === unitModalProject).map((unit) => `
     <tr>
-      <td>${escapeHtml(unit.project)}</td>
       <td>${escapeHtml(unit.unit)}</td>
       <td>${escapeHtml(unit.block || "-")}</td>
       <td>${escapeHtml(unitFloorLabel(unit.floor))}</td>
@@ -6643,48 +6737,7 @@ function renderProjectSettings() {
         <table><thead><tr><th>Empreendimento</th><th>Siglas</th><th>Unidades</th><th>Leads usando</th><th>Forms Meta</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nenhum empreendimento cadastrado</td></tr>'}</tbody></table>
       </div>
     </section>
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Opções de unidades</h2>
-      </div>
-      <form id="availabilityOptionsForm" class="form-grid editor compact-editor">
-        <div class="field"><label>Arquitetura</label><textarea name="architectureOptions" rows="4" placeholder="Uma opção por linha">${escapeHtml(architectureValue)}</textarea></div>
-        <div class="field"><label>Tipologia</label><textarea name="typologyOptions" rows="4" placeholder="Uma opção por linha">${escapeHtml(typologyValue)}</textarea></div>
-        <div class="field full"><button class="primary" type="submit">Salvar opções</button></div>
-      </form>
-    </section>
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Unidades</h2>
-        <button class="primary" data-new-unit>${editUnit ? "Nova unidade" : "Cadastrar unidade"}</button>
-      </div>
-      ${(state.settingsEditing === "new-unit" || editUnit) ? `
-        <form id="unitForm" class="form-grid editor unit-editor">
-          <div class="field"><label>Empreendimento</label><select name="project" required>${selectOptions(state.projects || [], unitForm.project)}</select></div>
-          <div class="field"><label>Unidade</label><input name="unit" value="${escapeHtml(unitForm.unit)}" placeholder="Ex.: GCR060107" required></div>
-          <div class="field"><label>Bloco/Quadra</label><input name="block" value="${escapeHtml(unitForm.block)}" placeholder="Ex.: 1"></div>
-          <div class="field"><label>Andar</label><input name="floor" value="${escapeHtml(unitForm.floor)}" placeholder="Ex.: 6"></div>
-          <div class="field"><label>Coluna</label><input name="column" value="${escapeHtml(unitForm.column)}" placeholder="Ex.: 07"></div>
-          <div class="field"><label>Código SAM</label><input name="samCode" value="${escapeHtml(unitForm.samCode)}"></div>
-          <div class="field"><label>Área útil</label><input name="usefulArea" value="${escapeHtml(unitForm.usefulArea)}"></div>
-          <div class="field"><label>Área privativa</label><input name="privateArea" value="${escapeHtml(unitForm.privateArea)}"></div>
-          <div class="field"><label>Posição</label><select name="sunPosition">${selectOptions(["Sol manhã", "Sol tarde"], unitForm.sunPosition)}</select></div>
-          <div class="field"><label>Tipo</label><select name="unitType">${selectOptions(["Casa", "Apartamento"], unitForm.unitType)}</select></div>
-          <div class="field"><label>Arquitetura</label><input name="architecture" list="architectureOptions" value="${escapeHtml(unitForm.architecture)}"><datalist id="architectureOptions">${optionTags(availabilitySettings.architectureOptions)}</datalist></div>
-          <div class="field"><label>Tipologia</label><input name="typology" list="typologyOptions" value="${escapeHtml(unitForm.typology)}"><datalist id="typologyOptions">${optionTags(availabilitySettings.typologyOptions)}</datalist></div>
-          <div class="field"><label>Fração ideal</label><input name="idealFraction" value="${escapeHtml(unitForm.idealFraction)}"></div>
-          <div class="field"><label>Vista</label><select name="view">${selectOptions(["Livre", "Impedida"], unitForm.view)}</select></div>
-          <div class="field"><label>Status</label><select name="status">${selectOptions(state.statuses || [], unitForm.status, "Disponível")}</select></div>
-          <div class="field"><label>Cliente comprador</label><input name="buyerName" value="${escapeHtml(unitForm.buyerName)}"></div>
-          <div class="field"><label>ID do lead vinculado</label><input name="leadId" value="${escapeHtml(unitForm.leadId)}"></div>
-          <div class="field"><label>Planta (JPG/PNG/PDF)</label><input type="file" name="floorPlan" accept="image/png,image/jpeg,application/pdf">${unitForm.floorPlanName ? `<small>Atual: ${escapeHtml(unitForm.floorPlanName)}</small>` : ""}</div>
-          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar unidade</button><button type="button" data-cancel-unit>Cancelar</button></div></div>
-        </form>
-      ` : ""}
-      <div class="table-wrap">
-        <table><thead><tr><th>Empreendimento</th><th>Unidade</th><th>Bloco</th><th>Andar</th><th>Coluna</th><th>Status</th><th>Cliente</th><th>Ações</th></tr></thead><tbody>${unitRows || '<tr><td colspan="8" class="empty">Nenhuma unidade cadastrada</td></tr>'}</tbody></table>
-      </div>
-    </section>
+    ${renderUnitSettingsModal(unitModalProject, unitRows, unitForm, editUnit, isCreatingUnit, availabilitySettings, selectOptions, optionTags)}
   `);
   bindSettingsCommon();
   bindSettingsActionMenus();
@@ -6707,6 +6760,13 @@ function renderProjectSettings() {
       renderSettings();
     });
   });
+  document.querySelectorAll("[data-open-project-units]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `units:${button.dataset.openProjectUnits}`;
+      state.editUnitId = "";
+      renderSettings();
+    });
+  });
   document.querySelector("#projectForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -6720,36 +6780,28 @@ function renderProjectSettings() {
     await loadState();
     renderSettings();
   });
-  document.querySelector("#availabilityOptionsForm")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const data = await api("/api/availability-settings", {
-      method: "PUT",
-      body: JSON.stringify({
-        architectureOptions: form.get("architectureOptions"),
-        typologyOptions: form.get("typologyOptions")
-      })
-    });
-    state.availabilitySettings = data.availabilitySettings || state.availabilitySettings;
-    await loadState();
-    renderSettings();
-  });
   document.querySelector("[data-new-unit]")?.addEventListener("click", () => {
-    state.settingsEditing = "new-unit";
-    state.editUnitId = "";
+    if (!state.settingsEditing?.startsWith("units:")) return;
+    state.editUnitId = "__new__";
     renderSettings();
   });
   document.querySelectorAll("[data-edit-unit]").forEach((button) => {
     button.addEventListener("click", () => {
       state.editUnitId = button.dataset.editUnit;
-      state.settingsEditing = "";
       renderSettings();
     });
   });
   document.querySelector("[data-cancel-unit]")?.addEventListener("click", () => {
-    state.settingsEditing = null;
     state.editUnitId = "";
     renderSettings();
+  });
+  document.querySelectorAll("[data-close-unit-modal], [data-unit-modal-backdrop]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (event.target !== element && element.hasAttribute("data-unit-modal-backdrop")) return;
+      state.settingsEditing = null;
+      state.editUnitId = "";
+      renderSettings();
+    });
   });
   document.querySelectorAll("[data-delete-unit]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -6796,11 +6848,11 @@ function renderProjectSettings() {
       payload.floorPlanMime = file.type;
       payload.floorPlanDataUrl = await readFileAsDataUrl(file);
     }
-    const data = state.editUnitId
+    const isEditingExistingUnit = state.editUnitId && state.editUnitId !== "__new__";
+    const data = isEditingExistingUnit
       ? await api(`/api/units/${encodeURIComponent(state.editUnitId)}`, { method: "PATCH", body: JSON.stringify(payload) })
       : await api("/api/units", { method: "POST", body: JSON.stringify(payload) });
     state.unitDefinitions = data.unitDefinitions || state.unitDefinitions;
-    state.settingsEditing = null;
     state.editUnitId = "";
     await loadState();
     renderSettings();

@@ -56,21 +56,21 @@ function basePermissionId(source) {
 
 function defaultScreenPermission(role, screen) {
   const viewAccess = {
-    "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
-    "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
-    "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
-    Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "kanban", "knowledge"],
-    Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
+    "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
+    "Head Comercial": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
+    "Supervisor Comercial": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
+    Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "availability", "kanban", "knowledge"],
+    Corretor: ["kanban", "availability", "sheet", "odysseia", "knowledge"],
     "Gerente Financeiro": ["finance", "settings", "knowledge"],
     "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
     "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
     "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"]
   };
   const actionAccess = {
-    "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
-    "Head Comercial": ["kanban", "sheet", "odysseia", "settings", "knowledge"],
-    "Supervisor Comercial": ["kanban", "sheet", "odysseia", "knowledge"],
-    Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
+    "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
+    "Head Comercial": ["kanban", "availability", "sheet", "odysseia", "settings", "knowledge"],
+    "Supervisor Comercial": ["kanban", "availability", "sheet", "odysseia", "knowledge"],
+    Corretor: ["kanban", "availability", "sheet", "odysseia", "knowledge"],
     "Gerente Financeiro": ["finance", "settings", "knowledge"],
     "Auxiliar Financeiro": ["finance", "knowledge"],
     "Gestor de Tráfego": ["knowledge"],
@@ -7454,7 +7454,9 @@ async function fastStructuredStateResponse(req, res, url) {
       commercialSettings,
       integrations,
       knowledgeArticles,
-      knowledgeChatSessions
+      knowledgeChatSessions,
+      unitDefinitions,
+      availabilitySettings
     } = configBundle;
     const userPresence = buildUserPresence(users, presenceRows, sessionTtlMsFromCommercialSettings(commercialSettings), await redisPresenceForUsers(users));
     const stateDb = {
@@ -7466,6 +7468,8 @@ async function fastStructuredStateResponse(req, res, url) {
       leads: [],
       integrations,
       permissions,
+      unitDefinitions,
+      availabilitySettings,
       baseAccess: structuredBaseAccessFromPermissions(permissions, baseSources.length ? baseSources : allBaseSources({ leads: [] })),
       knowledgeArticles,
       knowledgeChatSessions,
