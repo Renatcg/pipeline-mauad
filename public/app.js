@@ -294,7 +294,6 @@ function allowedViews() {
     ? Object.entries(screenByView).filter(([, resourceId]) => userRules[resourceId]?.access).map(([view]) => view)
     : roleViews;
   return views.filter((view) => {
-    if (view === "availability") return state.user?.username === "admin";
     if (view === "salesReport") return canAccessCommercialSalesReport();
     if (view === "finance") return canAccessLevFinance();
     if (view === "odysseia") return canAccessBases();
@@ -1212,7 +1211,10 @@ async function loadState() {
   state.projectDefinitions = data.projectDefinitions || state.projects.map((name, position) => ({ name, position, unitPrefixes: [] }));
   state.unitDefinitions = Array.isArray(data.unitDefinitions) ? data.unitDefinitions : [];
   state.availabilitySettings = normalizeAvailabilitySettingsClient(data.availabilitySettings || {});
-  if (!state.selectedAvailabilityProject && state.projectDefinitions[0]?.name) state.selectedAvailabilityProject = state.projectDefinitions[0].name;
+  const firstAvailabilityProject = availabilityProjects()[0]?.name;
+  if ((!state.selectedAvailabilityProject || !availabilityProjects().some((project) => project.name === state.selectedAvailabilityProject)) && firstAvailabilityProject) {
+    state.selectedAvailabilityProject = firstAvailabilityProject;
+  }
   state.statusDefinitions = (data.statusDefinitions || state.statuses.map((status, position) => ({ status, position, samCodes: [] })))
     .map((item, position) => ({ ...item, position, advanceMode: item.advanceMode || "manual" }));
   state.tagDefinitions = data.tagDefinitions || [];
@@ -1674,6 +1676,10 @@ function projectDefinitionByName(projectName) {
   return (state.projectDefinitions || []).find((project) => project.name === projectName) || {};
 }
 
+function availabilityProjects() {
+  return (state.projectDefinitions || []).filter((project) => project.name && project.availabilityEnabled !== false);
+}
+
 function primaryProjectPrefix(projectName) {
   const definition = projectDefinitionByName(projectName);
   const prefix = (definition.unitPrefixes || []).find(Boolean);
@@ -1781,8 +1787,12 @@ function selectedAvailabilityUnit() {
 }
 
 function renderAvailability() {
-  const projects = (state.projectDefinitions || []).filter((project) => project.name);
+  const projects = availabilityProjects();
   const selectedProject = state.selectedAvailabilityProject || projects[0]?.name || "";
+  if (selectedProject && !projects.some((project) => project.name === selectedProject)) {
+    state.selectedAvailabilityProject = projects[0]?.name || "";
+    return renderAvailability();
+  }
   const projectUnits = virtualUnitsForProject(selectedProject);
   const selectedUnit = selectedAvailabilityUnit();
   const blocks = [...new Set(projectUnits.map((unit) => unit.block || "1"))].sort(sortAlphaNumeric);
@@ -7297,6 +7307,7 @@ function renderProjectSettings() {
   const editUnit = state.editUnitId && !isCreatingUnit ? (state.unitDefinitions || []).find((unit) => unit.id === state.editUnitId) : null;
   const formValue = editProject?.name || "";
   const prefixValue = (editProject?.unitPrefixes || []).join(", ");
+  const availabilityEnabledValue = editProject?.availabilityEnabled !== false;
   const availabilitySettings = state.availabilitySettings || { architectureOptions: [], typologyOptions: [] };
   const unitForm = editUnit || {
     project: unitModalProject || state.selectedAvailabilityProject || state.projects[0] || "",
@@ -7335,6 +7346,7 @@ function renderProjectSettings() {
       <tr>
         <td>${escapeHtml(project)}</td>
         <td>${escapeHtml((definition.unitPrefixes || []).join(", ") || "-")}</td>
+        <td>${definition.availabilityEnabled !== false ? '<span class="status-ok">Ativo</span>' : '<span class="muted-cell">Inativo</span>'}</td>
         <td>${blockCount}</td>
         <td>${unitCount}</td>
         <td>${leadCount}</td>
@@ -7372,11 +7384,17 @@ function renderProjectSettings() {
         <form id="projectForm" class="form-grid editor">
           <div class="field"><label>Nome do empreendimento</label><input name="name" value="${escapeHtml(formValue)}" required></div>
           <div class="field"><label>Siglas das unidades</label><input name="unitPrefixes" value="${escapeHtml(prefixValue)}" placeholder="Ex.: GCR, RGL, RES"></div>
+          <div class="field full">
+            <label class="subtle-check inline-subtle-check">
+              <input type="checkbox" name="availabilityEnabled" value="true" ${availabilityEnabledValue ? "checked" : ""}>
+              <span>Exibir na tela de disponibilidade</span>
+            </label>
+          </div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Empreendimento</th><th>Siglas</th><th>Blocos/quadras</th><th>Unidades</th><th>Leads usando</th><th>Forms Meta</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhum empreendimento cadastrado</td></tr>'}</tbody></table>
+        <table><thead><tr><th>Empreendimento</th><th>Siglas</th><th>Disponibilidade</th><th>Blocos/quadras</th><th>Unidades</th><th>Leads usando</th><th>Forms Meta</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhum empreendimento cadastrado</td></tr>'}</tbody></table>
       </div>
     </section>
     ${renderProjectBlockSettingsModal(blockModalProject)}
@@ -7420,7 +7438,7 @@ function renderProjectSettings() {
   document.querySelector("#projectForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const payload = { name: form.get("name"), unitPrefixes: form.get("unitPrefixes") };
+    const payload = { name: form.get("name"), unitPrefixes: form.get("unitPrefixes"), availabilityEnabled: form.has("availabilityEnabled") };
     const data = editIndex != null
       ? await api(`/api/projects/${editIndex}`, { method: "PATCH", body: JSON.stringify(payload) })
       : await api("/api/projects", { method: "POST", body: JSON.stringify(payload) });

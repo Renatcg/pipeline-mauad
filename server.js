@@ -6578,7 +6578,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
       const projectDefinitions = await structuredProjectDefinitions(sql);
       if (projectDefinitions.some((project) => project.name.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Empreendimento já existe" });
-      projectDefinitions.push(normalizeProjectDefinition({ name, unitPrefixes: body.unitPrefixes, blockDefinitions: body.blockDefinitions || [] }, projectDefinitions.length));
+      projectDefinitions.push(normalizeProjectDefinition({ name, unitPrefixes: body.unitPrefixes, availabilityEnabled: body.availabilityEnabled !== false, blockDefinitions: body.blockDefinitions || [] }, projectDefinitions.length));
       await replaceStructuredProjects(sql, projectDefinitions);
       await structuredAudit(user, "CREATE_PROJECT", { name });
       return sendJson(res, 201, { projects: projectDefinitions.map((project) => project.name), projectDefinitions, dataSources: { action: "structured" } });
@@ -6602,6 +6602,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
         ...projectDefinitions[index],
         name,
         unitPrefixes: body.unitPrefixes,
+        availabilityEnabled: body.availabilityEnabled !== false,
         blockDefinitions: Array.isArray(body.blockDefinitions) ? body.blockDefinitions : projectDefinitions[index].blockDefinitions
       }, index);
       await replaceStructuredProjects(sql, projectDefinitions);
@@ -8411,6 +8412,7 @@ function normalizeProjectDefinition(input, position = 0) {
     name,
     position,
     unitPrefixes: [...new Set(unitPrefixes.map((prefix) => normalizeUnitForMatch(prefix)).filter(Boolean))],
+    availabilityEnabled: input?.availabilityEnabled !== false,
     blockDefinitions
   };
 }
