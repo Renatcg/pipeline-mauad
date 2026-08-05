@@ -2033,6 +2033,51 @@ function brokerRedirectControl(lead) {
   `;
 }
 
+function cardInfoIconSvg(type) {
+  if (type === "message") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path><path d="M8 13h8"></path><path d="M8 17h6"></path></svg>`;
+}
+
+function leadCardInfoActions(lead) {
+  const comments = [...(Array.isArray(lead.comments) ? lead.comments : [])]
+    .filter((comment) => !comment.deletedAt || currentUser()?.role === "Admin TI")
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const notes = String(lead.notes || "").trim();
+  if (!comments.length && !notes) return "";
+  const commentPreview = comments.slice(0, 3).map((comment) => `
+    <div class="card-info-preview-item">
+      <strong>${escapeHtml(comment.fromLead ? lead.name : comment.userName || comment.user || "Sistema")}</strong>
+      <span>${escapeHtml(dateTimeLabel(comment.createdAt))}</span>
+      <p>${escapeHtml(comment.deletedAt ? "Mensagem excluída" : comment.text || "")}</p>
+    </div>
+  `).join("");
+  return `
+    <div class="card-info-actions">
+      ${comments.length ? `
+        <span class="card-info-action" tabindex="0" title="Comentários">
+          ${cardInfoIconSvg("message")}
+          <span class="card-info-popover">
+            <strong>Comentários</strong>
+            ${commentPreview}
+            ${comments.length > 3 ? `<em>Existem mais ${comments.length - 3} comentário(s).</em>` : ""}
+          </span>
+        </span>
+      ` : ""}
+      ${notes ? `
+        <span class="card-info-action" tabindex="0" title="Observações">
+          ${cardInfoIconSvg("document")}
+          <span class="card-info-popover">
+            <strong>Observações</strong>
+            <p>${escapeHtml(notes)}</p>
+          </span>
+        </span>
+      ` : ""}
+    </div>
+  `;
+}
+
 function leadCard(lead) {
   const broker = activeBrokerForLead(lead);
   const project = leadProjectValue(lead) || "Sem empreendimento";
@@ -2041,7 +2086,10 @@ function leadCard(lead) {
       <div class="card-title">
         <button class="favorite-inline" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button>
         <strong>${escapeHtml(lead.name)}</strong>
-        ${brokerRedirectControl(lead)}
+        <div class="card-right-actions">
+          ${brokerRedirectControl(lead)}
+          ${leadCardInfoActions(lead)}
+        </div>
       </div>
       <div class="meta">
         <span>${escapeHtml(lead.phone || "Sem telefone")}</span>
@@ -2085,7 +2133,7 @@ function renderKanban() {
 function bindLeadActions() {
   document.querySelectorAll("[data-open-lead]").forEach((element) => {
     element.addEventListener("click", (event) => {
-      if (event.target.closest("button, select, input, textarea, a, [data-assign-menu], [data-tag-menu]")) return;
+      if (event.target.closest("button, select, input, textarea, a, [data-assign-menu], [data-tag-menu], .card-info-action")) return;
       state.previousView = state.view === "lead" ? state.previousView : state.view;
       routeTo("lead", element.dataset.openLead);
     });
@@ -5934,6 +5982,10 @@ function levStatusKey(value) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function isLevAwaitingAuthorization(item) {
+  return levStatusKey(item?.status).includes("aguardando autorizacao");
+}
+
 function levFinanceRow(item, options = {}) {
   if (options.readOnly) {
     const detail = [
@@ -5958,9 +6010,10 @@ function levFinanceRow(item, options = {}) {
   const statusKey = options.statusKey || state.levFinanceTab || "pending";
   const actions = [
     `<button type="button" data-lev-action="edit" data-lev-key="${escapeHtml(recordKey)}">Editar</button>`,
-    statusKey === "pending" || statusKey === "ignored" ? `<button type="button" data-lev-action="confirm" data-lev-key="${escapeHtml(recordKey)}">Confirmar</button>` : "",
-    statusKey === "pending" || statusKey === "ignored" ? `<button type="button" data-lev-action="invoice" data-lev-key="${escapeHtml(recordKey)}">Alterar para NF Emitida</button>` : "",
-    statusKey === "pending" || statusKey === "nf" ? `<button type="button" data-lev-action="paid" data-lev-key="${escapeHtml(recordKey)}">Alterar para NF Paga</button>` : "",
+    statusKey === "pending" ? `<button type="button" data-lev-action="ignore" data-lev-key="${escapeHtml(recordKey)}">Ignorar</button>` : "",
+    statusKey === "pending" || statusKey === "ignored" || statusKey === "awaiting" ? `<button type="button" data-lev-action="confirm" data-lev-key="${escapeHtml(recordKey)}">Confirmar</button>` : "",
+    statusKey === "pending" || statusKey === "ignored" || statusKey === "awaiting" ? `<button type="button" data-lev-action="invoice" data-lev-key="${escapeHtml(recordKey)}">Alterar para NF Emitida</button>` : "",
+    statusKey === "pending" || statusKey === "nf" || statusKey === "awaiting" ? `<button type="button" data-lev-action="paid" data-lev-key="${escapeHtml(recordKey)}">Alterar para NF Paga</button>` : "",
     `<button type="button" class="danger-menu-item" data-lev-action="delete" data-lev-key="${escapeHtml(recordKey)}">Excluir</button>`
   ];
   const detail = [
@@ -6033,7 +6086,8 @@ function renderLevFinanceModal() {
   const title = {
     edit: "Editar venda",
     invoice: "Alterar para NF Emitida",
-    paid: "Alterar para NF Paga"
+    paid: "Alterar para NF Paga",
+    ignore: "Ignorar registro"
   }[modal.type] || "Financeiro Lev";
   const editFields = modal.type === "edit" ? `
     <div class="field"><label>Unidade</label><input name="unit" value="${escapeHtml(record.unit || "")}" required></div>
@@ -6050,6 +6104,9 @@ function renderLevFinanceModal() {
   const paidFields = modal.type === "paid" ? `
     <div class="field"><label>Data de pagamento</label><input name="paidAt" type="date" value="${escapeHtml(record.paidAt || new Date().toISOString().slice(0, 10))}" required></div>
   ` : "";
+  const ignoreFields = modal.type === "ignore" ? `
+    <div class="field full"><label>Motivo</label><textarea name="ignoreReason" rows="4" placeholder="Informe por que este registro será ignorado" required>${escapeHtml(record.ignoreReason || "")}</textarea></div>
+  ` : "";
   return `
     <div class="modal-backdrop" data-lev-modal-backdrop>
       <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="levFinanceModalTitle">
@@ -6061,7 +6118,7 @@ function renderLevFinanceModal() {
           <button class="ghost-button" type="button" data-close-lev-modal>Fechar</button>
         </div>
         <form id="levFinanceRecordForm" class="form-grid editor">
-          ${editFields || invoiceFields || paidFields}
+          ${editFields || invoiceFields || paidFields || ignoreFields}
           <div class="field full"><div class="row-actions modal-actions"><button class="secondary" type="button" data-close-lev-modal>Cancelar</button><button class="primary" type="submit">Salvar</button></div></div>
         </form>
       </section>
@@ -6084,21 +6141,26 @@ function renderLevFinanceView() {
   };
   const isPaid = (item) => Boolean(item.paid || item.paidAt || levStatusKey(item.status) === "paga");
   const isIgnored = (item) => levStatusKey(item.status).includes("nao contabilizada") || levStatusKey(item.status).includes("ignorada");
-  const pendingSales = allSales.filter((sale) => !isPaid(sale) && !isNfIssued(sale) && !isIgnored(sale));
-  const nfSales = allSales.filter((sale) => !isPaid(sale) && isNfIssued(sale)).map((sale) => ({ ...sale, status: sale.status || "NF Emitida" }));
+  const pendingSales = allSales.filter((sale) => !isPaid(sale) && !isNfIssued(sale) && !isIgnored(sale) && !isLevAwaitingAuthorization(sale));
+  const awaitingSales = allSales.filter((sale) => !isPaid(sale) && !isIgnored(sale) && isLevAwaitingAuthorization(sale));
+  const awaitingSettlements = settlements.filter((settlement) => !isPaid(settlement) && !isIgnored(settlement) && isLevAwaitingAuthorization(settlement));
+  const nfSales = allSales.filter((sale) => !isPaid(sale) && !isLevAwaitingAuthorization(sale) && isNfIssued(sale)).map((sale) => ({ ...sale, status: sale.status || "NF Emitida" }));
   const nfSettlements = settlements.filter(isNfIssued);
   const paidSettlements = settlements.filter((settlement) => levStatusKey(settlement.status) === "paga");
   const ignoredSettlements = settlements.filter(isIgnored);
   const nfUnits = new Set(nfSales.map((sale) => sale.unit));
+  const awaitingUnits = new Set(awaitingSales.map((sale) => sale.unit));
   const currentRowsByTab = {
     pending: pendingSales,
-    nf: [...nfSales, ...nfSettlements.filter((settlement) => !nfUnits.has(settlement.unit))],
+    awaiting: [...awaitingSales, ...awaitingSettlements.filter((settlement) => !awaitingUnits.has(settlement.unit))],
+    nf: [...nfSales, ...nfSettlements.filter((settlement) => !nfUnits.has(settlement.unit) && !isLevAwaitingAuthorization(settlement))],
     paid: paidSettlements,
     ignored: ignoredSettlements
   };
   const activeRows = currentRowsByTab[state.levFinanceTab] || currentRowsByTab.pending;
   const activeTabLabel = {
     pending: "Pendentes",
+    awaiting: "Aguardando autorização",
     nf: "NF Emitida",
     paid: "Pagas",
     ignored: "Ignoradas"
@@ -6116,6 +6178,7 @@ function renderLevFinanceView() {
   `).join("");
   const tabs = [
     ["pending", "Pendentes", pendingSales.length],
+    ["awaiting", "Aguardando autorização", currentRowsByTab.awaiting.length],
     ["nf", "NF Emitida", currentRowsByTab.nf.length],
     ["paid", "Pagas", paidSettlements.length],
     ["ignored", "Ignoradas", ignoredSettlements.length]
@@ -6125,6 +6188,7 @@ function renderLevFinanceView() {
     ${renderViewHead("Financeiro Lev", "Controle de vendas, recebimentos e comissão da Lev", {
       actions: `
         <input id="levImageInput" type="file" accept="image/*" hidden>
+        ${state.levFinanceTab === "pending" && pendingSales.length ? `<button class="secondary" type="button" id="sendLevToMauadButton">Enviar para Mauad</button>` : ""}
         <button class="primary" type="button" id="submitLevImageButton">Submeter imagem</button>
       `
     })}
@@ -6199,6 +6263,21 @@ function bindLevFinanceControls() {
   document.querySelector("#submitLevImageButton")?.addEventListener("click", () => {
     document.querySelector("#levImageInput")?.click();
   });
+  document.querySelector("#sendLevToMauadButton")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (!confirm("Enviar todos os registros pendentes para a Mauad em um único e-mail?")) return;
+    try {
+      setButtonBusy(button, true, "Enviando...");
+      const data = await api("/api/lev-finance/send-to-mauad", { method: "POST" });
+      state.levFinance = data.levFinance;
+      state.levFinanceTab = "awaiting";
+      alert(`Enviado para a Mauad: ${data.count || 0} registro(s).`);
+      renderLevFinanceView();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
   document.querySelector("#levImageInput")?.addEventListener("change", async (event) => {
     const button = document.querySelector("#submitLevImageButton");
     const file = event.currentTarget.files?.[0];
@@ -6258,7 +6337,7 @@ function bindLevFinanceControls() {
     button.addEventListener("click", async () => {
       const key = button.dataset.levKey;
       const action = button.dataset.levAction;
-      if (["edit", "invoice", "paid"].includes(action)) {
+      if (["edit", "invoice", "paid", "ignore"].includes(action)) {
         state.levFinanceModal = { type: action, key };
         renderLevFinanceView();
         return;
@@ -6305,7 +6384,9 @@ function bindLevFinanceControls() {
       ? { action: "edit", fields: payload }
       : modal.type === "invoice"
         ? { action: "invoice_issued", ...payload }
-        : { action: "paid", ...payload };
+        : modal.type === "ignore"
+          ? { action: "ignore", reason: payload.ignoreReason }
+          : { action: "paid", ...payload };
     try {
       setButtonBusy(button, true, "Salvando...");
       const data = await api(`/api/lev-finance/records/${encodeURIComponent(modal.key)}`, { method: "PATCH", body: JSON.stringify(body) });
@@ -6313,6 +6394,7 @@ function bindLevFinanceControls() {
       state.levFinanceModal = null;
       if (modal.type === "invoice") state.levFinanceTab = "nf";
       if (modal.type === "paid") state.levFinanceTab = "paid";
+      if (modal.type === "ignore") state.levFinanceTab = "ignored";
       renderLevFinanceView();
     } catch (error) {
       setButtonBusy(button, false);

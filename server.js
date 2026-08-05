@@ -823,6 +823,7 @@ const ENABLE_LEGACY_JSON_FALLBACK = process.env.ENABLE_LEGACY_JSON_FALLBACK === 
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const EMAIL_FROM = process.env.EMAIL_FROM || "Pipeline Mauad <onboarding@resend.dev>";
+const LEV_FINANCE_EMAIL_FROM = process.env.LEV_FINANCE_EMAIL_FROM || "Financeiro Lev <financeiro@grupocoevo.com.br>";
 const EVO_API_URL = process.env.EVO_API_URL || "";
 const EVO_API_KEY = process.env.EVO_API_KEY || "";
 const EVO_INSTANCE = process.env.EVO_INSTANCE || "";
@@ -1503,7 +1504,7 @@ async function sendEmail(to, subject, html) {
   return { sent: true, id: data.id };
 }
 
-async function sendEmailWithCc(to, cc, subject, html) {
+async function sendEmailWithCcFrom(from, to, cc, subject, html) {
   if (!RESEND_API_KEY) return { sent: false, reason: "RESEND_API_KEY ausente" };
   const recipients = String(to || "").split(",").map((item) => item.trim()).filter(Boolean);
   const ccRecipients = String(cc || "").split(",").map((item) => item.trim()).filter(Boolean);
@@ -1516,7 +1517,7 @@ async function sendEmailWithCc(to, cc, subject, html) {
         Authorization: `Bearer ${RESEND_API_KEY}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ from: EMAIL_FROM, to: recipients, cc: ccRecipients.length ? ccRecipients : undefined, subject, html })
+      body: JSON.stringify({ from: from || EMAIL_FROM, to: recipients, cc: ccRecipients.length ? ccRecipients : undefined, subject, html })
     });
   } catch (error) {
     return { sent: false, reason: externalFetchFailureReason("Resend", error) };
@@ -1524,6 +1525,10 @@ async function sendEmailWithCc(to, cc, subject, html) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return { sent: false, reason: data.message || "Falha no envio do Resend" };
   return { sent: true, id: data.id };
+}
+
+async function sendEmailWithCc(to, cc, subject, html) {
+  return sendEmailWithCcFrom(EMAIL_FROM, to, cc, subject, html);
 }
 
 async function sendEmailWithAttachments(to, cc, subject, html, attachments = []) {
@@ -1694,7 +1699,7 @@ function normalizeLevSale(raw, settings = {}) {
 
 function levSettlementIsPaidOrIgnored(settlement) {
   const status = normalizeComparableText(settlement.status);
-  return status.includes("paga") || status.includes("nao contabilizada");
+  return status.includes("paga") || status.includes("nao contabilizada") || status.includes("ignorada");
 }
 
 function sameMoneyApprox(a, b) {
@@ -1855,6 +1860,34 @@ function levStatusKeyServer(value) {
   return normalizeComparableText(value);
 }
 
+function levRecordIsPaid(item) {
+  return Boolean(item?.paid || item?.paidAt || levStatusKeyServer(item?.status) === "paga");
+}
+
+function levRecordIsIgnored(item) {
+  const key = levStatusKeyServer(item?.status);
+  return key.includes("nao contabilizada") || key.includes("ignorada");
+}
+
+function levRecordIsAwaitingAuthorization(item) {
+  return levStatusKeyServer(item?.status).includes("aguardando autorizacao");
+}
+
+function levRecordIsNfIssued(item) {
+  const key = levStatusKeyServer(item?.status);
+  return key.includes("nf emitida")
+    || key.includes("nf/provisionamento")
+    || key.includes("provisionamento solicitado")
+    || Boolean(item?.invoiceNumber || item?.invoiceIssuedAt);
+}
+
+function levRecordIsPendingMauad(item) {
+  return !levRecordIsPaid(item)
+    && !levRecordIsIgnored(item)
+    && !levRecordIsAwaitingAuthorization(item)
+    && !levRecordIsNfIssued(item);
+}
+
 function applyLevRecordFields(db, sale, settlement, fields = {}) {
   const oldUnit = normalizeLevUnit(sale?.unit || settlement?.unit);
   const nextUnit = fields.unit !== undefined ? normalizeLevUnit(fields.unit) : oldUnit;
@@ -1961,6 +1994,56 @@ async function sendLevProvisionEmail(db, sale) {
     </div>
   `;
   return sendEmailWithCc(settings.provisionTo, settings.provisionCc, `Aprovisionamento comissão Lev - ${sale.unit}`, html);
+}
+
+async function sendLevMauadPendingEmail(sql, db, sales = []) {
+  const settings = db.levFinance?.settings || {};
+  if (!sales.length) return { sent: false, reason: "Nenhuma venda pendente para enviar" };
+  const projects = await structuredProjectDefinitions(sql).catch(() => []);
+  const projectForSale = (sale) => projectNameForUnit(sale.unit, projects) || sale.project || sale.projectName || "Empreendimento não identificado";
+  const groups = new Map();
+  for (const sale of sales) {
+    const project = projectForSale(sale);
+    if (!groups.has(project)) groups.set(project, []);
+    groups.get(project).push(sale);
+  }
+  const projectBlocks = [...groups.entries()].map(([project, items]) => {
+    const totalCommission = items.reduce((sum, item) => sum + Number(item.commissionValue || 0), 0);
+    const rows = items.map((item) => `
+      <tr>
+        <td>${escapeHtml(item.unit)}</td>
+        <td>${escapeHtml(item.client)}</td>
+        <td>${escapeHtml(item.signedAt)}</td>
+        <td>${escapeHtml(formatCurrency(item.contractValue))}</td>
+        <td>${escapeHtml(formatCurrency(item.commissionValue))}</td>
+        <td>${escapeHtml(item.realEstate)}</td>
+      </tr>
+    `).join("");
+    return `
+      <h3 style="margin:28px 0 6px">${escapeHtml(project)}</h3>
+      <p style="margin:0 0 12px"><strong>Total da NF de comissões:</strong> ${escapeHtml(formatCurrency(totalCommission))}</p>
+      <table cellpadding="8" cellspacing="0" style="width:100%;border-collapse:collapse;border:1px solid #d0d5dd;font-size:13px">
+        <thead>
+          <tr style="background:#f2f4f7;text-align:left">
+            <th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Comissão Lev</th><th>Imobiliária</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }).join("");
+  const totalCommission = sales.reduce((sum, item) => sum + Number(item.commissionValue || 0), 0);
+  const html = `
+    <div style="font-family:Arial,sans-serif;color:#101828;line-height:1.5">
+      <h2>Solicitação de autorização - Comissões Lev</h2>
+      <p>Prezados,</p>
+      <p>Segue a relação de vendas pendentes para autorização, agrupadas por empreendimento.</p>
+      <p><strong>Total geral da NF de comissões:</strong> ${escapeHtml(formatCurrency(totalCommission))}</p>
+      ${projectBlocks}
+      <p style="margin-top:28px">Obrigado.</p>
+    </div>
+  `;
+  return sendEmailWithCcFrom(LEV_FINANCE_EMAIL_FROM, settings.provisionTo, settings.provisionCc, "Autorização de comissões Lev - vendas pendentes", html);
 }
 
 function leadUrl(lead) {
@@ -6805,6 +6888,28 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
       return sendJson(res, 201, { levFinance: publicLevFinance(stateDb), dataSources: { action: "structured" } });
     }
 
+    if (method === "POST" && url.pathname === "/api/lev-finance/send-to-mauad") {
+      const pendingSales = stateDb.levFinance.sales.filter((sale) => isLikelyLevUnit(sale.unit) && levRecordIsPendingMauad(sale));
+      if (!pendingSales.length) return sendJson(res, 400, { error: "Nenhuma venda pendente para enviar" });
+      const email = await sendLevMauadPendingEmail(sql, stateDb, pendingSales);
+      if (!email.sent) {
+        await structuredIntegration("LEV_FINANCE", "MAUAD_PENDING_EMAIL_FAILED", { reason: email.reason, count: pendingSales.length });
+        return sendJson(res, 400, { error: email.reason || "Não foi possível enviar o e-mail para a Mauad" });
+      }
+      const now = new Date().toISOString();
+      for (const sale of pendingSales) {
+        sale.status = "Aguardando autorização";
+        sale.authorizationRequestedAt = now;
+        sale.authorizationEmailId = email.id || "";
+        sale.updatedAt = now;
+        upsertLevSettlement(stateDb, sale, "Aguardando autorização", "Enviado para autorização da Mauad");
+        await mirrorLevSaleToStructuredLead(sql, sale);
+      }
+      await persistStructuredLevFinance(sql, stateDb.levFinance);
+      await structuredAudit(user, "SEND_LEV_PENDING_TO_MAUAD", { count: pendingSales.length, emailId: email.id || "" });
+      return sendJson(res, 200, { levFinance: publicLevFinance(stateDb), email, count: pendingSales.length, dataSources: { action: "structured" } });
+    }
+
     const levRecordMatch = url.pathname.match(/^\/api\/lev-finance\/records\/([^/]+)$/);
     if (levRecordMatch && method === "PATCH") {
       const body = await readBody(req);
@@ -6859,6 +6964,15 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
             createdBy: user.username
           });
         }
+      } else if (action === "ignore") {
+        const reason = String(body.reason || body.fields?.ignoreReason || "").trim();
+        if (!reason) return sendJson(res, 400, { error: "Informe o motivo para ignorar" });
+        targetSale = targetSale || saleFromSettlement(stateDb, settlement);
+        targetSale.status = "Ignorada";
+        targetSale.ignoreReason = reason;
+        targetSale.ignoredAt = new Date().toISOString();
+        targetSale.updatedAt = new Date().toISOString();
+        upsertLevSettlement(stateDb, targetSale, "Ignorada", reason);
       } else if (action === "create_pipeline_lead") {
         targetSale = targetSale || saleFromSettlement(stateDb, settlement);
         if (!targetSale) return sendJson(res, 400, { error: "Registro financeiro inválido" });
