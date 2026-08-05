@@ -72,6 +72,7 @@ const state = {
   selectedAvailabilityProject: "",
   selectedAvailabilityUnitId: "",
   editUnitId: "",
+  editBlockId: "",
   levFinanceSearch: "",
   levFinanceTab: "pending",
   levFinanceExtraction: null,
@@ -362,6 +363,10 @@ function canAccessCommercialSalesReport() {
 }
 
 function canResetLevFinance() {
+  return state.user?.role === "Admin TI" && String(state.user?.username || "").toLowerCase() === "admin";
+}
+
+function canImportLevSalesToAvailability() {
   return state.user?.role === "Admin TI" && String(state.user?.username || "").toLowerCase() === "admin";
 }
 
@@ -1613,6 +1618,39 @@ function generatedUnitCodes(projectName, block, floor, column) {
   };
 }
 
+function availabilityNormalizeUnit(value) {
+  return String(value || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+}
+
+function canViewAvailabilitySaleValue() {
+  return ["Admin TI", "Head Comercial", "Diretoria"].includes(state.user?.role);
+}
+
+function availabilityStatusLabel(unit = {}) {
+  if (unit.purchaseBuyerName || unit.purchaseSignedAt || Number(unit.purchaseValue || 0) > 0) return "Vendida";
+  const normalized = String(unit.status || "").toLocaleLowerCase("pt-BR");
+  if (normalized.includes("vend") || normalized.includes("contrato assinado")) return "Vendida";
+  if (normalized.includes("reserv")) return "Reservada";
+  if (normalized.includes("bloque")) return "Bloqueada";
+  if (normalized.includes("permut")) return "Permutante";
+  return "Disponível";
+}
+
+function availabilityStatusSummary(units = []) {
+  const labels = ["Disponível", "Reservada", "Vendida", "Bloqueada", "Permutante"];
+  const counts = Object.fromEntries(labels.map((label) => [label, 0]));
+  units.forEach((unit) => {
+    const label = availabilityStatusLabel(unit);
+    counts[label] = (counts[label] || 0) + 1;
+  });
+  return labels.map((label) => `<span>${escapeHtml(label)} <strong>${counts[label] || 0}</strong></span>`).join("");
+}
+
+function availabilityBlockLabel(projectName, blockCode) {
+  const block = blockDefinitionsForProject(projectName).find((item) => padUnitPart(item.block, 2) === padUnitPart(blockCode, 2));
+  return block?.structureType || "Bloco";
+}
+
 function blockDefinitionsForProject(projectName) {
   return (projectDefinitionByName(projectName).blockDefinitions || []).slice().sort((a, b) => sortAlphaNumeric(a.block, b.block));
 }
@@ -1622,14 +1660,16 @@ function virtualUnitsForProject(projectName) {
   const virtualUnits = [];
   blockDefinitionsForProject(projectName).forEach((block) => {
     const floorCount = Number(block.floorCount || 0);
+    const totalFloors = floorCount + (block.hasPenthouse ? 1 : 0);
     const columnCount = Number(block.columnCount || 0);
-    for (let floor = 1; floor <= floorCount; floor += 1) {
+    for (let floor = 1; floor <= totalFloors; floor += 1) {
       for (let column = 1; column <= columnCount; column += 1) {
         const columnCode = padUnitPart(column, 2);
         const blockCode = padUnitPart(block.block, 2);
         const key = `${blockCode}:${floor}:${columnCode}`;
         const generated = generatedUnitCodes(projectName, block.block, floor, column);
-        virtualUnits.push(existingByKey.get(key) || {
+        const existing = existingByKey.get(key) || {};
+        const unit = existing.id ? existing : {
           id: `virtual:${projectName}:${key}`,
           project: projectName,
           unit: generated.unit,
@@ -1639,8 +1679,10 @@ function virtualUnitsForProject(projectName) {
           column: columnCode,
           status: "",
           virtual: true,
-          floorKind: (block.penthouseFloors || []).includes(String(floor)) ? "Cobertura" : "Tipo"
-        });
+          floorKind: block.hasPenthouse && floor === totalFloors ? "Cobertura" : "Tipo",
+          structureType: block.structureType || "Bloco"
+        };
+        virtualUnits.push(unit);
       }
     }
   });
@@ -1662,7 +1704,7 @@ function renderAvailability() {
   const leadById = new Map((state.leads || []).map((lead) => [lead.id, lead]));
   const projectCards = projects.map((project) => {
     const units = virtualUnitsForProject(project.name);
-    const busy = units.filter((unit) => unit.status).length;
+    const busy = units.filter((unit) => availabilityStatusLabel(unit) !== "Disponível").length;
     return `
       <button type="button" class="availability-project-card ${selectedProject === project.name ? "active" : ""}" data-availability-project="${escapeHtml(project.name)}">
         <strong>${escapeHtml(project.name)}</strong>
@@ -1675,11 +1717,12 @@ function renderAvailability() {
     const units = projectUnits.filter((unit) => (unit.block || "1") === block);
     const floors = [...new Set(units.map((unit) => unit.floor || ""))].sort(sortAlphaNumeric);
     const columns = [...new Set(units.map((unit) => unit.column || ""))].sort(sortAlphaNumeric);
+    const structureLabel = availabilityBlockLabel(selectedProject, block);
     return `
       <section class="availability-block">
         <div class="availability-block-head">
-          <h2>Bloco/Quadra ${escapeHtml(block)}</h2>
-          <span>${units.length} unidade(s)</span>
+          <h2>${escapeHtml(structureLabel)} ${escapeHtml(block)}</h2>
+          <div class="availability-status-summary">${availabilityStatusSummary(units)}</div>
         </div>
         <div class="availability-grid-wrap">
           <table class="availability-grid">
@@ -1691,7 +1734,7 @@ function renderAvailability() {
                   ${columns.map((column) => {
                     const unit = units.find((item) => (item.floor || "") === floor && (item.column || "") === column);
                     if (!unit) return "<td></td>";
-                    const color = unitStatusStyle(unit.status);
+                    const color = unitStatusStyle(unit.status || availabilityStatusLabel(unit));
                     return `<td><button type="button" class="availability-unit-cell ${unit.virtual ? "virtual" : ""} ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" style="--unit-status-color:${escapeHtml(color)}" data-availability-unit="${escapeHtml(unit.id)}">${escapeHtml(unit.unit)}</button></td>`;
                   }).join("")}
                 </tr>
@@ -1703,8 +1746,14 @@ function renderAvailability() {
     `;
   }).join("");
   const linkedLead = selectedUnit?.leadId ? leadById.get(selectedUnit.leadId) : null;
+  const purchaseValue = Number(selectedUnit?.purchaseValue || 0);
+  const saleValue = purchaseValue
+    ? canViewAvailabilitySaleValue() ? money(purchaseValue) : "XXXXXX"
+    : "-";
   renderShell(`
-    ${renderViewHead("Disponibilidade", "Quadro de unidades por empreendimento")}
+    ${renderViewHead("Disponibilidade", "Quadro de unidades por empreendimento", {
+      actions: canImportLevSalesToAvailability() ? '<button type="button" class="secondary" id="importLevSalesToAvailability">Carregar vendas Lev nas unidades</button>' : ""
+    })}
     <section class="availability-layout">
       <div class="availability-main">
         <section class="availability-projects">${projectCards || '<p class="empty">Cadastre empreendimentos para montar o quadro.</p>'}</section>
@@ -1714,11 +1763,14 @@ function renderAvailability() {
         ${selectedUnit ? `
           <h2>${escapeHtml(selectedUnit.unit)}</h2>
           ${selectedUnit.virtual ? '<p class="chip chip-warning">Unidade prevista pelo bloco</p>' : ""}
-          <p class="muted-copy">${escapeHtml(selectedUnit.project)} · Bloco ${escapeHtml(selectedUnit.block || "-")}</p>
+          <p class="muted-copy">${escapeHtml(selectedUnit.project)} · ${escapeHtml(availabilityBlockLabel(selectedUnit.project, selectedUnit.block))} ${escapeHtml(selectedUnit.block || "-")}</p>
           <dl class="unit-detail-list">
-            <div><dt>Status</dt><dd>${escapeHtml(selectedUnit.status || "Disponível")}</dd></div>
+            <div><dt>Status</dt><dd>${escapeHtml(availabilityStatusLabel(selectedUnit))}</dd></div>
             <div><dt>Andar</dt><dd>${escapeHtml(unitFloorLabel(selectedUnit.floor))} · ${escapeHtml(selectedUnit.floorKind || "Tipo")}</dd></div>
             <div><dt>Cliente/lead</dt><dd>${escapeHtml(selectedUnit.buyerName || linkedLead?.name || "-")}</dd></div>
+            <div><dt>Comprador</dt><dd>${escapeHtml(selectedUnit.purchaseBuyerName || selectedUnit.buyerName || "-")}</dd></div>
+            <div><dt>Data da compra</dt><dd>${escapeHtml(dateTimeLabel(selectedUnit.purchaseSignedAt) || "-")}</dd></div>
+            <div><dt>Valor da compra</dt><dd>${escapeHtml(saleValue)}</dd></div>
             <div><dt>Código SAM</dt><dd>${escapeHtml(selectedUnit.samCode || "-")}</dd></div>
             <div><dt>Área útil</dt><dd>${escapeHtml(selectedUnit.usefulArea || "-")}</dd></div>
             <div><dt>Área privativa</dt><dd>${escapeHtml(selectedUnit.privateArea || "-")}</dd></div>
@@ -1750,6 +1802,20 @@ function renderAvailability() {
   });
   document.querySelector("[data-open-linked-lead]")?.addEventListener("click", (event) => {
     routeTo("lead", event.currentTarget.dataset.openLinkedLead);
+  });
+  document.querySelector("#importLevSalesToAvailability")?.addEventListener("click", async (event) => {
+    if (!confirm("Carregar vendas históricas do Financeiro Lev nas unidades cadastradas? Essa carga deve ser usada apenas agora, para popular o histórico inicial.")) return;
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Carregando...");
+      const data = await api("/api/units/import-lev-sales", { method: "POST", body: JSON.stringify({}) });
+      state.unitDefinitions = data.unitDefinitions || state.unitDefinitions;
+      alert(`Carga concluída: ${data.imported || 0} unidade(s) atualizada(s), ${data.skipped || 0} ignorada(s).`);
+      renderAvailability();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
   });
 }
 
@@ -3641,7 +3707,6 @@ function availableSettingsGroups() {
         ...(canManagePipelineSettings() ? [{ id: "statuses", label: "Status Pipeline" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "tags", label: "Etiquetas" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "projects", label: "Empreendimentos" }] : []),
-        ...(canManagePipelineSettings() ? [{ id: "projectBlocks", label: "Blocos" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "architectureOptions", label: "Arquitetura" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "typologyOptions", label: "Tipologia" }] : []),
         ...(canManageCommercialSettings() ? [{ id: "commercial", label: "Configurações comerciais" }] : [])
@@ -3723,7 +3788,7 @@ function settingsLayout(content) {
 
 function renderSettings() {
   if (["integrations", "logs", "knowledge", "backup", "structuredDb"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
-  if (["statuses", "tags", "projects", "projectBlocks", "architectureOptions", "typologyOptions", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
+  if (["statuses", "tags", "projects", "architectureOptions", "typologyOptions", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "commercial" && !canManageCommercialSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) {
@@ -3736,7 +3801,6 @@ function renderSettings() {
   if (state.settingsTab === "permissions") return renderPermissionSettings();
   if (state.settingsTab === "logs") return renderLogSettings();
   if (state.settingsTab === "projects") return renderProjectSettings();
-  if (state.settingsTab === "projectBlocks") return renderProjectBlockSettings();
   if (state.settingsTab === "architectureOptions") return renderAvailabilityOptionSettings("architecture");
   if (state.settingsTab === "typologyOptions") return renderAvailabilityOptionSettings("typology");
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
@@ -6809,7 +6873,7 @@ function renderProjectBlockSettings() {
 function renderUnitSettingsModal(project, unitRows, unitForm, editUnit, isCreatingUnit, availabilitySettings, selectOptions, optionTags) {
   if (!project) return "";
   const formOpen = isCreatingUnit || editUnit;
-  const blockOptions = (projectName, current) => blockDefinitionsForProject(projectName).map((block) => `<option value="${escapeHtml(padUnitPart(block.block, 2))}" ${padUnitPart(block.block, 2) === padUnitPart(current, 2) ? "selected" : ""}>Bloco ${escapeHtml(padUnitPart(block.block, 2))}</option>`).join("");
+  const blockOptions = (projectName, current) => blockDefinitionsForProject(projectName).map((block) => `<option value="${escapeHtml(padUnitPart(block.block, 2))}" ${padUnitPart(block.block, 2) === padUnitPart(current, 2) ? "selected" : ""}>${escapeHtml(block.structureType || "Bloco")} ${escapeHtml(padUnitPart(block.block, 2))}</option>`).join("");
   return `
     <div class="modal-backdrop" data-unit-modal-backdrop>
       <section class="modal-card wide-modal unit-settings-modal" role="dialog" aria-modal="true" aria-labelledby="unitSettingsTitle">
@@ -6854,11 +6918,75 @@ function renderUnitSettingsModal(project, unitRows, unitForm, editUnit, isCreati
   `;
 }
 
+function renderProjectBlockSettingsModal(project) {
+  if (!project) return "";
+  const projectIndex = (state.projectDefinitions || []).findIndex((item) => item.name === project);
+  const projectDefinition = projectDefinitionByName(project);
+  const blockDefinitions = projectDefinition.blockDefinitions || [];
+  const isCreatingBlock = state.editBlockId === "__new__";
+  const editBlock = state.editBlockId && !isCreatingBlock ? blockDefinitions.find((block) => block.id === state.editBlockId) : null;
+  const blockForm = editBlock || { block: "", structureType: "Bloco", floorCount: "", columnCount: "", hasPenthouse: false };
+  const rows = blockDefinitions.map((block) => {
+    const totalFloors = Number(block.floorCount || 0) + (block.hasPenthouse ? 1 : 0);
+    const generatedCount = totalFloors * Number(block.columnCount || 0);
+    return `
+      <tr>
+        <td>${escapeHtml(block.structureType || "Bloco")}</td>
+        <td>${escapeHtml(padUnitPart(block.block, 2))}</td>
+        <td>${Number(block.floorCount || 0)}</td>
+        <td>${Number(block.columnCount || 0)}</td>
+        <td>${block.hasPenthouse ? "Sim" : "Não"}</td>
+        <td>${generatedCount}</td>
+        <td>${renderSettingsActionMenu(`block-modal-${block.id}`, [
+          `<button type="button" data-edit-project-block="${escapeHtml(block.id)}">Editar</button>`,
+          `<button type="button" data-generate-project-block="${escapeHtml(block.id)}">Gerar unidades</button>`,
+          `<button type="button" class="danger-menu-item" data-delete-project-block="${escapeHtml(block.id)}">Excluir</button>`
+        ])}</td>
+      </tr>
+    `;
+  }).join("");
+  const formOpen = isCreatingBlock || editBlock;
+  return `
+    <div class="modal-backdrop" data-block-modal-backdrop>
+      <section class="modal-card wide-modal unit-settings-modal" role="dialog" aria-modal="true" aria-labelledby="blockSettingsTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="blockSettingsTitle">Blocos e quadras</h2>
+            <p class="modal-subtitle">${escapeHtml(project)}</p>
+          </div>
+          <div class="row-actions">
+            <button class="primary" type="button" data-new-project-block>${formOpen ? "Novo bloco" : "Cadastrar bloco"}</button>
+            <button class="ghost-button" type="button" data-close-block-modal>Fechar</button>
+          </div>
+        </div>
+        ${formOpen ? `
+          <form id="projectBlockModalForm" class="form-grid editor unit-editor">
+            <div class="field"><label>Tipo da estrutura</label><select name="structureType" required>
+              <option value="Bloco" ${blockForm.structureType !== "Quadra" ? "selected" : ""}>Bloco</option>
+              <option value="Quadra" ${blockForm.structureType === "Quadra" ? "selected" : ""}>Quadra</option>
+            </select></div>
+            <div class="field"><label>Número/código</label><input name="block" value="${escapeHtml(blockForm.block)}" placeholder="Ex.: 1" required></div>
+            <div class="field"><label>Qtde de Pavimentos-Tipo</label><input name="floorCount" type="number" min="1" value="${escapeHtml(blockForm.floorCount)}" required></div>
+            <div class="field"><label>Colunas por pavimento</label><input name="columnCount" type="number" min="1" value="${escapeHtml(blockForm.columnCount)}" required></div>
+            <label class="checkline field full"><input type="checkbox" name="hasPenthouse" value="true" ${blockForm.hasPenthouse ? "checked" : ""}> Existe Pavimento Cobertura</label>
+            <label class="checkline field full"><input type="checkbox" name="generateUnits" value="true"> Gerar unidades automaticamente ao salvar</label>
+            <div class="field full"><div class="row-actions modal-actions"><button class="secondary" type="button" data-cancel-project-block>Cancelar</button><button class="primary" type="submit">Salvar bloco</button></div></div>
+          </form>
+        ` : ""}
+        <div class="table-wrap">
+          <table><thead><tr><th>Tipo</th><th>Código</th><th>Pavimentos-tipo</th><th>Colunas</th><th>Cobertura</th><th>Unidades previstas</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhum bloco ou quadra cadastrado</td></tr>'}</tbody></table>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function renderProjectSettings() {
   const isCreating = state.settingsEditing === "new-project";
   const editIndex = state.settingsEditing?.startsWith("project:") ? Number(state.settingsEditing.replace("project:", "")) : null;
   const editProject = editIndex != null ? (state.projectDefinitions || [])[editIndex] || { name: state.projects[editIndex] || "", unitPrefixes: [] } : null;
   const unitModalProject = state.settingsEditing?.startsWith("units:") ? state.settingsEditing.replace("units:", "") : "";
+  const blockModalProject = state.settingsEditing?.startsWith("blocks:") ? state.settingsEditing.replace("blocks:", "") : "";
   const isCreatingUnit = state.editUnitId === "__new__";
   const editUnit = state.editUnitId && !isCreatingUnit ? (state.unitDefinitions || []).find((unit) => unit.id === state.editUnitId) : null;
   const formValue = editProject?.name || "";
@@ -6896,14 +7024,17 @@ function renderProjectSettings() {
     const leadCount = state.leads.filter((lead) => lead.desiredProject === project).length;
     const formCount = (state.integrations?.metaForms?.forms || []).filter((form) => form.project === project).length;
     const unitCount = (state.unitDefinitions || []).filter((unit) => unit.project === project).length;
+    const blockCount = (definition.blockDefinitions || []).length;
     return `
       <tr>
         <td>${escapeHtml(project)}</td>
         <td>${escapeHtml((definition.unitPrefixes || []).join(", ") || "-")}</td>
+        <td>${blockCount}</td>
         <td>${unitCount}</td>
         <td>${leadCount}</td>
         <td>${formCount}</td>
         <td>${renderSettingsActionMenu(`project-${index}`, [
+          `<button type="button" data-open-project-blocks="${escapeHtml(project)}">Blocos/quadras</button>`,
           `<button type="button" data-open-project-units="${escapeHtml(project)}">Unidades</button>`,
           `<button type="button" data-edit-project="${index}">Editar</button>`,
           `<button type="button" class="danger-menu-item" data-delete-project="${index}">Excluir</button>`
@@ -6939,9 +7070,10 @@ function renderProjectSettings() {
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Empreendimento</th><th>Siglas</th><th>Unidades</th><th>Leads usando</th><th>Forms Meta</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nenhum empreendimento cadastrado</td></tr>'}</tbody></table>
+        <table><thead><tr><th>Empreendimento</th><th>Siglas</th><th>Blocos/quadras</th><th>Unidades</th><th>Leads usando</th><th>Forms Meta</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhum empreendimento cadastrado</td></tr>'}</tbody></table>
       </div>
     </section>
+    ${renderProjectBlockSettingsModal(blockModalProject)}
     ${renderUnitSettingsModal(unitModalProject, unitRows, unitForm, editUnit, isCreatingUnit, availabilitySettings, selectOptions, optionTags)}
   `);
   bindSettingsCommon();
@@ -6972,6 +7104,13 @@ function renderProjectSettings() {
       renderSettings();
     });
   });
+  document.querySelectorAll("[data-open-project-blocks]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `blocks:${button.dataset.openProjectBlocks}`;
+      state.editBlockId = "";
+      renderSettings();
+    });
+  });
   document.querySelector("#projectForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -6982,6 +7121,89 @@ function renderProjectSettings() {
     state.projects = data.projects;
     state.projectDefinitions = data.projectDefinitions || [];
     state.settingsEditing = null;
+    await loadState();
+    renderSettings();
+  });
+  document.querySelector("[data-new-project-block]")?.addEventListener("click", () => {
+    if (!state.settingsEditing?.startsWith("blocks:")) return;
+    state.editBlockId = "__new__";
+    renderSettings();
+  });
+  document.querySelectorAll("[data-edit-project-block]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.editBlockId = button.dataset.editProjectBlock;
+      renderSettings();
+    });
+  });
+  document.querySelector("[data-cancel-project-block]")?.addEventListener("click", () => {
+    state.editBlockId = "";
+    renderSettings();
+  });
+  document.querySelectorAll("[data-close-block-modal], [data-block-modal-backdrop]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (event.target !== element && element.hasAttribute("data-block-modal-backdrop")) return;
+      state.settingsEditing = null;
+      state.editBlockId = "";
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-delete-project-block]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const projectName = state.settingsEditing?.startsWith("blocks:") ? state.settingsEditing.replace("blocks:", "") : "";
+      const projectIndex = (state.projectDefinitions || []).findIndex((project) => project.name === projectName);
+      const projectDefinition = projectDefinitionByName(projectName);
+      if (projectIndex < 0) return;
+      if (!confirm("Excluir este bloco/quadra? As unidades já geradas não serão apagadas.")) return;
+      const nextBlocks = (projectDefinition.blockDefinitions || []).filter((block) => block.id !== button.dataset.deleteProjectBlock);
+      const data = await api(`/api/projects/${projectIndex}`, { method: "PATCH", body: JSON.stringify({ ...projectDefinition, blockDefinitions: nextBlocks }) });
+      state.projects = data.projects;
+      state.projectDefinitions = data.projectDefinitions || [];
+      state.editBlockId = "";
+      await loadState();
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-generate-project-block]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const projectName = state.settingsEditing?.startsWith("blocks:") ? state.settingsEditing.replace("blocks:", "") : "";
+      const data = await api("/api/units/generate", { method: "POST", body: JSON.stringify({ project: projectName, blockId: button.dataset.generateProjectBlock }) });
+      state.unitDefinitions = data.unitDefinitions || state.unitDefinitions;
+      alert(`Unidades geradas/atualizadas: ${data.generated || 0}`);
+      await loadState();
+      renderSettings();
+    });
+  });
+  document.querySelector("#projectBlockModalForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const projectName = state.settingsEditing?.startsWith("blocks:") ? state.settingsEditing.replace("blocks:", "") : "";
+    const projectIndex = (state.projectDefinitions || []).findIndex((project) => project.name === projectName);
+    const projectDefinition = projectDefinitionByName(projectName);
+    if (projectIndex < 0) return;
+    const blockDefinitions = projectDefinition.blockDefinitions || [];
+    const isCreatingBlock = state.editBlockId === "__new__";
+    const editBlock = state.editBlockId && !isCreatingBlock ? blockDefinitions.find((block) => block.id === state.editBlockId) : null;
+    const form = new FormData(event.currentTarget);
+    const blockPayload = {
+      id: editBlock?.id || `block-${Date.now()}`,
+      structureType: form.get("structureType"),
+      block: form.get("block"),
+      floorCount: form.get("floorCount"),
+      columnCount: form.get("columnCount"),
+      hasPenthouse: form.get("hasPenthouse") === "true",
+      penthouseFloors: []
+    };
+    const nextBlocks = editBlock
+      ? blockDefinitions.map((block) => block.id === editBlock.id ? blockPayload : block)
+      : [...blockDefinitions, blockPayload];
+    const data = await api(`/api/projects/${projectIndex}`, { method: "PATCH", body: JSON.stringify({ ...projectDefinition, blockDefinitions: nextBlocks }) });
+    state.projects = data.projects;
+    state.projectDefinitions = data.projectDefinitions || [];
+    state.editBlockId = "";
+    if (form.get("generateUnits") === "true") {
+      const generated = await api("/api/units/generate", { method: "POST", body: JSON.stringify({ project: projectName, blockId: blockPayload.id }) });
+      state.unitDefinitions = generated.unitDefinitions || state.unitDefinitions;
+      alert(`Bloco salvo. Unidades geradas/atualizadas: ${generated.generated || 0}`);
+    }
     await loadState();
     renderSettings();
   });
@@ -7084,7 +7306,7 @@ function bindUnitCodeAutofill() {
   form.elements.project?.addEventListener("change", () => {
     const current = form.elements.block?.value || "";
     if (form.elements.block) {
-      form.elements.block.innerHTML = `<option value="">Selecione</option>${blockDefinitionsForProject(form.elements.project.value).map((block) => `<option value="${escapeHtml(padUnitPart(block.block, 2))}" ${padUnitPart(block.block, 2) === padUnitPart(current, 2) ? "selected" : ""}>Bloco ${escapeHtml(padUnitPart(block.block, 2))}</option>`).join("")}`;
+      form.elements.block.innerHTML = `<option value="">Selecione</option>${blockDefinitionsForProject(form.elements.project.value).map((block) => `<option value="${escapeHtml(padUnitPart(block.block, 2))}" ${padUnitPart(block.block, 2) === padUnitPart(current, 2) ? "selected" : ""}>${escapeHtml(block.structureType || "Bloco")} ${escapeHtml(padUnitPart(block.block, 2))}</option>`).join("")}`;
     }
     refresh();
   });

@@ -6666,6 +6666,13 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       return sendJson(res, 201, { generated: generatedUnits.length, unitDefinitions: await structuredUnitDefinitions(sql), dataSources: { action: "structured" } });
     }
 
+    if (url.pathname === "/api/units/import-lev-sales" && method === "POST") {
+      if (!(user.role === "Admin TI" && String(user.username || "").toLowerCase() === "admin")) return sendJson(res, 403, { error: "Sem permissão" });
+      const result = await importStructuredLevSalesToUnits(sql);
+      await structuredAudit(user, "IMPORT_LEV_SALES_TO_UNITS", result);
+      return sendJson(res, 200, { ok: true, ...result, unitDefinitions: await structuredUnitDefinitions(sql), dataSources: { action: "structured" } });
+    }
+
     if (url.pathname === "/api/units" && method === "POST") {
       if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
       const body = await readBody(req);
@@ -8406,12 +8413,18 @@ function normalizeProjectBlockDefinition(input = {}, position = 0) {
   const penthouseFloors = Array.isArray(input.penthouseFloors)
     ? input.penthouseFloors
     : normalizeListFromText(input.penthouseFloors);
+  const structureType = String(input.structureType || input.type || "").toLocaleLowerCase("pt-BR").includes("quadra") ? "Quadra" : "Bloco";
+  const hasPenthouse = input.hasPenthouse !== undefined
+    ? Boolean(input.hasPenthouse)
+    : penthouseFloors.length > 0;
   return {
     id: String(input.id || `block-${crypto.createHash("sha1").update(`${block}:${position}`).digest("hex").slice(0, 10)}`).trim(),
     block,
+    structureType,
     position: Number(input.position ?? position) || position,
     floorCount,
     columnCount,
+    hasPenthouse,
     penthouseFloors: [...new Set(penthouseFloors.map((floor) => String(floor || "").trim()).filter(Boolean))]
   };
 }
@@ -8487,9 +8500,14 @@ function normalizeUnitDefinition(input = {}) {
     floorPlanMime: String(input.floorPlanMime || "").trim(),
     floorPlanDataUrl: String(input.floorPlanDataUrl || "").trim(),
     floorKind: String(input.floorKind || "").trim(),
+    structureType: String(input.structureType || "").trim(),
     status: String(input.status || "").trim(),
     leadId: String(input.leadId || input.lead_id || "").trim(),
     buyerName: String(input.buyerName || input.buyer_name || "").trim(),
+    purchaseBuyerName: String(input.purchaseBuyerName || "").trim(),
+    purchaseSignedAt: input.purchaseSignedAt || "",
+    purchaseValue: Number(input.purchaseValue || 0),
+    purchaseSource: String(input.purchaseSource || "").trim(),
     updatedAt: input.updatedAt || new Date().toISOString(),
     createdAt: input.createdAt || new Date().toISOString()
   };
@@ -8575,8 +8593,9 @@ async function saveStructuredUnit(sql, unitInput, projectDefinitions = []) {
 function generatedUnitsForBlock(projectDefinition = {}, blockDefinition = {}) {
   const units = [];
   const floorCount = Number(blockDefinition.floorCount || 0);
+  const totalFloors = floorCount + (blockDefinition.hasPenthouse ? 1 : 0);
   const columnCount = Number(blockDefinition.columnCount || 0);
-  for (let floor = 1; floor <= floorCount; floor += 1) {
+  for (let floor = 1; floor <= totalFloors; floor += 1) {
     for (let column = 1; column <= columnCount; column += 1) {
       const codes = generatedUnitCodes(projectDefinition, {
         project: projectDefinition.name,
@@ -8592,11 +8611,70 @@ function generatedUnitsForBlock(projectDefinition = {}, blockDefinition = {}) {
         floor: String(floor),
         column: padUnitNumber(column, 2),
         samCode: codes.samCode,
-        floorKind: (blockDefinition.penthouseFloors || []).includes(String(floor)) ? "Cobertura" : "Tipo"
+        floorKind: blockDefinition.hasPenthouse && floor === totalFloors ? "Cobertura" : (blockDefinition.penthouseFloors || []).includes(String(floor)) ? "Cobertura" : "Tipo",
+        structureType: blockDefinition.structureType || "Bloco"
       });
     }
   }
   return units;
+}
+
+function saleSignedAtIsoForUnit(record = {}) {
+  const date = parseBrazilDate(record.signedAt || record.assinatura || record.signatureDate || record.contractSignedAt);
+  return date && !Number.isNaN(date.getTime()) ? date.toISOString() : "";
+}
+
+async function importStructuredLevSalesToUnits(sql) {
+  const projectDefinitions = await structuredProjectDefinitions(sql);
+  const stateDb = await structuredLevFinanceDb(sql);
+  const records = [...(stateDb.levFinance.sales || []), ...(stateDb.levFinance.settlements || [])];
+  const byUnit = new Map();
+  for (const record of records) {
+    const unitCode = normalizeLevUnit(record.unit || "");
+    const status = String(record.status || "").toLocaleLowerCase("pt-BR");
+    if (!isLikelyLevUnit(unitCode) || status.includes("ignorada")) continue;
+    const current = byUnit.get(unitCode) || {};
+    byUnit.set(unitCode, {
+      ...current,
+      ...record,
+      unit: unitCode,
+      client: record.client || current.client || "",
+      signedAt: record.signedAt || current.signedAt || "",
+      contractValue: Number(record.contractValue || current.contractValue || 0),
+      status: record.status || current.status || ""
+    });
+  }
+
+  let imported = 0;
+  let skipped = 0;
+  for (const sale of byUnit.values()) {
+    const unitCode = normalizeLevUnit(sale.unit);
+    const project = projectNameForUnit(unitCode, projectDefinitions);
+    if (!project) {
+      skipped += 1;
+      continue;
+    }
+    const existingRows = await sql`SELECT payload FROM crm_units WHERE sam_code = ${unitCode} OR unit = ${unitCode} LIMIT 1`;
+    const existing = existingRows[0]?.payload || {};
+    const next = normalizeUnitDefinition({
+      ...existing,
+      project: existing.project || project,
+      unit: existing.unit || unitCode,
+      samCode: existing.samCode || unitCode,
+      status: existing.status || "Vendida",
+      buyerName: existing.buyerName || sale.client || "",
+      purchaseBuyerName: sale.client || existing.purchaseBuyerName || existing.buyerName || "",
+      purchaseSignedAt: saleSignedAtIsoForUnit(sale) || existing.purchaseSignedAt || "",
+      purchaseValue: Number(sale.contractValue || existing.purchaseValue || 0),
+      purchaseSource: "Financeiro Lev"
+    });
+    if (!next.block) next.block = "1";
+    if (!next.floor) next.floor = inferUnitFloor(unitCode);
+    if (!next.column) next.column = inferUnitStack(unitCode);
+    await saveStructuredUnit(sql, next, projectDefinitions);
+    imported += 1;
+  }
+  return { imported, skipped };
 }
 
 async function generateStructuredUnitsForBlock(sql, projectName, blockIdOrCode) {
