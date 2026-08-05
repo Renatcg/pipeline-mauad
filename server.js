@@ -20,6 +20,7 @@ const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria"
 const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
 const PERMISSION_SCREENS = [
   { id: "screen:kanban", label: "Kanban", view: "kanban" },
+  { id: "screen:availability", label: "Disponibilidade", view: "availability" },
   { id: "screen:sheet", label: "Planilha", view: "sheet" },
   { id: "screen:bases", label: "Bases", view: "odysseia" },
   { id: "screen:dashboard", label: "Dashboard", view: "dashboard" },
@@ -4444,6 +4445,23 @@ async function ensureStructuredSchema(sql) {
   await sql`ALTER TABLE crm_pipeline_statuses ADD COLUMN IF NOT EXISTS payload jsonb NOT NULL DEFAULT '{}'::jsonb`;
   await sql`CREATE TABLE IF NOT EXISTS crm_projects (name text PRIMARY KEY, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
   await sql`ALTER TABLE crm_projects ADD COLUMN IF NOT EXISTS position integer NOT NULL DEFAULT 0`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_units (
+    id text PRIMARY KEY,
+    project text NOT NULL,
+    unit text NOT NULL,
+    block text,
+    floor text,
+    stack text,
+    sam_code text,
+    status text,
+    lead_id text,
+    buyer_name text,
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS crm_units_project_unit_idx ON crm_units (project, unit)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_units_project_idx ON crm_units (project, block, floor, stack)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_tag_definitions (id text PRIMARY KEY, name text, color text, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_base_sources (name text PRIMARY KEY)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_meta_forms (id text PRIMARY KEY, name text, project text, archived boolean NOT NULL DEFAULT false, ad_url text, payload jsonb NOT NULL)`;
@@ -5143,6 +5161,7 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
   event.resolvedAt = lead.updatedAt;
   event.resolvedBy = user.username;
   await saveStructuredLead(sql, lead);
+  await upsertStructuredUnitFromLeadSam(sql, lead, event, projectDefinitions);
   const levSale = await upsertStructuredLevSaleFromSam(sql, lead, event, fields);
   await saveStructuredSamEvent(sql, event);
   await recordStructuredLeadStatusMovement(sql, {
@@ -5364,7 +5383,7 @@ async function structuredSettingsMap(sql) {
 }
 
 async function structuredConfigStateBundle(sql) {
-  const [userRows, projectRows, statusRows, tagRows, sourceRows, formRows, permissionRows, articleRows, settingsRows] = await Promise.all([
+  const [userRows, projectRows, statusRows, tagRows, sourceRows, formRows, permissionRows, articleRows, settingsRows, unitRows] = await Promise.all([
     sql`SELECT * FROM crm_users ORDER BY name ASC, username ASC`,
     sql`SELECT name, position, payload FROM crm_projects ORDER BY position ASC, name ASC`,
     sql`SELECT status, position, payload FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`,
@@ -5373,7 +5392,8 @@ async function structuredConfigStateBundle(sql) {
     sql`SELECT payload FROM crm_meta_forms ORDER BY archived ASC, name ASC`,
     sql`SELECT owner_type, owner_id, resource_id, can_access, can_act FROM crm_permissions`,
     sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
-    sql`SELECT key, payload FROM crm_settings`
+    sql`SELECT key, payload FROM crm_settings`,
+    sql`SELECT * FROM crm_units ORDER BY project ASC, block ASC NULLS LAST, floor ASC NULLS LAST, stack ASC NULLS LAST, unit ASC`
   ]);
   const settings = Object.fromEntries(settingsRows.map((row) => [row.key, row.payload || {}]));
   const users = userRows.map((row) => publicUser(structuredUserFromAuthRow(row))).filter((item) => item.id);
@@ -5386,6 +5406,22 @@ async function structuredConfigStateBundle(sql) {
   const forms = formRows.map((row) => row.payload || {}).filter((item) => item.id);
   const permissions = structuredPermissionsFromRows(permissionRows);
   const commercialSettings = normalizeCommercialSettingsPayload(settings.commercialSettings || {});
+  const availabilitySettings = normalizeAvailabilitySettings(settings.availabilitySettings || {});
+  const unitDefinitions = unitRows.map((row) => normalizeUnitDefinition({
+    ...(row.payload || {}),
+    id: row.id,
+    project: row.project,
+    unit: row.unit,
+    block: row.block,
+    floor: row.floor,
+    column: row.stack,
+    samCode: row.sam_code,
+    status: row.status,
+    leadId: row.lead_id,
+    buyerName: row.buyer_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  })).filter((item) => item.id && item.project && item.unit);
   const integrations = {
     ...(settings.integrations || {}),
     metaForms: {
@@ -5405,6 +5441,8 @@ async function structuredConfigStateBundle(sql) {
     tagDefinitions: tagDefinitions.length ? tagDefinitions : DEFAULT_TAG_DEFINITIONS,
     baseSources,
     forms,
+    unitDefinitions,
+    availabilitySettings,
     permissions,
     integrations,
     knowledgeArticles: articleRows.map((row) => row.payload || {}).filter((item) => item.id),
@@ -5857,20 +5895,25 @@ async function saveStructuredKnowledgeArticle(sql, article) {
 }
 
 async function structuredConfigDb(sql, { includeLeads = false } = {}) {
-  const [users, statuses, projectRows, tagRows, formRows, articleRows, settings] = await Promise.all([
+  const [users, statuses, projectRows, tagRows, formRows, articleRows, settings, unitDefinitions] = await Promise.all([
     structuredUsers(sql),
     structuredPipelineStatuses(sql),
-    sql`SELECT name FROM crm_projects ORDER BY position ASC, name ASC`,
+    sql`SELECT name, position, payload FROM crm_projects ORDER BY position ASC, name ASC`,
     sql`SELECT payload FROM crm_tag_definitions ORDER BY name ASC`,
     sql`SELECT payload FROM crm_meta_forms ORDER BY archived ASC, name ASC`,
     sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
-    structuredSettingsMap(sql)
+    structuredSettingsMap(sql),
+    structuredUnitDefinitions(sql)
   ]);
   const forms = formRows.map((row) => row.payload || {}).filter((form) => form.id);
+  const projectDefinitions = projectRows.map((row, index) => normalizeProjectDefinition({ ...(row.payload || {}), name: row.name }, Number(row.position ?? index))).filter((project) => project.name);
   const db = {
     roles: ROLES,
     users,
-    projects: projectRows.map((row) => row.name).filter(Boolean),
+    projects: projectDefinitions.map((project) => project.name),
+    projectDefinitions,
+    unitDefinitions,
+    availabilitySettings: normalizeAvailabilitySettings(settings.availabilitySettings || {}),
     pipelineStatuses: statuses,
     tagDefinitions: tagRows.map((row) => row.payload || {}).filter((tag) => tag.id),
     integrations: {
@@ -5919,6 +5962,7 @@ async function structuredBackupDb(sql) {
     movementRows,
     samRows,
     articleRows,
+    unitRows,
     settings,
     finance
   ] = await Promise.all([
@@ -5940,6 +5984,7 @@ async function structuredBackupDb(sql) {
     sql`SELECT payload FROM crm_lead_status_movements ORDER BY moved_at DESC NULLS LAST`,
     sql`SELECT * FROM crm_sam_events ORDER BY created_at DESC NULLS LAST`,
     sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
+    sql`SELECT * FROM crm_units ORDER BY project ASC, block ASC NULLS LAST, floor ASC NULLS LAST, stack ASC NULLS LAST, unit ASC`,
     structuredSettingsMap(sql),
     structuredLevFinanceDb(sql)
   ]);
@@ -5970,6 +6015,21 @@ async function structuredBackupDb(sql) {
   const permissions = structuredPermissionsFromRows(permissionRows);
   const projectDefinitions = projectRows.map((row, index) => normalizeProjectDefinition({ ...(row.payload || {}), name: row.name }, Number(row.position ?? index))).filter((project) => project.name);
   const statusDefinitions = statusRows.map((row, index) => normalizeStatusDefinition({ ...(row.payload || {}), status: row.status }, Number(row.position ?? index))).filter((status) => status.status);
+  const unitDefinitions = unitRows.map((row) => normalizeUnitDefinition({
+    ...(row.payload || {}),
+    id: row.id,
+    project: row.project,
+    unit: row.unit,
+    block: row.block,
+    floor: row.floor,
+    column: row.stack,
+    samCode: row.sam_code,
+    status: row.status,
+    leadId: row.lead_id,
+    buyerName: row.buyer_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  })).filter((unit) => unit.id && unit.project && unit.unit);
   const db = {
     schemaVersion: APP_SCHEMA_VERSION,
     roles: ROLES,
@@ -5977,6 +6037,8 @@ async function structuredBackupDb(sql) {
     leads,
     projects: projectDefinitions.map((project) => project.name),
     projectDefinitions,
+    unitDefinitions,
+    availabilitySettings: normalizeAvailabilitySettings(settings.availabilitySettings || {}),
     pipelineStatuses: statusDefinitions.map((status) => status.status),
     statusDefinitions,
     tagDefinitions: tagDefinitionRows.map((row) => row.payload || {}).filter((tag) => tag.id),
@@ -6290,6 +6352,9 @@ async function fastStructuredSettingsRoutes(req, res, url) {
     url.pathname.startsWith("/api/knowledge/") ||
     url.pathname === "/api/projects" ||
     url.pathname.startsWith("/api/projects/") ||
+    url.pathname === "/api/units" ||
+    url.pathname.startsWith("/api/units/") ||
+    url.pathname === "/api/availability-settings" ||
     url.pathname === "/api/statuses" ||
     url.pathname.startsWith("/api/statuses/") ||
     url.pathname === "/api/tags" ||
@@ -6579,6 +6644,45 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       return sendJson(res, 200, { projects: projectDefinitions.map((project) => project.name), projectDefinitions, dataSources: { action: "structured" } });
     }
 
+    if (url.pathname === "/api/availability-settings" && method === "PUT") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const availabilitySettings = normalizeAvailabilitySettings(body);
+      await saveStructuredSetting(sql, "availabilitySettings", availabilitySettings);
+      await structuredAudit(user, "UPDATE_AVAILABILITY_SETTINGS", {});
+      return sendJson(res, 200, { availabilitySettings, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/units" && method === "POST") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const unit = await saveStructuredUnit(sql, body);
+      await structuredAudit(user, "CREATE_UNIT", { project: unit.project, unit: unit.unit });
+      return sendJson(res, 201, { unit, unitDefinitions: await structuredUnitDefinitions(sql), dataSources: { action: "structured" } });
+    }
+
+    const unitMatch = url.pathname.match(/^\/api\/units\/([^/]+)$/);
+    if (unitMatch && method === "PATCH") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const rows = await sql`SELECT payload FROM crm_units WHERE id = ${decodeURIComponent(unitMatch[1])} LIMIT 1`;
+      if (!rows[0]) return notFound(res);
+      const body = await readBody(req);
+      const unit = await saveStructuredUnit(sql, { ...(rows[0].payload || {}), ...body, id: decodeURIComponent(unitMatch[1]) });
+      await structuredAudit(user, "UPDATE_UNIT", { project: unit.project, unit: unit.unit });
+      return sendJson(res, 200, { unit, unitDefinitions: await structuredUnitDefinitions(sql), dataSources: { action: "structured" } });
+    }
+
+    if (unitMatch && method === "DELETE") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const unitId = decodeURIComponent(unitMatch[1]);
+      const rows = await sql`SELECT project, unit FROM crm_units WHERE id = ${unitId} LIMIT 1`;
+      if (!rows[0]) return notFound(res);
+      await sql`DELETE FROM crm_units WHERE id = ${unitId}`;
+      void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
+      await structuredAudit(user, "DELETE_UNIT", { project: rows[0].project, unit: rows[0].unit });
+      return sendJson(res, 200, { unitDefinitions: await structuredUnitDefinitions(sql), dataSources: { action: "structured" } });
+    }
+
     if (url.pathname === "/api/statuses" && method === "POST") {
       if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
       const body = await readBody(req);
@@ -6586,7 +6690,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
       const statusDefinitions = await structuredStatusDefinitions(sql);
       if (statusDefinitions.some((status) => status.status.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Status já existe" });
-      statusDefinitions.push(normalizeStatusDefinition({ status: name, samCodes: body.samCodes, advanceMode: body.advanceMode }, statusDefinitions.length));
+      statusDefinitions.push(normalizeStatusDefinition({ status: name, samCodes: body.samCodes, advanceMode: body.advanceMode, availabilityColor: body.availabilityColor }, statusDefinitions.length));
       await replaceStructuredStatuses(sql, statusDefinitions);
       if (canManageSettings(user) && ("metaConversionEnabled" in body || "metaConversionEventId" in body)) {
         await updateStructuredMetaConversionMapping(sql, "status", name, {
@@ -6628,7 +6732,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       const name = String(body.name || "").trim();
       if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
       if (statuses.some((status, idx) => idx !== index && status.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Status já existe" });
-      statusDefinitions[index] = normalizeStatusDefinition({ ...statusDefinitions[index], status: name, samCodes: body.samCodes, advanceMode: body.advanceMode }, index);
+      statusDefinitions[index] = normalizeStatusDefinition({ ...statusDefinitions[index], status: name, samCodes: body.samCodes, advanceMode: body.advanceMode, availabilityColor: body.availabilityColor }, index);
       await replaceStructuredStatuses(sql, statusDefinitions);
       if (canManageSettings(user) && ("metaConversionEnabled" in body || "metaConversionEventId" in body)) {
         await updateStructuredMetaConversionMapping(sql, "status", name, {
@@ -7380,6 +7484,8 @@ async function fastStructuredStateResponse(req, res, url) {
       roles: ROLES,
       projects: stateDb.projects,
       projectDefinitions,
+      unitDefinitions: stateDb.unitDefinitions || [],
+      availabilitySettings: stateDb.availabilitySettings || normalizeAvailabilitySettings({}),
       pipelineStatuses: stateDb.pipelineStatuses,
       statusDefinitions,
       tagDefinitions: stateDb.tagDefinitions,
@@ -8272,6 +8378,56 @@ function normalizeProjectDefinition(input, position = 0) {
   };
 }
 
+function normalizeAvailabilitySettings(input = {}) {
+  return {
+    architectureOptions: [...new Set(normalizeListFromText(Array.isArray(input.architectureOptions) ? input.architectureOptions.join("\n") : input.architectureOptions))],
+    typologyOptions: [...new Set(normalizeListFromText(Array.isArray(input.typologyOptions) ? input.typologyOptions.join("\n") : input.typologyOptions))]
+  };
+}
+
+function inferUnitFloor(unit) {
+  const normalized = normalizeUnitForMatch(unit);
+  const match = normalized.match(/(\d)\d{2}$/);
+  return match?.[1] || "";
+}
+
+function inferUnitStack(unit) {
+  const normalized = normalizeUnitForMatch(unit);
+  const match = normalized.match(/\d(\d{2})$/);
+  return match?.[1] || "";
+}
+
+function normalizeUnitDefinition(input = {}) {
+  const unit = String(input.unit || input.name || "").trim().toUpperCase();
+  const id = String(input.id || (input.project && unit ? `unit-${crypto.createHash("sha1").update(`${input.project}:${unit}`).digest("hex").slice(0, 18)}` : `unit-${crypto.randomUUID()}`)).trim();
+  const payload = {
+    id,
+    project: String(input.project || "").trim(),
+    unit,
+    block: String(input.block || "").trim(),
+    floor: String(input.floor || inferUnitFloor(unit)).trim(),
+    column: String(input.column || input.stack || inferUnitStack(unit)).trim(),
+    samCode: String(input.samCode || input.sam_code || "").trim(),
+    usefulArea: String(input.usefulArea || "").trim(),
+    privateArea: String(input.privateArea || "").trim(),
+    sunPosition: String(input.sunPosition || "").trim(),
+    unitType: String(input.unitType || "").trim(),
+    architecture: String(input.architecture || "").trim(),
+    typology: String(input.typology || "").trim(),
+    idealFraction: String(input.idealFraction || "").trim(),
+    view: String(input.view || "").trim(),
+    floorPlanName: String(input.floorPlanName || "").trim(),
+    floorPlanMime: String(input.floorPlanMime || "").trim(),
+    floorPlanDataUrl: String(input.floorPlanDataUrl || "").trim(),
+    status: String(input.status || "").trim(),
+    leadId: String(input.leadId || input.lead_id || "").trim(),
+    buyerName: String(input.buyerName || input.buyer_name || "").trim(),
+    updatedAt: input.updatedAt || new Date().toISOString(),
+    createdAt: input.createdAt || new Date().toISOString()
+  };
+  return payload;
+}
+
 function normalizeStatusDefinition(input, position = 0) {
   const status = String(input?.status || input?.name || input || "").trim();
   const samCodes = Array.isArray(input?.samCodes)
@@ -8282,6 +8438,7 @@ function normalizeStatusDefinition(input, position = 0) {
     status,
     position,
     advanceMode,
+    availabilityColor: String(input?.availabilityColor || "").trim(),
     samCodes: [...new Set(samCodes.map((code) => String(code || "").trim()).filter(Boolean))]
   };
 }
@@ -8301,6 +8458,70 @@ function projectNameForUnit(unit, projectDefinitions = []) {
 async function structuredStatusDefinitions(sql) {
   const rows = await sql`SELECT status, position, payload FROM crm_pipeline_statuses ORDER BY position ASC, status ASC`;
   return rows.map((row, index) => normalizeStatusDefinition({ ...(row.payload || {}), status: row.status }, Number(row.position ?? index))).filter((item) => item.status);
+}
+
+async function structuredUnitDefinitions(sql) {
+  const rows = await sql`SELECT * FROM crm_units ORDER BY project ASC, block ASC NULLS LAST, floor ASC NULLS LAST, stack ASC NULLS LAST, unit ASC`;
+  return rows.map((row) => normalizeUnitDefinition({
+    ...(row.payload || {}),
+    id: row.id,
+    project: row.project,
+    unit: row.unit,
+    block: row.block,
+    floor: row.floor,
+    column: row.stack,
+    samCode: row.sam_code,
+    status: row.status,
+    leadId: row.lead_id,
+    buyerName: row.buyer_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  })).filter((item) => item.id && item.project && item.unit);
+}
+
+async function saveStructuredUnit(sql, unitInput) {
+  const unit = normalizeUnitDefinition(unitInput);
+  if (!unit.project) throw new Error("Empreendimento obrigatório");
+  if (!unit.unit) throw new Error("Unidade obrigatória");
+  const now = new Date().toISOString();
+  unit.updatedAt = now;
+  unit.createdAt = unit.createdAt || now;
+  await sql`INSERT INTO crm_units (id, project, unit, block, floor, stack, sam_code, status, lead_id, buyer_name, payload, created_at, updated_at)
+    VALUES (${unit.id}, ${unit.project}, ${unit.unit}, ${unit.block}, ${unit.floor}, ${unit.column}, ${unit.samCode}, ${unit.status}, ${unit.leadId}, ${unit.buyerName}, ${JSON.stringify(unit)}::jsonb, ${unit.createdAt}, ${unit.updatedAt})
+    ON CONFLICT (project, unit) DO UPDATE SET
+      id = EXCLUDED.id,
+      block = EXCLUDED.block,
+      floor = EXCLUDED.floor,
+      stack = EXCLUDED.stack,
+      sam_code = EXCLUDED.sam_code,
+      status = EXCLUDED.status,
+      lead_id = EXCLUDED.lead_id,
+      buyer_name = EXCLUDED.buyer_name,
+      payload = EXCLUDED.payload,
+      updated_at = EXCLUDED.updated_at`;
+  void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
+  return unit;
+}
+
+async function upsertStructuredUnitFromLeadSam(sql, lead, event, projectDefinitions = []) {
+  const unitCode = String(event?.unit || lead?.desiredUnit || "").trim().toUpperCase();
+  if (!unitCode) return null;
+  const project = String(lead?.desiredProject || projectNameForUnit(unitCode, projectDefinitions) || "").trim();
+  if (!project) return null;
+  const existingRows = await sql`SELECT payload FROM crm_units WHERE project = ${project} AND unit = ${unitCode} LIMIT 1`;
+  const existing = existingRows[0]?.payload || {};
+  const next = normalizeUnitDefinition({
+    ...existing,
+    project,
+    unit: unitCode,
+    status: lead?.status || existing.status || "",
+    leadId: lead?.id || existing.leadId || "",
+    buyerName: lead?.name || existing.buyerName || ""
+  });
+  if (!next.block) next.block = "1";
+  if (!next.floor) next.floor = inferUnitFloor(unitCode);
+  if (!next.column) next.column = inferUnitStack(unitCode);
+  return saveStructuredUnit(sql, next);
 }
 
 async function isStructuredSamOnlyStatus(sql, status) {
@@ -9697,6 +9918,9 @@ async function routeApi(req, res, db) {
       user: publicUser(user),
       roles: db.roles,
       projects: structuredConfig.projects,
+      projectDefinitions: structuredConfig.projectDefinitions || [],
+      unitDefinitions: structuredConfig.unitDefinitions || [],
+      availabilitySettings: structuredConfig.availabilitySettings || normalizeAvailabilitySettings({}),
       pipelineStatuses: structuredConfig.pipelineStatuses,
       tagDefinitions: db.tagDefinitions || [],
       users: structuredConfig.users,

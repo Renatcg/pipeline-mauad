@@ -13,6 +13,8 @@ const state = {
   projects: [],
   statusDefinitions: [],
   projectDefinitions: [],
+  unitDefinitions: [],
+  availabilitySettings: { architectureOptions: [], typologyOptions: [] },
   tagDefinitions: [],
   users: [],
   userPresence: [],
@@ -67,6 +69,9 @@ const state = {
   knowledgeAiLoading: false,
   knowledgeOpenArticle: null,
   metaFormsTab: "active",
+  selectedAvailabilityProject: "",
+  selectedAvailabilityUnitId: "",
+  editUnitId: "",
   levFinanceSearch: "",
   levFinanceTab: "pending",
   levFinanceExtraction: null,
@@ -106,11 +111,11 @@ const state = {
 };
 
 const profileAccess = {
-  "Admin TI": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
-  "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
-  "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
-  Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "kanban", "knowledge"],
-  Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
+  "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
+  "Head Comercial": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
+  "Supervisor Comercial": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
+  Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "availability", "kanban", "knowledge"],
+  Corretor: ["kanban", "availability", "sheet", "odysseia", "knowledge"],
   "Gerente Financeiro": ["finance", "settings", "knowledge"],
   "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
   "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
@@ -119,6 +124,7 @@ const profileAccess = {
 
 const routeByView = {
   kanban: "/kanban",
+  availability: "/disponibilidade",
   sheet: "/planilha",
   odysseia: "/bases",
   dashboard: "/dashboard",
@@ -131,6 +137,7 @@ const routeByView = {
 const viewByRoute = {
   "/": "kanban",
   "/kanban": "kanban",
+  "/disponibilidade": "availability",
   "/planilha": "sheet",
   "/bases": "odysseia",
   "/dashboard": "dashboard",
@@ -268,6 +275,7 @@ async function api(path, options = {}) {
 function allowedViews() {
   const screenByView = {
     kanban: "screen:kanban",
+    availability: "screen:availability",
     sheet: "screen:sheet",
     odysseia: "screen:bases",
     dashboard: "screen:dashboard",
@@ -575,6 +583,7 @@ function loginPathWithReturnTo() {
 function currentViewLabel() {
   const labels = {
     kanban: "Kanban",
+    availability: "Disponibilidade",
     sheet: "Planilha",
     odysseia: "Bases",
     dashboard: "Dashboard",
@@ -1194,6 +1203,9 @@ async function loadState() {
   state.statuses = data.pipelineStatuses;
   state.projects = data.projects || ["Reserva Guinle", "Golf Club Resort"];
   state.projectDefinitions = data.projectDefinitions || state.projects.map((name, position) => ({ name, position, unitPrefixes: [] }));
+  state.unitDefinitions = Array.isArray(data.unitDefinitions) ? data.unitDefinitions : [];
+  state.availabilitySettings = data.availabilitySettings || { architectureOptions: [], typologyOptions: [] };
+  if (!state.selectedAvailabilityProject && state.projectDefinitions[0]?.name) state.selectedAvailabilityProject = state.projectDefinitions[0].name;
   state.statusDefinitions = (data.statusDefinitions || state.statuses.map((status, position) => ({ status, position, samCodes: [] })))
     .map((item, position) => ({ ...item, position, advanceMode: item.advanceMode || "manual" }));
   state.tagDefinitions = data.tagDefinitions || [];
@@ -1335,6 +1347,7 @@ function renderShell(content) {
         <nav class="nav ${state.mobileNavOpen ? "open" : ""}">
           <div class="nav-main">
             ${navButton("kanban", "▦", "Kanban")}
+            ${navButton("availability", "▩", "Disponibilidade")}
             ${navButton("sheet", "▤", "Planilha")}
             ${navButton("odysseia", "◎", "Bases")}
             ${navButton("dashboard", "◫", "Dashboard")}
@@ -1545,6 +1558,129 @@ function renderMultiFilter(id, label, selected, options) {
       </div>
     </details>
   `;
+}
+
+function unitStatusStyle(status) {
+  const definition = (state.statusDefinitions || []).find((item) => item.status === status);
+  return definition?.availabilityColor || "#e5e7eb";
+}
+
+function unitFloorLabel(value) {
+  const floor = String(value || "").trim();
+  return floor ? `${floor}xx` : "Sem andar";
+}
+
+function unitColumnLabel(value) {
+  const column = String(value || "").trim();
+  return column ? `x${column.padStart(2, "0")}` : "Sem coluna";
+}
+
+function sortAlphaNumeric(a, b) {
+  return String(a || "").localeCompare(String(b || ""), "pt-BR", { numeric: true, sensitivity: "base" });
+}
+
+function unitsForAvailabilityProject(project) {
+  return (state.unitDefinitions || []).filter((unit) => unit.project === project);
+}
+
+function selectedAvailabilityUnit() {
+  return (state.unitDefinitions || []).find((unit) => unit.id === state.selectedAvailabilityUnitId) || null;
+}
+
+function renderAvailability() {
+  const projects = (state.projectDefinitions || []).filter((project) => project.name);
+  const selectedProject = state.selectedAvailabilityProject || projects[0]?.name || "";
+  const projectUnits = unitsForAvailabilityProject(selectedProject);
+  const selectedUnit = selectedAvailabilityUnit();
+  const blocks = [...new Set(projectUnits.map((unit) => unit.block || "1"))].sort(sortAlphaNumeric);
+  const leadById = new Map((state.leads || []).map((lead) => [lead.id, lead]));
+  const projectCards = projects.map((project) => {
+    const units = unitsForAvailabilityProject(project.name);
+    const busy = units.filter((unit) => unit.status).length;
+    return `
+      <button type="button" class="availability-project-card ${selectedProject === project.name ? "active" : ""}" data-availability-project="${escapeHtml(project.name)}">
+        <strong>${escapeHtml(project.name)}</strong>
+        <span>${units.length} unidade(s)</span>
+        <em>${busy} com status</em>
+      </button>
+    `;
+  }).join("");
+  const tables = blocks.map((block) => {
+    const units = projectUnits.filter((unit) => (unit.block || "1") === block);
+    const floors = [...new Set(units.map((unit) => unit.floor || ""))].sort(sortAlphaNumeric);
+    const columns = [...new Set(units.map((unit) => unit.column || ""))].sort(sortAlphaNumeric);
+    return `
+      <section class="availability-block">
+        <div class="availability-block-head">
+          <h2>Bloco/Quadra ${escapeHtml(block)}</h2>
+          <span>${units.length} unidade(s)</span>
+        </div>
+        <div class="availability-grid-wrap">
+          <table class="availability-grid">
+            <thead><tr><th>Andar</th>${columns.map((column) => `<th>${escapeHtml(unitColumnLabel(column))}</th>`).join("")}</tr></thead>
+            <tbody>
+              ${floors.map((floor) => `
+                <tr>
+                  <th>${escapeHtml(unitFloorLabel(floor))}</th>
+                  ${columns.map((column) => {
+                    const unit = units.find((item) => (item.floor || "") === floor && (item.column || "") === column);
+                    if (!unit) return "<td></td>";
+                    const color = unitStatusStyle(unit.status);
+                    return `<td><button type="button" class="availability-unit-cell ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" style="--unit-status-color:${escapeHtml(color)}" data-availability-unit="${escapeHtml(unit.id)}">${escapeHtml(unit.unit)}</button></td>`;
+                  }).join("")}
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }).join("");
+  const linkedLead = selectedUnit?.leadId ? leadById.get(selectedUnit.leadId) : null;
+  renderShell(`
+    ${renderViewHead("Disponibilidade", "Quadro de unidades por empreendimento")}
+    <section class="availability-projects">${projectCards || '<p class="empty">Cadastre empreendimentos para montar o quadro.</p>'}</section>
+    <section class="availability-layout">
+      <div class="availability-main">${tables || '<section class="panel empty">Nenhuma unidade cadastrada para este empreendimento.</section>'}</div>
+      <aside class="availability-detail">
+        ${selectedUnit ? `
+          <h2>${escapeHtml(selectedUnit.unit)}</h2>
+          <p class="muted-copy">${escapeHtml(selectedUnit.project)} · Bloco ${escapeHtml(selectedUnit.block || "-")}</p>
+          <dl class="unit-detail-list">
+            <div><dt>Status</dt><dd>${escapeHtml(selectedUnit.status || "Disponível")}</dd></div>
+            <div><dt>Cliente/lead</dt><dd>${escapeHtml(selectedUnit.buyerName || linkedLead?.name || "-")}</dd></div>
+            <div><dt>Código SAM</dt><dd>${escapeHtml(selectedUnit.samCode || "-")}</dd></div>
+            <div><dt>Área útil</dt><dd>${escapeHtml(selectedUnit.usefulArea || "-")}</dd></div>
+            <div><dt>Área privativa</dt><dd>${escapeHtml(selectedUnit.privateArea || "-")}</dd></div>
+            <div><dt>Posição</dt><dd>${escapeHtml(selectedUnit.sunPosition || "-")}</dd></div>
+            <div><dt>Tipo</dt><dd>${escapeHtml(selectedUnit.unitType || "-")}</dd></div>
+            <div><dt>Arquitetura</dt><dd>${escapeHtml(selectedUnit.architecture || "-")}</dd></div>
+            <div><dt>Tipologia</dt><dd>${escapeHtml(selectedUnit.typology || "-")}</dd></div>
+            <div><dt>Fração ideal</dt><dd>${escapeHtml(selectedUnit.idealFraction || "-")}</dd></div>
+            <div><dt>Vista</dt><dd>${escapeHtml(selectedUnit.view || "-")}</dd></div>
+          </dl>
+          ${selectedUnit.floorPlanDataUrl ? `<a class="unit-plan-link" href="${escapeHtml(selectedUnit.floorPlanDataUrl)}" target="_blank" rel="noopener">Abrir planta</a>` : ""}
+          ${selectedUnit.leadId ? `<button type="button" class="secondary full-width" data-open-linked-lead="${escapeHtml(selectedUnit.leadId)}">Abrir lead</button>` : ""}
+        ` : '<div class="empty">Clique em uma unidade para ver os detalhes.</div>'}
+      </aside>
+    </section>
+  `);
+  document.querySelectorAll("[data-availability-project]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedAvailabilityProject = button.dataset.availabilityProject;
+      state.selectedAvailabilityUnitId = "";
+      renderAvailability();
+    });
+  });
+  document.querySelectorAll("[data-availability-unit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedAvailabilityUnitId = button.dataset.availabilityUnit;
+      renderAvailability();
+    });
+  });
+  document.querySelector("[data-open-linked-lead]")?.addEventListener("click", (event) => {
+    routeTo("lead", event.currentTarget.dataset.openLinkedLead);
+  });
 }
 
 function pipelineFilterBaseLeads(skipKey = "") {
@@ -3589,6 +3725,7 @@ function permissionResources() {
   }
   return [
     { id: "screen:kanban", label: "Kanban", type: "screen" },
+    { id: "screen:availability", label: "Disponibilidade", type: "screen" },
     { id: "screen:sheet", label: "Planilha", type: "screen" },
     { id: "screen:bases", label: "Bases", type: "screen" },
     { id: "screen:dashboard", label: "Dashboard", type: "screen" },
@@ -6422,16 +6559,49 @@ function renderProjectSettings() {
   const isCreating = state.settingsEditing === "new-project";
   const editIndex = state.settingsEditing?.startsWith("project:") ? Number(state.settingsEditing.replace("project:", "")) : null;
   const editProject = editIndex != null ? (state.projectDefinitions || [])[editIndex] || { name: state.projects[editIndex] || "", unitPrefixes: [] } : null;
+  const editUnit = state.editUnitId ? (state.unitDefinitions || []).find((unit) => unit.id === state.editUnitId) : null;
   const formValue = editProject?.name || "";
   const prefixValue = (editProject?.unitPrefixes || []).join(", ");
+  const availabilitySettings = state.availabilitySettings || { architectureOptions: [], typologyOptions: [] };
+  const architectureValue = (availabilitySettings.architectureOptions || []).join("\n");
+  const typologyValue = (availabilitySettings.typologyOptions || []).join("\n");
+  const unitForm = editUnit || {
+    project: state.selectedAvailabilityProject || state.projects[0] || "",
+    unit: "",
+    block: "1",
+    floor: "",
+    column: "",
+    samCode: "",
+    usefulArea: "",
+    privateArea: "",
+    sunPosition: "",
+    unitType: "",
+    architecture: "",
+    typology: "",
+    idealFraction: "",
+    view: "",
+    status: "",
+    buyerName: "",
+    leadId: "",
+    floorPlanName: "",
+    floorPlanMime: "",
+    floorPlanDataUrl: ""
+  };
+  const optionTags = (items) => (items || []).map((item) => `<option value="${escapeHtml(item)}"></option>`).join("");
+  const selectOptions = (items, current, placeholder = "Selecione") => `
+    <option value="">${escapeHtml(placeholder)}</option>
+    ${items.map((item) => `<option value="${escapeHtml(item)}" ${current === item ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
+  `;
   const rows = (state.projects || []).map((project, index) => {
     const definition = (state.projectDefinitions || []).find((item) => item.name === project) || {};
     const leadCount = state.leads.filter((lead) => lead.desiredProject === project).length;
     const formCount = (state.integrations?.metaForms?.forms || []).filter((form) => form.project === project).length;
+    const unitCount = (state.unitDefinitions || []).filter((unit) => unit.project === project).length;
     return `
       <tr>
         <td>${escapeHtml(project)}</td>
         <td>${escapeHtml((definition.unitPrefixes || []).join(", ") || "-")}</td>
+        <td>${unitCount}</td>
         <td>${leadCount}</td>
         <td>${formCount}</td>
         <td>${renderSettingsActionMenu(`project-${index}`, [
@@ -6441,6 +6611,21 @@ function renderProjectSettings() {
       </tr>
     `;
   }).join("");
+  const unitRows = (state.unitDefinitions || []).map((unit) => `
+    <tr>
+      <td>${escapeHtml(unit.project)}</td>
+      <td>${escapeHtml(unit.unit)}</td>
+      <td>${escapeHtml(unit.block || "-")}</td>
+      <td>${escapeHtml(unitFloorLabel(unit.floor))}</td>
+      <td>${escapeHtml(unitColumnLabel(unit.column))}</td>
+      <td>${escapeHtml(unit.status || "Disponível")}</td>
+      <td>${escapeHtml(unit.buyerName || "-")}</td>
+      <td>${renderSettingsActionMenu(`unit-${unit.id}`, [
+        `<button type="button" data-edit-unit="${escapeHtml(unit.id)}">Editar</button>`,
+        `<button type="button" class="danger-menu-item" data-delete-unit="${escapeHtml(unit.id)}">Excluir</button>`
+      ])}</td>
+    </tr>
+  `).join("");
   settingsLayout(`
     <section class="panel">
       <div class="panel-head">
@@ -6455,7 +6640,49 @@ function renderProjectSettings() {
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Empreendimento</th><th>Siglas</th><th>Leads usando</th><th>Forms Meta</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty">Nenhum empreendimento cadastrado</td></tr>'}</tbody></table>
+        <table><thead><tr><th>Empreendimento</th><th>Siglas</th><th>Unidades</th><th>Leads usando</th><th>Forms Meta</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nenhum empreendimento cadastrado</td></tr>'}</tbody></table>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Opções de unidades</h2>
+      </div>
+      <form id="availabilityOptionsForm" class="form-grid editor compact-editor">
+        <div class="field"><label>Arquitetura</label><textarea name="architectureOptions" rows="4" placeholder="Uma opção por linha">${escapeHtml(architectureValue)}</textarea></div>
+        <div class="field"><label>Tipologia</label><textarea name="typologyOptions" rows="4" placeholder="Uma opção por linha">${escapeHtml(typologyValue)}</textarea></div>
+        <div class="field full"><button class="primary" type="submit">Salvar opções</button></div>
+      </form>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Unidades</h2>
+        <button class="primary" data-new-unit>${editUnit ? "Nova unidade" : "Cadastrar unidade"}</button>
+      </div>
+      ${(state.settingsEditing === "new-unit" || editUnit) ? `
+        <form id="unitForm" class="form-grid editor unit-editor">
+          <div class="field"><label>Empreendimento</label><select name="project" required>${selectOptions(state.projects || [], unitForm.project)}</select></div>
+          <div class="field"><label>Unidade</label><input name="unit" value="${escapeHtml(unitForm.unit)}" placeholder="Ex.: GCR060107" required></div>
+          <div class="field"><label>Bloco/Quadra</label><input name="block" value="${escapeHtml(unitForm.block)}" placeholder="Ex.: 1"></div>
+          <div class="field"><label>Andar</label><input name="floor" value="${escapeHtml(unitForm.floor)}" placeholder="Ex.: 6"></div>
+          <div class="field"><label>Coluna</label><input name="column" value="${escapeHtml(unitForm.column)}" placeholder="Ex.: 07"></div>
+          <div class="field"><label>Código SAM</label><input name="samCode" value="${escapeHtml(unitForm.samCode)}"></div>
+          <div class="field"><label>Área útil</label><input name="usefulArea" value="${escapeHtml(unitForm.usefulArea)}"></div>
+          <div class="field"><label>Área privativa</label><input name="privateArea" value="${escapeHtml(unitForm.privateArea)}"></div>
+          <div class="field"><label>Posição</label><select name="sunPosition">${selectOptions(["Sol manhã", "Sol tarde"], unitForm.sunPosition)}</select></div>
+          <div class="field"><label>Tipo</label><select name="unitType">${selectOptions(["Casa", "Apartamento"], unitForm.unitType)}</select></div>
+          <div class="field"><label>Arquitetura</label><input name="architecture" list="architectureOptions" value="${escapeHtml(unitForm.architecture)}"><datalist id="architectureOptions">${optionTags(availabilitySettings.architectureOptions)}</datalist></div>
+          <div class="field"><label>Tipologia</label><input name="typology" list="typologyOptions" value="${escapeHtml(unitForm.typology)}"><datalist id="typologyOptions">${optionTags(availabilitySettings.typologyOptions)}</datalist></div>
+          <div class="field"><label>Fração ideal</label><input name="idealFraction" value="${escapeHtml(unitForm.idealFraction)}"></div>
+          <div class="field"><label>Vista</label><select name="view">${selectOptions(["Livre", "Impedida"], unitForm.view)}</select></div>
+          <div class="field"><label>Status</label><select name="status">${selectOptions(state.statuses || [], unitForm.status, "Disponível")}</select></div>
+          <div class="field"><label>Cliente comprador</label><input name="buyerName" value="${escapeHtml(unitForm.buyerName)}"></div>
+          <div class="field"><label>ID do lead vinculado</label><input name="leadId" value="${escapeHtml(unitForm.leadId)}"></div>
+          <div class="field"><label>Planta (JPG/PNG/PDF)</label><input type="file" name="floorPlan" accept="image/png,image/jpeg,application/pdf">${unitForm.floorPlanName ? `<small>Atual: ${escapeHtml(unitForm.floorPlanName)}</small>` : ""}</div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar unidade</button><button type="button" data-cancel-unit>Cancelar</button></div></div>
+        </form>
+      ` : ""}
+      <div class="table-wrap">
+        <table><thead><tr><th>Empreendimento</th><th>Unidade</th><th>Bloco</th><th>Andar</th><th>Coluna</th><th>Status</th><th>Cliente</th><th>Ações</th></tr></thead><tbody>${unitRows || '<tr><td colspan="8" class="empty">Nenhuma unidade cadastrada</td></tr>'}</tbody></table>
       </div>
     </section>
   `);
@@ -6493,6 +6720,91 @@ function renderProjectSettings() {
     await loadState();
     renderSettings();
   });
+  document.querySelector("#availabilityOptionsForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const data = await api("/api/availability-settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        architectureOptions: form.get("architectureOptions"),
+        typologyOptions: form.get("typologyOptions")
+      })
+    });
+    state.availabilitySettings = data.availabilitySettings || state.availabilitySettings;
+    await loadState();
+    renderSettings();
+  });
+  document.querySelector("[data-new-unit]")?.addEventListener("click", () => {
+    state.settingsEditing = "new-unit";
+    state.editUnitId = "";
+    renderSettings();
+  });
+  document.querySelectorAll("[data-edit-unit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.editUnitId = button.dataset.editUnit;
+      state.settingsEditing = "";
+      renderSettings();
+    });
+  });
+  document.querySelector("[data-cancel-unit]")?.addEventListener("click", () => {
+    state.settingsEditing = null;
+    state.editUnitId = "";
+    renderSettings();
+  });
+  document.querySelectorAll("[data-delete-unit]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Excluir esta unidade?")) return;
+      const data = await api(`/api/units/${encodeURIComponent(button.dataset.deleteUnit)}`, { method: "DELETE" });
+      state.unitDefinitions = data.unitDefinitions || state.unitDefinitions;
+      await loadState();
+      renderSettings();
+    });
+  });
+  document.querySelector("#unitForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const file = form.get("floorPlan");
+    const current = state.editUnitId ? (state.unitDefinitions || []).find((unit) => unit.id === state.editUnitId) : null;
+    const payload = {
+      project: form.get("project"),
+      unit: form.get("unit"),
+      block: form.get("block"),
+      floor: form.get("floor"),
+      column: form.get("column"),
+      samCode: form.get("samCode"),
+      usefulArea: form.get("usefulArea"),
+      privateArea: form.get("privateArea"),
+      sunPosition: form.get("sunPosition"),
+      unitType: form.get("unitType"),
+      architecture: form.get("architecture"),
+      typology: form.get("typology"),
+      idealFraction: form.get("idealFraction"),
+      view: form.get("view"),
+      status: form.get("status"),
+      buyerName: form.get("buyerName"),
+      leadId: form.get("leadId"),
+      floorPlanName: current?.floorPlanName || "",
+      floorPlanMime: current?.floorPlanMime || "",
+      floorPlanDataUrl: current?.floorPlanDataUrl || ""
+    };
+    if (file && file.size) {
+      if (file.size > 1200000) {
+        alert("A planta precisa ter até 1,2 MB nesta versão.");
+        return;
+      }
+      payload.floorPlanName = file.name;
+      payload.floorPlanMime = file.type;
+      payload.floorPlanDataUrl = await readFileAsDataUrl(file);
+    }
+    const data = state.editUnitId
+      ? await api(`/api/units/${encodeURIComponent(state.editUnitId)}`, { method: "PATCH", body: JSON.stringify(payload) })
+      : await api("/api/units", { method: "POST", body: JSON.stringify(payload) });
+    state.unitDefinitions = data.unitDefinitions || state.unitDefinitions;
+    state.settingsEditing = null;
+    state.editUnitId = "";
+    await loadState();
+    renderSettings();
+  });
 }
 
 function renderStatusSettings() {
@@ -6505,6 +6817,7 @@ function renderStatusSettings() {
   const formValue = editStatus?.status || "";
   const samCodesValue = (editStatus?.samCodes || []).join(", ");
   const advanceModeValue = editStatus?.advanceMode || "manual";
+  const availabilityColorValue = editStatus?.availabilityColor || "#e5e7eb";
   const statusMapping = editStatus ? (metaConversions.statusMappings?.[editStatus.status] || {}) : {};
   const rows = state.statuses.map((status, index) => {
     const definition = (state.statusDefinitions || []).find((item) => item.status === status) || {};
@@ -6515,6 +6828,7 @@ function renderStatusSettings() {
         <td>${escapeHtml(status)}</td>
         <td>${escapeHtml((definition.samCodes || []).join(", ") || "-")}</td>
         <td>${escapeHtml(statusAdvanceLabel(status))}</td>
+        <td><span class="color-swatch" style="background:${escapeHtml(definition.availabilityColor || "#e5e7eb")}"></span>${escapeHtml(definition.availabilityColor || "-")}</td>
         ${canEditMetaIntegration ? `<td>${mapping.enabled ? escapeHtml(metaConversionEventLabel(metaEvents, mapping.eventId)) : '<span class="muted-cell">Não enviar</span>'}</td>` : ""}
         <td>${index + 1}</td>
         <td>${count}</td>
@@ -6539,6 +6853,7 @@ function renderStatusSettings() {
             <option value="manual" ${advanceModeValue === "manual" ? "selected" : ""}>Manual</option>
             <option value="sam_only" ${advanceModeValue === "sam_only" ? "selected" : ""}>Somente pelo SAM</option>
           </select></div>
+          <div class="field"><label>Cor no quadro de disponibilidade</label><input name="availabilityColor" type="color" value="${escapeHtml(availabilityColorValue)}"></div>
           ${canEditMetaIntegration ? `
           <div class="field"><label>Enviar evento Meta</label><select name="metaConversionEnabled">
             <option value="false" ${!statusMapping.enabled ? "selected" : ""}>Não</option>
@@ -6550,7 +6865,7 @@ function renderStatusSettings() {
         </form>
       ` : ""}
       <div class="table-wrap">
-        <table><thead><tr><th>Status</th><th>Códigos SAM</th><th>Avanço</th>${canEditMetaIntegration ? "<th>Evento Meta</th>" : ""}<th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || `<tr><td colspan="${canEditMetaIntegration ? 7 : 6}" class="empty">Nenhum status cadastrado</td></tr>`}</tbody></table>
+        <table><thead><tr><th>Status</th><th>Códigos SAM</th><th>Avanço</th><th>Cor disponibilidade</th>${canEditMetaIntegration ? "<th>Evento Meta</th>" : ""}<th>Ordem</th><th>Leads usando</th><th>Ações</th></tr></thead><tbody>${rows || `<tr><td colspan="${canEditMetaIntegration ? 8 : 7}" class="empty">Nenhum status cadastrado</td></tr>`}</tbody></table>
       </div>
     </section>
   `);
@@ -6580,7 +6895,8 @@ function renderStatusSettings() {
     const payload = {
       name: form.get("name"),
       samCodes: form.get("samCodes"),
-      advanceMode: form.get("advanceMode")
+      advanceMode: form.get("advanceMode"),
+      availabilityColor: form.get("availabilityColor")
     };
     if (canEditMetaIntegration) {
       payload.metaConversionEnabled = form.get("metaConversionEnabled") === "true";
@@ -6726,6 +7042,7 @@ function renderApp() {
   }
   if (state.view === "lead") return renderLeadDetail();
   if (state.view === "kanban") return renderKanban();
+  if (state.view === "availability") return renderAvailability();
   if (state.view === "sheet") return renderSheet();
   if (state.view === "odysseia") return renderLeadBases();
   if (state.view === "dashboard") return renderDashboard();
