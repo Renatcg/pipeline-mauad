@@ -1294,10 +1294,11 @@ textarea {
 }
 
 .card {
+  position: relative;
   background: white;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 9px 10px;
+  padding: 9px 42px 9px 10px;
   display: grid;
   gap: 5px;
   cursor: grab;
@@ -1308,23 +1309,25 @@ textarea {
 }
 
 .card-title {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: flex-start;
-  justify-content: space-between;
   gap: 8px;
   line-height: 1.15;
 }
 
 .card-title strong {
-  flex: 1;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .card-right-actions {
+  position: absolute;
+  top: 5px;
+  right: 8px;
   display: grid;
   justify-items: center;
   gap: 2px;
-  flex: 0 0 auto;
 }
 
 .favorite-inline {
@@ -1479,6 +1482,12 @@ textarea {
   color: var(--ink);
   box-shadow: var(--shadow);
   text-align: left;
+}
+
+.column:first-child .card-info-popover,
+.column:nth-child(2) .card-info-popover {
+  right: auto;
+  left: calc(100% + 8px);
 }
 
 .card-info-action:hover .card-info-popover,
