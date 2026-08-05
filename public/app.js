@@ -1820,7 +1820,10 @@ function renderAvailability() {
       setButtonBusy(button, true, "Carregando...");
       const data = await api("/api/units/import-lev-sales", { method: "POST", body: JSON.stringify({}) });
       state.unitDefinitions = data.unitDefinitions || state.unitDefinitions;
-      alert(`Carga concluída: ${data.imported || 0} unidade(s) atualizada(s), ${data.skipped || 0} ignorada(s).`);
+      const sourceSummary = data.sources
+        ? ` Fonte: ${data.sources.levFinance || 0} Financeiro Lev, ${data.sources.contractSignedLeads || 0} lead(s) em Contrato Assinado.`
+        : "";
+      alert(`Carga concluída: ${data.imported || 0} unidade(s) atualizada(s), ${data.skipped || 0} ignorada(s).${sourceSummary}`);
       renderAvailability();
     } catch (error) {
       setButtonBusy(button, false);

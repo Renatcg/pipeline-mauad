@@ -8633,16 +8633,67 @@ function saleSignedAtIsoForUnit(record = {}) {
   return date && !Number.isNaN(date.getTime()) ? date.toISOString() : "";
 }
 
+function levAvailabilitySaleFromLeadRow(row = {}) {
+  const payload = row.payload || {};
+  const status = row.status || payload.status || "";
+  if (!isContractSignedPipelineStatus(status)) return null;
+  const unit = normalizeLevUnit(row.unit || payload.unit || payload.desiredUnit || payload.unidade || "");
+  if (!unit) return null;
+  return {
+    id: `lead-sale-${row.id || payload.id || unit}`,
+    unit,
+    client: row.name || payload.name || payload.client || "",
+    signedAt: payload.contractSignedAt
+      || payload.signedAt
+      || payload.purchaseSignedAt
+      || payload.samLastEvent?.eventDatetime
+      || row.updated_at
+      || row.created_at
+      || "",
+    contractValue: parseMoney(row.unit_value || payload.unitValue || payload.valorUnidade || payload.contractValue || payload.valorContrato || ""),
+    status,
+    project: row.project || payload.project || payload.desiredProject || payload.empreendimento || "",
+    leadId: row.id || payload.id || "",
+    leadName: row.name || payload.name || "",
+    source: "Lead em Contrato Assinado"
+  };
+}
+
+async function structuredLevAvailabilityRecords(sql) {
+  const stateDb = await structuredLevFinanceDb(sql);
+  const financeRecords = [...(stateDb.levFinance.sales || []), ...(stateDb.levFinance.settlements || [])].map((record) => ({
+    ...record,
+    source: record.source || "Financeiro Lev"
+  }));
+  const leadRows = await sql`SELECT id, name, status, project, unit, unit_value, created_at, updated_at, payload FROM crm_leads WHERE COALESCE(unit, '') <> ''`;
+  const leadRecords = leadRows.map(levAvailabilitySaleFromLeadRow).filter(Boolean);
+  return {
+    financeRecords,
+    leadRecords,
+    records: [...financeRecords, ...leadRecords]
+  };
+}
+
+function projectForAvailabilitySale(unitCode, sale = {}, projectDefinitions = []) {
+  return projectNameForUnit(unitCode, projectDefinitions) || String(sale.project || "").trim();
+}
+
 async function importStructuredLevSalesToUnits(sql) {
   const projectDefinitions = await structuredProjectDefinitions(sql);
-  const stateDb = await structuredLevFinanceDb(sql);
-  const records = [...(stateDb.levFinance.sales || []), ...(stateDb.levFinance.settlements || [])];
+  const { financeRecords, leadRecords, records } = await structuredLevAvailabilityRecords(sql);
   const byUnit = new Map();
+  let skipped = 0;
   for (const record of records) {
     const unitCode = normalizeLevUnit(record.unit || "");
     const status = String(record.status || "").toLocaleLowerCase("pt-BR");
-    if (!unitCode || /[,.]/.test(unitCode) || unitCode.includes("R$") || status.includes("ignorada")) continue;
-    if (!projectNameForUnit(unitCode, projectDefinitions)) continue;
+    if (!unitCode || /[,.]/.test(unitCode) || unitCode.includes("R$") || status.includes("ignorada")) {
+      skipped += 1;
+      continue;
+    }
+    if (!projectForAvailabilitySale(unitCode, record, projectDefinitions)) {
+      skipped += 1;
+      continue;
+    }
     const current = byUnit.get(unitCode) || {};
     byUnit.set(unitCode, {
       ...current,
@@ -8656,10 +8707,9 @@ async function importStructuredLevSalesToUnits(sql) {
   }
 
   let imported = 0;
-  let skipped = 0;
   for (const sale of byUnit.values()) {
     const unitCode = normalizeLevUnit(sale.unit);
-    const project = projectNameForUnit(unitCode, projectDefinitions);
+    const project = projectForAvailabilitySale(unitCode, sale, projectDefinitions);
     if (!project) {
       skipped += 1;
       continue;
@@ -8671,12 +8721,13 @@ async function importStructuredLevSalesToUnits(sql) {
       project: existing.project || project,
       unit: existing.unit || unitCode,
       samCode: existing.samCode || unitCode,
-      status: existing.status || "Vendida",
+      status: "Vendida",
       buyerName: existing.buyerName || sale.client || "",
       purchaseBuyerName: sale.client || existing.purchaseBuyerName || existing.buyerName || "",
       purchaseSignedAt: saleSignedAtIsoForUnit(sale) || existing.purchaseSignedAt || "",
       purchaseValue: Number(sale.contractValue || existing.purchaseValue || 0),
-      purchaseSource: "Financeiro Lev"
+      purchaseSource: sale.source || "Financeiro Lev",
+      leadId: existing.leadId || sale.leadId || ""
     });
     if (!next.block) next.block = "1";
     if (!next.floor) next.floor = inferUnitFloor(unitCode);
@@ -8684,7 +8735,16 @@ async function importStructuredLevSalesToUnits(sql) {
     await saveStructuredUnit(sql, next, projectDefinitions);
     imported += 1;
   }
-  return { imported, skipped };
+  return {
+    imported,
+    skipped,
+    eligible: byUnit.size,
+    sources: {
+      levFinance: financeRecords.length,
+      contractSignedLeads: leadRecords.length,
+      total: records.length
+    }
+  };
 }
 
 async function generateStructuredUnitsForBlock(sql, projectName, blockIdOrCode) {
