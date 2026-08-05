@@ -57,10 +57,10 @@ function basePermissionId(source) {
 function defaultScreenPermission(role, screen) {
   const viewAccess = {
     "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
-    "Head Comercial": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
-    "Supervisor Comercial": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
-    Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "availability", "kanban", "knowledge"],
-    Corretor: ["kanban", "availability", "sheet", "odysseia", "knowledge"],
+    "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
+    "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
+    Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "kanban", "knowledge"],
+    Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
     "Gerente Financeiro": ["finance", "settings", "knowledge"],
     "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
     "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
@@ -68,9 +68,9 @@ function defaultScreenPermission(role, screen) {
   };
   const actionAccess = {
     "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
-    "Head Comercial": ["kanban", "availability", "sheet", "odysseia", "settings", "knowledge"],
-    "Supervisor Comercial": ["kanban", "availability", "sheet", "odysseia", "knowledge"],
-    Corretor: ["kanban", "availability", "sheet", "odysseia", "knowledge"],
+    "Head Comercial": ["kanban", "sheet", "odysseia", "settings", "knowledge"],
+    "Supervisor Comercial": ["kanban", "sheet", "odysseia", "knowledge"],
+    Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
     "Gerente Financeiro": ["finance", "settings", "knowledge"],
     "Auxiliar Financeiro": ["finance", "knowledge"],
     "Gestor de Tráfego": ["knowledge"],
@@ -6575,7 +6575,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
       const projectDefinitions = await structuredProjectDefinitions(sql);
       if (projectDefinitions.some((project) => project.name.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Empreendimento já existe" });
-      projectDefinitions.push(normalizeProjectDefinition({ name, unitPrefixes: body.unitPrefixes }, projectDefinitions.length));
+      projectDefinitions.push(normalizeProjectDefinition({ name, unitPrefixes: body.unitPrefixes, blockDefinitions: body.blockDefinitions || [] }, projectDefinitions.length));
       await replaceStructuredProjects(sql, projectDefinitions);
       await structuredAudit(user, "CREATE_PROJECT", { name });
       return sendJson(res, 201, { projects: projectDefinitions.map((project) => project.name), projectDefinitions, dataSources: { action: "structured" } });
@@ -6595,7 +6595,12 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (projects.some((project, projectIndex) => projectIndex !== index && project.toLowerCase() === name.toLowerCase())) {
         return sendJson(res, 400, { error: "Empreendimento já existe" });
       }
-      projectDefinitions[index] = normalizeProjectDefinition({ ...projectDefinitions[index], name, unitPrefixes: body.unitPrefixes }, index);
+      projectDefinitions[index] = normalizeProjectDefinition({
+        ...projectDefinitions[index],
+        name,
+        unitPrefixes: body.unitPrefixes,
+        blockDefinitions: Array.isArray(body.blockDefinitions) ? body.blockDefinitions : projectDefinitions[index].blockDefinitions
+      }, index);
       await replaceStructuredProjects(sql, projectDefinitions);
       const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
         FROM crm_leads l
@@ -6653,10 +6658,18 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       return sendJson(res, 200, { availabilitySettings, dataSources: { action: "structured" } });
     }
 
+    if (url.pathname === "/api/units/generate" && method === "POST") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const generatedUnits = await generateStructuredUnitsForBlock(sql, String(body.project || "").trim(), String(body.blockId || body.block || "").trim());
+      await structuredAudit(user, "GENERATE_UNITS", { project: body.project, block: body.block || body.blockId, count: generatedUnits.length });
+      return sendJson(res, 201, { generated: generatedUnits.length, unitDefinitions: await structuredUnitDefinitions(sql), dataSources: { action: "structured" } });
+    }
+
     if (url.pathname === "/api/units" && method === "POST") {
       if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
       const body = await readBody(req);
-      const unit = await saveStructuredUnit(sql, body);
+      const unit = await saveStructuredUnit(sql, body, await structuredProjectDefinitions(sql));
       await structuredAudit(user, "CREATE_UNIT", { project: unit.project, unit: unit.unit });
       return sendJson(res, 201, { unit, unitDefinitions: await structuredUnitDefinitions(sql), dataSources: { action: "structured" } });
     }
@@ -6667,7 +6680,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       const rows = await sql`SELECT payload FROM crm_units WHERE id = ${decodeURIComponent(unitMatch[1])} LIMIT 1`;
       if (!rows[0]) return notFound(res);
       const body = await readBody(req);
-      const unit = await saveStructuredUnit(sql, { ...(rows[0].payload || {}), ...body, id: decodeURIComponent(unitMatch[1]) });
+      const unit = await saveStructuredUnit(sql, { ...(rows[0].payload || {}), ...body, id: decodeURIComponent(unitMatch[1]) }, await structuredProjectDefinitions(sql));
       await structuredAudit(user, "UPDATE_UNIT", { project: unit.project, unit: unit.unit });
       return sendJson(res, 200, { unit, unitDefinitions: await structuredUnitDefinitions(sql), dataSources: { action: "structured" } });
     }
@@ -8375,10 +8388,31 @@ function normalizeProjectDefinition(input, position = 0) {
   const unitPrefixes = Array.isArray(input?.unitPrefixes)
     ? input.unitPrefixes
     : normalizeListFromText(input?.unitPrefixes);
+  const blockDefinitions = Array.isArray(input?.blockDefinitions)
+    ? input.blockDefinitions.map((block, index) => normalizeProjectBlockDefinition(block, index)).filter((block) => block.block)
+    : [];
   return {
     name,
     position,
-    unitPrefixes: [...new Set(unitPrefixes.map((prefix) => normalizeUnitForMatch(prefix)).filter(Boolean))]
+    unitPrefixes: [...new Set(unitPrefixes.map((prefix) => normalizeUnitForMatch(prefix)).filter(Boolean))],
+    blockDefinitions
+  };
+}
+
+function normalizeProjectBlockDefinition(input = {}, position = 0) {
+  const block = String(input.block || input.name || input.code || "").trim().replace(/^0+(\d+)$/, "$1");
+  const floorCount = Math.max(0, Number.parseInt(input.floorCount ?? input.floors ?? input.totalFloors ?? 0, 10) || 0);
+  const columnCount = Math.max(0, Number.parseInt(input.columnCount ?? input.columnsPerFloor ?? input.columns ?? 0, 10) || 0);
+  const penthouseFloors = Array.isArray(input.penthouseFloors)
+    ? input.penthouseFloors
+    : normalizeListFromText(input.penthouseFloors);
+  return {
+    id: String(input.id || `block-${crypto.createHash("sha1").update(`${block}:${position}`).digest("hex").slice(0, 10)}`).trim(),
+    block,
+    position: Number(input.position ?? position) || position,
+    floorCount,
+    columnCount,
+    penthouseFloors: [...new Set(penthouseFloors.map((floor) => String(floor || "").trim()).filter(Boolean))]
   };
 }
 
@@ -8401,8 +8435,37 @@ function inferUnitStack(unit) {
   return match?.[1] || "";
 }
 
+function padUnitNumber(value, size = 2) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits ? digits.padStart(size, "0").slice(-size) : "";
+}
+
+function primaryProjectPrefix(projectDefinition = {}, projectName = "") {
+  const prefix = (projectDefinition.unitPrefixes || []).find(Boolean);
+  if (prefix) return normalizeUnitForMatch(prefix).slice(0, 3);
+  return normalizeUnitForMatch(projectName).slice(0, 3);
+}
+
+function generatedUnitCodes(projectDefinition = {}, input = {}) {
+  const projectName = String(projectDefinition.name || input.project || "").trim();
+  const block = padUnitNumber(input.block, 2);
+  const floorRaw = String(input.floor || "").replace(/\D/g, "");
+  const column = padUnitNumber(input.column || input.stack, 2);
+  if (!projectName || !block || !floorRaw || !column) return { unit: "", samCode: "" };
+  const floorDisplay = String(Number.parseInt(floorRaw, 10) || floorRaw);
+  const floorForSam = padUnitNumber(floorRaw, 2);
+  const unitNumber = `${floorDisplay}${column}`;
+  const samUnitNumber = `${floorForSam}${column}`;
+  const prefix = primaryProjectPrefix(projectDefinition, projectName);
+  return {
+    unit: `${block}-${unitNumber}`,
+    samCode: `${prefix}${block}${samUnitNumber}`.toUpperCase()
+  };
+}
+
 function normalizeUnitDefinition(input = {}) {
-  const unit = String(input.unit || input.name || "").trim().toUpperCase();
+  const generated = generatedUnitCodes(input.projectDefinition || {}, input);
+  const unit = String(input.unit || input.name || generated.unit || "").trim().toUpperCase();
   const id = String(input.id || (input.project && unit ? `unit-${crypto.createHash("sha1").update(`${input.project}:${unit}`).digest("hex").slice(0, 18)}` : `unit-${crypto.randomUUID()}`)).trim();
   const payload = {
     id,
@@ -8411,7 +8474,7 @@ function normalizeUnitDefinition(input = {}) {
     block: String(input.block || "").trim(),
     floor: String(input.floor || inferUnitFloor(unit)).trim(),
     column: String(input.column || input.stack || inferUnitStack(unit)).trim(),
-    samCode: String(input.samCode || input.sam_code || "").trim(),
+    samCode: String(input.samCode || input.sam_code || generated.samCode || "").trim().toUpperCase(),
     usefulArea: String(input.usefulArea || "").trim(),
     privateArea: String(input.privateArea || "").trim(),
     sunPosition: String(input.sunPosition || "").trim(),
@@ -8423,6 +8486,7 @@ function normalizeUnitDefinition(input = {}) {
     floorPlanName: String(input.floorPlanName || "").trim(),
     floorPlanMime: String(input.floorPlanMime || "").trim(),
     floorPlanDataUrl: String(input.floorPlanDataUrl || "").trim(),
+    floorKind: String(input.floorKind || "").trim(),
     status: String(input.status || "").trim(),
     leadId: String(input.leadId || input.lead_id || "").trim(),
     buyerName: String(input.buyerName || input.buyer_name || "").trim(),
@@ -8483,8 +8547,9 @@ async function structuredUnitDefinitions(sql) {
   })).filter((item) => item.id && item.project && item.unit);
 }
 
-async function saveStructuredUnit(sql, unitInput) {
-  const unit = normalizeUnitDefinition(unitInput);
+async function saveStructuredUnit(sql, unitInput, projectDefinitions = []) {
+  const projectDefinition = projectDefinitions.find((project) => project.name === unitInput.project) || {};
+  const unit = normalizeUnitDefinition({ ...unitInput, projectDefinition });
   if (!unit.project) throw new Error("Empreendimento obrigatório");
   if (!unit.unit) throw new Error("Unidade obrigatória");
   const now = new Date().toISOString();
@@ -8507,6 +8572,46 @@ async function saveStructuredUnit(sql, unitInput) {
   return unit;
 }
 
+function generatedUnitsForBlock(projectDefinition = {}, blockDefinition = {}) {
+  const units = [];
+  const floorCount = Number(blockDefinition.floorCount || 0);
+  const columnCount = Number(blockDefinition.columnCount || 0);
+  for (let floor = 1; floor <= floorCount; floor += 1) {
+    for (let column = 1; column <= columnCount; column += 1) {
+      const codes = generatedUnitCodes(projectDefinition, {
+        project: projectDefinition.name,
+        block: blockDefinition.block,
+        floor,
+        column
+      });
+      if (!codes.unit || !codes.samCode) continue;
+      units.push({
+        project: projectDefinition.name,
+        unit: codes.unit,
+        block: padUnitNumber(blockDefinition.block, 2),
+        floor: String(floor),
+        column: padUnitNumber(column, 2),
+        samCode: codes.samCode,
+        floorKind: (blockDefinition.penthouseFloors || []).includes(String(floor)) ? "Cobertura" : "Tipo"
+      });
+    }
+  }
+  return units;
+}
+
+async function generateStructuredUnitsForBlock(sql, projectName, blockIdOrCode) {
+  const projectDefinitions = await structuredProjectDefinitions(sql);
+  const projectDefinition = projectDefinitions.find((project) => project.name === projectName);
+  if (!projectDefinition) throw new Error("Empreendimento não encontrado");
+  const blockDefinition = (projectDefinition.blockDefinitions || []).find((block) => block.id === blockIdOrCode || block.block === blockIdOrCode);
+  if (!blockDefinition) throw new Error("Bloco não encontrado");
+  const generatedUnits = generatedUnitsForBlock(projectDefinition, blockDefinition);
+  for (const unit of generatedUnits) {
+    await saveStructuredUnit(sql, unit, projectDefinitions);
+  }
+  return generatedUnits;
+}
+
 async function upsertStructuredUnitFromLeadSam(sql, lead, event, projectDefinitions = []) {
   const unitCode = String(event?.unit || lead?.desiredUnit || "").trim().toUpperCase();
   if (!unitCode) return null;
@@ -8525,7 +8630,7 @@ async function upsertStructuredUnitFromLeadSam(sql, lead, event, projectDefiniti
   if (!next.block) next.block = "1";
   if (!next.floor) next.floor = inferUnitFloor(unitCode);
   if (!next.column) next.column = inferUnitStack(unitCode);
-  return saveStructuredUnit(sql, next);
+  return saveStructuredUnit(sql, next, projectDefinitions);
 }
 
 async function isStructuredSamOnlyStatus(sql, status) {

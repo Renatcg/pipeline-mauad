@@ -3673,6 +3673,12 @@ th {
   outline-offset: 2px;
 }
 
+.availability-unit-cell.virtual {
+  border-style: dashed;
+  color: #64748b;
+  background: #f8fafc;
+}
+
 .availability-detail {
   position: sticky;
   top: 96px;

@@ -112,10 +112,10 @@ const state = {
 
 const profileAccess = {
   "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
-  "Head Comercial": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
-  "Supervisor Comercial": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
-  Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "availability", "kanban", "knowledge"],
-  Corretor: ["kanban", "availability", "sheet", "odysseia", "knowledge"],
+  "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
+  "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
+  Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "kanban", "knowledge"],
+  Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
   "Gerente Financeiro": ["finance", "settings", "knowledge"],
   "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
   "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
@@ -292,6 +292,7 @@ function allowedViews() {
     ? Object.entries(screenByView).filter(([, resourceId]) => userRules[resourceId]?.access).map(([view]) => view)
     : roleViews;
   return views.filter((view) => {
+    if (view === "availability") return state.user?.username === "admin";
     if (view === "salesReport") return canAccessCommercialSalesReport();
     if (view === "finance") return canAccessLevFinance();
     if (view === "odysseia") return canAccessBases();
@@ -1583,19 +1584,84 @@ function unitsForAvailabilityProject(project) {
   return (state.unitDefinitions || []).filter((unit) => unit.project === project);
 }
 
+function padUnitPart(value, size = 2) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits ? digits.padStart(size, "0").slice(-size) : "";
+}
+
+function projectDefinitionByName(projectName) {
+  return (state.projectDefinitions || []).find((project) => project.name === projectName) || {};
+}
+
+function primaryProjectPrefix(projectName) {
+  const definition = projectDefinitionByName(projectName);
+  const prefix = (definition.unitPrefixes || []).find(Boolean);
+  return String(prefix || projectName || "").replace(/[^a-z0-9]/gi, "").toUpperCase().slice(0, 3);
+}
+
+function generatedUnitCodes(projectName, block, floor, column) {
+  const blockCode = padUnitPart(block, 2);
+  const floorRaw = String(floor || "").replace(/\D/g, "");
+  const columnCode = padUnitPart(column, 2);
+  if (!projectName || !blockCode || !floorRaw || !columnCode) return { unit: "", samCode: "" };
+  const floorDisplay = String(Number.parseInt(floorRaw, 10) || floorRaw);
+  const floorSam = padUnitPart(floorRaw, 2);
+  const unitNumber = `${floorDisplay}${columnCode}`;
+  return {
+    unit: `${blockCode}-${unitNumber}`,
+    samCode: `${primaryProjectPrefix(projectName)}${blockCode}${floorSam}${columnCode}`
+  };
+}
+
+function blockDefinitionsForProject(projectName) {
+  return (projectDefinitionByName(projectName).blockDefinitions || []).slice().sort((a, b) => sortAlphaNumeric(a.block, b.block));
+}
+
+function virtualUnitsForProject(projectName) {
+  const existingByKey = new Map(unitsForAvailabilityProject(projectName).map((unit) => [`${padUnitPart(unit.block, 2)}:${String(unit.floor || "")}:${padUnitPart(unit.column, 2)}`, unit]));
+  const virtualUnits = [];
+  blockDefinitionsForProject(projectName).forEach((block) => {
+    const floorCount = Number(block.floorCount || 0);
+    const columnCount = Number(block.columnCount || 0);
+    for (let floor = 1; floor <= floorCount; floor += 1) {
+      for (let column = 1; column <= columnCount; column += 1) {
+        const columnCode = padUnitPart(column, 2);
+        const blockCode = padUnitPart(block.block, 2);
+        const key = `${blockCode}:${floor}:${columnCode}`;
+        const generated = generatedUnitCodes(projectName, block.block, floor, column);
+        virtualUnits.push(existingByKey.get(key) || {
+          id: `virtual:${projectName}:${key}`,
+          project: projectName,
+          unit: generated.unit,
+          samCode: generated.samCode,
+          block: blockCode,
+          floor: String(floor),
+          column: columnCode,
+          status: "",
+          virtual: true,
+          floorKind: (block.penthouseFloors || []).includes(String(floor)) ? "Cobertura" : "Tipo"
+        });
+      }
+    }
+  });
+  if (virtualUnits.length) return virtualUnits;
+  return unitsForAvailabilityProject(projectName);
+}
+
 function selectedAvailabilityUnit() {
-  return (state.unitDefinitions || []).find((unit) => unit.id === state.selectedAvailabilityUnitId) || null;
+  const selectedProject = state.selectedAvailabilityProject || state.projectDefinitions?.[0]?.name || "";
+  return virtualUnitsForProject(selectedProject).find((unit) => unit.id === state.selectedAvailabilityUnitId) || null;
 }
 
 function renderAvailability() {
   const projects = (state.projectDefinitions || []).filter((project) => project.name);
   const selectedProject = state.selectedAvailabilityProject || projects[0]?.name || "";
-  const projectUnits = unitsForAvailabilityProject(selectedProject);
+  const projectUnits = virtualUnitsForProject(selectedProject);
   const selectedUnit = selectedAvailabilityUnit();
   const blocks = [...new Set(projectUnits.map((unit) => unit.block || "1"))].sort(sortAlphaNumeric);
   const leadById = new Map((state.leads || []).map((lead) => [lead.id, lead]));
   const projectCards = projects.map((project) => {
-    const units = unitsForAvailabilityProject(project.name);
+    const units = virtualUnitsForProject(project.name);
     const busy = units.filter((unit) => unit.status).length;
     return `
       <button type="button" class="availability-project-card ${selectedProject === project.name ? "active" : ""}" data-availability-project="${escapeHtml(project.name)}">
@@ -1626,7 +1692,7 @@ function renderAvailability() {
                     const unit = units.find((item) => (item.floor || "") === floor && (item.column || "") === column);
                     if (!unit) return "<td></td>";
                     const color = unitStatusStyle(unit.status);
-                    return `<td><button type="button" class="availability-unit-cell ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" style="--unit-status-color:${escapeHtml(color)}" data-availability-unit="${escapeHtml(unit.id)}">${escapeHtml(unit.unit)}</button></td>`;
+                    return `<td><button type="button" class="availability-unit-cell ${unit.virtual ? "virtual" : ""} ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" style="--unit-status-color:${escapeHtml(color)}" data-availability-unit="${escapeHtml(unit.id)}">${escapeHtml(unit.unit)}</button></td>`;
                   }).join("")}
                 </tr>
               `).join("")}
@@ -1639,15 +1705,19 @@ function renderAvailability() {
   const linkedLead = selectedUnit?.leadId ? leadById.get(selectedUnit.leadId) : null;
   renderShell(`
     ${renderViewHead("Disponibilidade", "Quadro de unidades por empreendimento")}
-    <section class="availability-projects">${projectCards || '<p class="empty">Cadastre empreendimentos para montar o quadro.</p>'}</section>
     <section class="availability-layout">
-      <div class="availability-main">${tables || '<section class="panel empty">Nenhuma unidade cadastrada para este empreendimento.</section>'}</div>
+      <div class="availability-main">
+        <section class="availability-projects">${projectCards || '<p class="empty">Cadastre empreendimentos para montar o quadro.</p>'}</section>
+        ${tables || '<section class="panel empty">Cadastre blocos para montar o quadro deste empreendimento.</section>'}
+      </div>
       <aside class="availability-detail">
         ${selectedUnit ? `
           <h2>${escapeHtml(selectedUnit.unit)}</h2>
+          ${selectedUnit.virtual ? '<p class="chip chip-warning">Unidade prevista pelo bloco</p>' : ""}
           <p class="muted-copy">${escapeHtml(selectedUnit.project)} · Bloco ${escapeHtml(selectedUnit.block || "-")}</p>
           <dl class="unit-detail-list">
             <div><dt>Status</dt><dd>${escapeHtml(selectedUnit.status || "Disponível")}</dd></div>
+            <div><dt>Andar</dt><dd>${escapeHtml(unitFloorLabel(selectedUnit.floor))} · ${escapeHtml(selectedUnit.floorKind || "Tipo")}</dd></div>
             <div><dt>Cliente/lead</dt><dd>${escapeHtml(selectedUnit.buyerName || linkedLead?.name || "-")}</dd></div>
             <div><dt>Código SAM</dt><dd>${escapeHtml(selectedUnit.samCode || "-")}</dd></div>
             <div><dt>Área útil</dt><dd>${escapeHtml(selectedUnit.usefulArea || "-")}</dd></div>
@@ -3571,6 +3641,7 @@ function availableSettingsGroups() {
         ...(canManagePipelineSettings() ? [{ id: "statuses", label: "Status Pipeline" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "tags", label: "Etiquetas" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "projects", label: "Empreendimentos" }] : []),
+        ...(canManagePipelineSettings() ? [{ id: "projectBlocks", label: "Blocos" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "architectureOptions", label: "Arquitetura" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "typologyOptions", label: "Tipologia" }] : []),
         ...(canManageCommercialSettings() ? [{ id: "commercial", label: "Configurações comerciais" }] : [])
@@ -3652,7 +3723,7 @@ function settingsLayout(content) {
 
 function renderSettings() {
   if (["integrations", "logs", "knowledge", "backup", "structuredDb"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
-  if (["statuses", "tags", "projects", "architectureOptions", "typologyOptions", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
+  if (["statuses", "tags", "projects", "projectBlocks", "architectureOptions", "typologyOptions", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "commercial" && !canManageCommercialSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) {
@@ -3665,6 +3736,7 @@ function renderSettings() {
   if (state.settingsTab === "permissions") return renderPermissionSettings();
   if (state.settingsTab === "logs") return renderLogSettings();
   if (state.settingsTab === "projects") return renderProjectSettings();
+  if (state.settingsTab === "projectBlocks") return renderProjectBlockSettings();
   if (state.settingsTab === "architectureOptions") return renderAvailabilityOptionSettings("architecture");
   if (state.settingsTab === "typologyOptions") return renderAvailabilityOptionSettings("typology");
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
@@ -6602,9 +6674,142 @@ function renderAvailabilityOptionSettings(kind) {
   });
 }
 
+function renderProjectBlockSettings() {
+  const projectName = state.blockSettingsProject || state.projects[0] || "";
+  state.blockSettingsProject = projectName;
+  const projectIndex = (state.projectDefinitions || []).findIndex((project) => project.name === projectName);
+  if (!projectName || projectIndex < 0) {
+    settingsLayout(`
+      <section class="panel">
+        <div class="panel-head"><h2>Blocos</h2></div>
+        <p class="empty">Cadastre um empreendimento antes de cadastrar blocos.</p>
+      </section>
+    `);
+    bindSettingsCommon();
+    return;
+  }
+  const projectDefinition = projectDefinitionByName(projectName);
+  const blockDefinitions = projectDefinition.blockDefinitions || [];
+  const editBlockId = state.settingsEditing?.startsWith("block:") ? state.settingsEditing.replace("block:", "") : "";
+  const editBlock = blockDefinitions.find((block) => block.id === editBlockId) || null;
+  const isCreating = state.settingsEditing === "new-block";
+  const blockForm = editBlock || { block: "", floorCount: "", columnCount: "", penthouseFloors: [] };
+  const rows = blockDefinitions.map((block) => {
+    const generatedCount = Number(block.floorCount || 0) * Number(block.columnCount || 0);
+    return `
+      <tr>
+        <td>${escapeHtml(padUnitPart(block.block, 2))}</td>
+        <td>${Number(block.floorCount || 0)}</td>
+        <td>${Number(block.columnCount || 0)}</td>
+        <td>${escapeHtml((block.penthouseFloors || []).join(", ") || "-")}</td>
+        <td>${generatedCount}</td>
+        <td>${renderSettingsActionMenu(`block-${block.id}`, [
+          `<button type="button" data-edit-block="${escapeHtml(block.id)}">Editar</button>`,
+          `<button type="button" data-generate-block="${escapeHtml(block.id)}">Gerar unidades</button>`,
+          `<button type="button" class="danger-menu-item" data-delete-block="${escapeHtml(block.id)}">Excluir</button>`
+        ])}</td>
+      </tr>
+    `;
+  }).join("");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Blocos</h2>
+          <p class="muted-copy">Estrutura usada para desenhar o quadro de disponibilidade.</p>
+        </div>
+        <button class="primary" type="button" data-new-block>Cadastrar bloco</button>
+      </div>
+      <div class="form-grid editor compact-editor">
+        <div class="field"><label>Empreendimento</label><select id="blockProjectSelect">${(state.projects || []).map((project) => `<option value="${escapeHtml(project)}" ${project === projectName ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}</select></div>
+      </div>
+      ${(isCreating || editBlock) ? `
+        <form id="projectBlockForm" class="form-grid editor">
+          <div class="field"><label>Bloco</label><input name="block" value="${escapeHtml(blockForm.block)}" placeholder="Ex.: 1" required></div>
+          <div class="field"><label>Quantidade de andares</label><input name="floorCount" type="number" min="1" value="${escapeHtml(blockForm.floorCount)}" required></div>
+          <div class="field"><label>Colunas por andar</label><input name="columnCount" type="number" min="1" value="${escapeHtml(blockForm.columnCount)}" required></div>
+          <div class="field"><label>Andares cobertura</label><input name="penthouseFloors" value="${escapeHtml((blockForm.penthouseFloors || []).join(", "))}" placeholder="Ex.: 10, 11"></div>
+          <label class="tiny-check field full"><input type="checkbox" name="generateUnits" value="true"> Gerar unidades automaticamente ao salvar</label>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar bloco</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
+        </form>
+      ` : ""}
+      <div class="table-wrap">
+        <table><thead><tr><th>Bloco</th><th>Andares</th><th>Colunas</th><th>Coberturas</th><th>Unidades previstas</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nenhum bloco cadastrado para este empreendimento</td></tr>'}</tbody></table>
+      </div>
+    </section>
+  `);
+  bindSettingsCommon();
+  bindSettingsActionMenus();
+  document.querySelector("#blockProjectSelect")?.addEventListener("change", (event) => {
+    state.blockSettingsProject = event.target.value;
+    state.settingsEditing = null;
+    renderSettings();
+  });
+  document.querySelector("[data-new-block]")?.addEventListener("click", () => {
+    state.settingsEditing = "new-block";
+    renderSettings();
+  });
+  document.querySelectorAll("[data-edit-block]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `block:${button.dataset.editBlock}`;
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-delete-block]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Excluir este bloco? As unidades já geradas não serão apagadas.")) return;
+      const nextBlocks = blockDefinitions.filter((block) => block.id !== button.dataset.deleteBlock);
+      const payload = { ...projectDefinition, blockDefinitions: nextBlocks };
+      const data = await api(`/api/projects/${projectIndex}`, { method: "PATCH", body: JSON.stringify(payload) });
+      state.projects = data.projects;
+      state.projectDefinitions = data.projectDefinitions || [];
+      state.settingsEditing = null;
+      await loadState();
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-generate-block]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const data = await api("/api/units/generate", { method: "POST", body: JSON.stringify({ project: projectName, blockId: button.dataset.generateBlock }) });
+      state.unitDefinitions = data.unitDefinitions || state.unitDefinitions;
+      alert(`Unidades geradas/atualizadas: ${data.generated || 0}`);
+      await loadState();
+      renderSettings();
+    });
+  });
+  document.querySelector("#projectBlockForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const blockPayload = {
+      id: editBlock?.id || `block-${Date.now()}`,
+      block: form.get("block"),
+      floorCount: form.get("floorCount"),
+      columnCount: form.get("columnCount"),
+      penthouseFloors: form.get("penthouseFloors")
+    };
+    const nextBlocks = editBlock
+      ? blockDefinitions.map((block) => block.id === editBlock.id ? blockPayload : block)
+      : [...blockDefinitions, blockPayload];
+    const payload = { ...projectDefinition, blockDefinitions: nextBlocks };
+    const data = await api(`/api/projects/${projectIndex}`, { method: "PATCH", body: JSON.stringify(payload) });
+    state.projects = data.projects;
+    state.projectDefinitions = data.projectDefinitions || [];
+    const savedBlockId = blockPayload.id;
+    state.settingsEditing = null;
+    if (form.get("generateUnits") === "true") {
+      const generated = await api("/api/units/generate", { method: "POST", body: JSON.stringify({ project: projectName, blockId: savedBlockId }) });
+      state.unitDefinitions = generated.unitDefinitions || state.unitDefinitions;
+      alert(`Bloco salvo. Unidades geradas/atualizadas: ${generated.generated || 0}`);
+    }
+    await loadState();
+    renderSettings();
+  });
+}
+
 function renderUnitSettingsModal(project, unitRows, unitForm, editUnit, isCreatingUnit, availabilitySettings, selectOptions, optionTags) {
   if (!project) return "";
   const formOpen = isCreatingUnit || editUnit;
+  const blockOptions = (projectName, current) => blockDefinitionsForProject(projectName).map((block) => `<option value="${escapeHtml(padUnitPart(block.block, 2))}" ${padUnitPart(block.block, 2) === padUnitPart(current, 2) ? "selected" : ""}>Bloco ${escapeHtml(padUnitPart(block.block, 2))}</option>`).join("");
   return `
     <div class="modal-backdrop" data-unit-modal-backdrop>
       <section class="modal-card wide-modal unit-settings-modal" role="dialog" aria-modal="true" aria-labelledby="unitSettingsTitle">
@@ -6621,11 +6826,11 @@ function renderUnitSettingsModal(project, unitRows, unitForm, editUnit, isCreati
         ${formOpen ? `
           <form id="unitForm" class="form-grid editor unit-editor">
             <div class="field"><label>Empreendimento</label><select name="project" required>${selectOptions(state.projects || [], unitForm.project)}</select></div>
-            <div class="field"><label>Unidade</label><input name="unit" value="${escapeHtml(unitForm.unit)}" placeholder="Ex.: GCR060107" required></div>
-            <div class="field"><label>Bloco/Quadra</label><input name="block" value="${escapeHtml(unitForm.block)}" placeholder="Ex.: 1"></div>
+            <div class="field"><label>Bloco/Quadra</label><select name="block"><option value="">Selecione</option>${blockOptions(unitForm.project, unitForm.block)}</select></div>
             <div class="field"><label>Andar</label><input name="floor" value="${escapeHtml(unitForm.floor)}" placeholder="Ex.: 6"></div>
             <div class="field"><label>Coluna</label><input name="column" value="${escapeHtml(unitForm.column)}" placeholder="Ex.: 07"></div>
-            <div class="field"><label>Código SAM</label><input name="samCode" value="${escapeHtml(unitForm.samCode)}"></div>
+            <div class="field"><label>Unidade</label><input name="unit" value="${escapeHtml(unitForm.unit)}" placeholder="Automático" required></div>
+            <div class="field"><label>Código SAM</label><input name="samCode" value="${escapeHtml(unitForm.samCode)}" placeholder="Automático"></div>
             <div class="field"><label>Área útil</label><input name="usefulArea" value="${escapeHtml(unitForm.usefulArea)}"></div>
             <div class="field"><label>Área privativa</label><input name="privateArea" value="${escapeHtml(unitForm.privateArea)}"></div>
             <div class="field"><label>Posição</label><select name="sunPosition">${selectOptions(["Sol manhã", "Sol tarde"], unitForm.sunPosition)}</select></div>
@@ -6814,6 +7019,7 @@ function renderProjectSettings() {
   });
   document.querySelector("#unitForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
+    fillGeneratedUnitFields(event.currentTarget, true);
     const form = new FormData(event.currentTarget);
     const file = form.get("floorPlan");
     const current = state.editUnitId ? (state.unitDefinitions || []).find((unit) => unit.id === state.editUnitId) : null;
@@ -6856,6 +7062,35 @@ function renderProjectSettings() {
     state.editUnitId = "";
     await loadState();
     renderSettings();
+  });
+  bindUnitCodeAutofill();
+}
+
+function fillGeneratedUnitFields(form, force = false) {
+  if (!form) return;
+  const project = form.elements.project?.value || "";
+  const block = form.elements.block?.value || "";
+  const floor = form.elements.floor?.value || "";
+  const column = form.elements.column?.value || "";
+  const generated = generatedUnitCodes(project, block, floor, column);
+  if (generated.unit && (force || !form.elements.unit?.value)) form.elements.unit.value = generated.unit;
+  if (generated.samCode && (force || !form.elements.samCode?.value)) form.elements.samCode.value = generated.samCode;
+}
+
+function bindUnitCodeAutofill() {
+  const form = document.querySelector("#unitForm");
+  if (!form) return;
+  const refresh = () => fillGeneratedUnitFields(form);
+  form.elements.project?.addEventListener("change", () => {
+    const current = form.elements.block?.value || "";
+    if (form.elements.block) {
+      form.elements.block.innerHTML = `<option value="">Selecione</option>${blockDefinitionsForProject(form.elements.project.value).map((block) => `<option value="${escapeHtml(padUnitPart(block.block, 2))}" ${padUnitPart(block.block, 2) === padUnitPart(current, 2) ? "selected" : ""}>Bloco ${escapeHtml(padUnitPart(block.block, 2))}</option>`).join("")}`;
+    }
+    refresh();
+  });
+  ["project", "block", "floor", "column"].forEach((name) => {
+    form.elements[name]?.addEventListener("input", refresh);
+    form.elements[name]?.addEventListener("change", refresh);
   });
 }
 
