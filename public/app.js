@@ -14,7 +14,7 @@ const state = {
   statusDefinitions: [],
   projectDefinitions: [],
   unitDefinitions: [],
-  availabilitySettings: { architectureOptions: [], typologyOptions: [] },
+  availabilitySettings: { architectureOptions: [], typologyOptions: [], statusMappings: [] },
   tagDefinitions: [],
   users: [],
   userPresence: [],
@@ -1211,7 +1211,7 @@ async function loadState() {
   state.projects = data.projects || ["Reserva Guinle", "Golf Club Resort"];
   state.projectDefinitions = data.projectDefinitions || state.projects.map((name, position) => ({ name, position, unitPrefixes: [] }));
   state.unitDefinitions = Array.isArray(data.unitDefinitions) ? data.unitDefinitions : [];
-  state.availabilitySettings = data.availabilitySettings || { architectureOptions: [], typologyOptions: [] };
+  state.availabilitySettings = normalizeAvailabilitySettingsClient(data.availabilitySettings || {});
   if (!state.selectedAvailabilityProject && state.projectDefinitions[0]?.name) state.selectedAvailabilityProject = state.projectDefinitions[0].name;
   state.statusDefinitions = (data.statusDefinitions || state.statuses.map((status, position) => ({ status, position, samCodes: [] })))
     .map((item, position) => ({ ...item, position, advanceMode: item.advanceMode || "manual" }));
@@ -1574,11 +1574,77 @@ function availabilityStatusKey(status) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function availabilityDefaultStatusMappings() {
+  return [
+    { id: "available", label: "Disponível", color: "#22c55e", pipelineStatuses: ["Disponível", "Livre"], samCodes: [] },
+    { id: "reserved", label: "Reservada", color: "#f59e0b", pipelineStatuses: ["Reservado", "Reserva", "Reserva criada"], samCodes: ["reservation_created", "reserva"] },
+    { id: "contract_issued", label: "Contrato emitido", color: "#00a8ff", pipelineStatuses: ["Contrato Emitido"], samCodes: ["contract_issued", "contrato_emitido"] },
+    { id: "sold", label: "Vendida", color: "#dc2626", pipelineStatuses: ["Contrato Assinado", "Venda Finalizada"], samCodes: ["contract_signed", "contrato_assinado", "venda_finalizada"] },
+    { id: "blocked", label: "Bloqueada", color: "#64748b", pipelineStatuses: ["Bloqueada"], samCodes: ["bloqueada"] },
+    { id: "exchange", label: "Permutante", color: "#7c3aed", pipelineStatuses: ["Permutante"], samCodes: ["permutante"] }
+  ];
+}
+
+function listFromTextClient(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+  return String(value || "")
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeAvailabilitySettingsClient(input = {}) {
+  const defaults = availabilityDefaultStatusMappings();
+  const incoming = Array.isArray(input.statusMappings) ? input.statusMappings : [];
+  const byId = new Map(defaults.map((item, index) => [item.id, { ...item, position: index }]));
+  incoming.forEach((item, index) => {
+    const label = String(item?.label || "").trim();
+    const id = String(item?.id || label || `availability-status-${index}`).trim();
+    if (!id || !label) return;
+    byId.set(id, {
+      ...(byId.get(id) || {}),
+      id,
+      label,
+      color: String(item.color || byId.get(id)?.color || "#e5e7eb").trim(),
+      pipelineStatuses: [...new Set(listFromTextClient(item.pipelineStatuses))],
+      samCodes: [...new Set(listFromTextClient(item.samCodes))],
+      position: Number(item.position ?? index) || index
+    });
+  });
+  return {
+    architectureOptions: [...new Set(listFromTextClient(input.architectureOptions))],
+    typologyOptions: [...new Set(listFromTextClient(input.typologyOptions))],
+    statusMappings: [...byId.values()]
+      .filter((item) => item.label)
+      .sort((a, b) => Number(a.position || 0) - Number(b.position || 0))
+  };
+}
+
+function availabilityStatusMappings() {
+  return normalizeAvailabilitySettingsClient(state.availabilitySettings || {}).statusMappings;
+}
+
+function availabilityMappingMatches(mapping = {}, value = "") {
+  const key = availabilityStatusKey(value);
+  if (!key) return false;
+  const candidates = [
+    mapping.label,
+    ...(mapping.pipelineStatuses || []),
+    ...(mapping.samCodes || [])
+  ];
+  return candidates.some((candidate) => availabilityStatusKey(candidate) === key);
+}
+
+function availabilityMappingForStatus(value) {
+  return availabilityStatusMappings().find((mapping) => availabilityMappingMatches(mapping, value)) || null;
+}
+
+function availabilityAvailableLabel() {
+  return availabilityStatusMappings().find((mapping) => availabilityStatusKey(mapping.label) === availabilityStatusKey("Disponível"))?.label || "Disponível";
+}
+
 function unitStatusStyle(status) {
-  const key = availabilityStatusKey(status || "Disponível");
-  if (!key || key === availabilityStatusKey("Disponível") || key === availabilityStatusKey("Livre")) return "#22c55e";
-  const definition = (state.statusDefinitions || []).find((item) => availabilityStatusKey(item.status) === key);
-  return definition?.availabilityColor || "#e5e7eb";
+  return availabilityMappingForStatus(status)?.color || "#e5e7eb";
 }
 
 function unitFloorLabel(value) {
@@ -1637,23 +1703,32 @@ function canViewAvailabilitySaleValue() {
 }
 
 function availabilityStatusLabel(unit = {}) {
-  if (unit.purchaseBuyerName || unit.purchaseSignedAt || Number(unit.purchaseValue || 0) > 0) return "Vendida";
-  const normalized = String(unit.status || "").toLocaleLowerCase("pt-BR");
-  if (normalized.includes("vend") || normalized.includes("contrato assinado")) return "Vendida";
-  if (normalized.includes("reserv")) return "Reservada";
-  if (normalized.includes("bloque")) return "Bloqueada";
-  if (normalized.includes("permut")) return "Permutante";
-  return "Disponível";
+  const mappings = availabilityStatusMappings();
+  const soldMapping = mappings.find((mapping) => availabilityStatusKey(mapping.label) === availabilityStatusKey("Vendida"));
+  const availableMapping = mappings.find((mapping) => availabilityStatusKey(mapping.label) === availabilityStatusKey("Disponível"));
+  if (unit.purchaseBuyerName || unit.purchaseSignedAt || Number(unit.purchaseValue || 0) > 0) return soldMapping?.label || "Vendida";
+  const directMapping = availabilityMappingForStatus(unit.status);
+  if (directMapping) return directMapping.label;
+  const normalized = availabilityStatusKey(unit.status);
+  if (normalized.includes("vend") || normalized.includes("contrato assinado")) return soldMapping?.label || "Vendida";
+  if (normalized.includes("reserv")) return availabilityMappingForStatus("Reservada")?.label || "Reservada";
+  if (normalized.includes("bloque")) return availabilityMappingForStatus("Bloqueada")?.label || "Bloqueada";
+  if (normalized.includes("permut")) return availabilityMappingForStatus("Permutante")?.label || "Permutante";
+  return availableMapping?.label || "Disponível";
 }
 
 function availabilityStatusSummary(units = []) {
-  const labels = ["Disponível", "Reservada", "Vendida", "Bloqueada", "Permutante"];
+  const labels = availabilityStatusMappings().map((mapping) => mapping.label);
   const counts = Object.fromEntries(labels.map((label) => [label, 0]));
   units.forEach((unit) => {
     const label = availabilityStatusLabel(unit);
     counts[label] = (counts[label] || 0) + 1;
   });
-  return labels.map((label) => `<span>${escapeHtml(label)} <strong>${counts[label] || 0}</strong></span>`).join("");
+  return labels.map((label) => `
+    <span class="availability-status-chip" style="--chip-color:${escapeHtml(unitStatusStyle(label))}">
+      <i></i>${escapeHtml(label)} <strong>${counts[label] || 0}</strong>
+    </span>
+  `).join("");
 }
 
 function availabilityBlockLabel(projectName, blockCode) {
@@ -1714,7 +1789,7 @@ function renderAvailability() {
   const leadById = new Map((state.leads || []).map((lead) => [lead.id, lead]));
   const projectCards = projects.map((project) => {
     const units = virtualUnitsForProject(project.name);
-    const busy = units.filter((unit) => availabilityStatusLabel(unit) !== "Disponível").length;
+    const busy = units.filter((unit) => availabilityStatusLabel(unit) !== availabilityAvailableLabel()).length;
     return `
       <button type="button" class="availability-project-card ${selectedProject === project.name ? "active" : ""}" data-availability-project="${escapeHtml(project.name)}">
         <strong>${escapeHtml(project.name)}</strong>
@@ -1744,7 +1819,8 @@ function renderAvailability() {
                   ${columns.map((column) => {
                     const unit = units.find((item) => (item.floor || "") === floor && (item.column || "") === column);
                     if (!unit) return "<td></td>";
-                    const color = unitStatusStyle(unit.status || availabilityStatusLabel(unit));
+                    const label = availabilityStatusLabel(unit);
+                    const color = unitStatusStyle(label);
                     return `<td><button type="button" class="availability-unit-cell ${unit.virtual ? "virtual" : ""} ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" style="--unit-status-color:${escapeHtml(color)}" data-availability-unit="${escapeHtml(unit.id)}">${escapeHtml(unit.unit)}</button></td>`;
                   }).join("")}
                 </tr>
@@ -1821,7 +1897,7 @@ function renderAvailability() {
       const data = await api("/api/units/import-lev-sales", { method: "POST", body: JSON.stringify({}) });
       state.unitDefinitions = data.unitDefinitions || state.unitDefinitions;
       const sourceSummary = data.sources
-        ? ` Fonte: ${data.sources.levFinance || 0} Financeiro Lev, ${data.sources.contractSignedLeads || 0} lead(s) em Contrato Assinado.`
+        ? ` Fonte: ${data.sources.levFinance || 0} registro(s) do Financeiro Lev.`
         : "";
       alert(`Carga concluída: ${data.imported || 0} unidade(s) atualizada(s), ${data.skipped || 0} ignorada(s).${sourceSummary}`);
       renderAvailability();
@@ -3720,6 +3796,7 @@ function availableSettingsGroups() {
         ...(canManagePipelineSettings() ? [{ id: "statuses", label: "Status Pipeline" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "tags", label: "Etiquetas" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "projects", label: "Empreendimentos" }] : []),
+        ...(canManagePipelineSettings() ? [{ id: "availabilityStatuses", label: "Status disponibilidade" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "architectureOptions", label: "Arquitetura" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "typologyOptions", label: "Tipologia" }] : []),
         ...(canManageCommercialSettings() ? [{ id: "commercial", label: "Configurações comerciais" }] : [])
@@ -3801,7 +3878,7 @@ function settingsLayout(content) {
 
 function renderSettings() {
   if (["integrations", "logs", "knowledge", "backup", "structuredDb"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
-  if (["statuses", "tags", "projects", "architectureOptions", "typologyOptions", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
+  if (["statuses", "tags", "projects", "availabilityStatuses", "architectureOptions", "typologyOptions", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "commercial" && !canManageCommercialSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) {
@@ -3814,6 +3891,7 @@ function renderSettings() {
   if (state.settingsTab === "permissions") return renderPermissionSettings();
   if (state.settingsTab === "logs") return renderLogSettings();
   if (state.settingsTab === "projects") return renderProjectSettings();
+  if (state.settingsTab === "availabilityStatuses") return renderAvailabilityStatusSettings();
   if (state.settingsTab === "architectureOptions") return renderAvailabilityOptionSettings("architecture");
   if (state.settingsTab === "typologyOptions") return renderAvailabilityOptionSettings("typology");
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
@@ -6816,6 +6894,113 @@ function bindLevFinanceControls() {
         alert(error.message);
       }
     });
+  });
+}
+
+function renderAvailabilityStatusSettings() {
+  const mappings = availabilityStatusMappings();
+  const isCreating = state.settingsEditing === "availability-status:new";
+  const editIndex = state.settingsEditing?.startsWith("availability-status:") && !isCreating
+    ? Number(state.settingsEditing.replace("availability-status:", ""))
+    : null;
+  const editMapping = editIndex != null ? mappings[editIndex] : null;
+  const formMapping = isCreating
+    ? { id: `custom-${Date.now()}`, label: "", color: "#e5e7eb", pipelineStatuses: [], samCodes: [] }
+    : editMapping;
+  const pipelineOptions = (state.statuses || []).map((status) => {
+    const checked = (formMapping?.pipelineStatuses || []).some((item) => availabilityStatusKey(item) === availabilityStatusKey(status));
+    return `
+      <label class="subtle-check availability-map-check">
+        <input type="checkbox" name="pipelineStatuses" value="${escapeHtml(status)}" ${checked ? "checked" : ""}>
+        <span>${escapeHtml(status)}</span>
+      </label>
+    `;
+  }).join("");
+  const rows = mappings.map((mapping, index) => `
+    <tr>
+      <td><span class="color-swatch" style="background:${escapeHtml(mapping.color || "#e5e7eb")}"></span>${escapeHtml(mapping.label)}</td>
+      <td>${(mapping.pipelineStatuses || []).map((status) => `<span class="mini-pill">${escapeHtml(status)}</span>`).join(" ") || '<span class="muted-cell">Sem vínculo</span>'}</td>
+      <td>${(mapping.samCodes || []).map((code) => `<span class="mini-pill">${escapeHtml(code)}</span>`).join(" ") || '<span class="muted-cell">Sem código</span>'}</td>
+      <td>${renderSettingsActionMenu(`availability-status-${index}`, [
+        `<button type="button" data-edit-availability-status="${index}">Editar</button>`,
+        ...(!availabilityDefaultStatusMappings().some((item) => item.id === mapping.id) ? [`<button type="button" class="danger-menu-item" data-delete-availability-status="${index}">Excluir</button>`] : [])
+      ])}</td>
+    </tr>
+  `).join("");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Status de disponibilidade</h2>
+          <p class="muted-copy">De-para entre o status visual das unidades, os status do pipeline e os códigos recebidos pelo SAM.</p>
+        </div>
+        <button class="primary" type="button" data-new-availability-status>Cadastrar novo</button>
+      </div>
+      ${(isCreating || editMapping) ? `
+        <form id="availabilityStatusForm" class="form-grid editor compact-editor">
+          <input type="hidden" name="id" value="${escapeHtml(formMapping?.id || "")}">
+          <div class="field"><label>Status visual</label><input name="label" value="${escapeHtml(formMapping?.label || "")}" required></div>
+          <div class="field"><label>Cor</label><input name="color" type="color" value="${escapeHtml(formMapping?.color || "#e5e7eb")}"></div>
+          <div class="field full">
+            <label>Status do pipeline vinculados</label>
+            <div class="availability-map-checks">${pipelineOptions || '<span class="muted-cell">Cadastre status do pipeline primeiro.</span>'}</div>
+          </div>
+          <div class="field full"><label>Códigos SAM vinculados</label><textarea name="samCodes" rows="3" placeholder="Um código por linha ou separados por vírgula">${escapeHtml((formMapping?.samCodes || []).join("\n"))}</textarea></div>
+          <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
+        </form>
+      ` : ""}
+      <div class="table-wrap">
+        <table class="settings-table compact-records">
+          <thead><tr><th>Status visual</th><th>Status do pipeline</th><th>Códigos SAM</th><th>Ação</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4" class="empty">Nenhum status cadastrado.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>
+  `);
+  document.querySelector("[data-new-availability-status]")?.addEventListener("click", () => {
+    state.settingsEditing = "availability-status:new";
+    renderSettings();
+  });
+  document.querySelectorAll("[data-edit-availability-status]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `availability-status:${button.dataset.editAvailabilityStatus}`;
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-delete-availability-status]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Excluir este status de disponibilidade?")) return;
+      const nextMappings = mappings.filter((_, index) => index !== Number(button.dataset.deleteAvailabilityStatus));
+      const data = await api("/api/availability-settings", {
+        method: "PUT",
+        body: JSON.stringify({ ...(state.availabilitySettings || {}), statusMappings: nextMappings })
+      });
+      state.availabilitySettings = normalizeAvailabilitySettingsClient(data.availabilitySettings || {});
+      state.settingsEditing = null;
+      renderSettings();
+    });
+  });
+  document.querySelector("#availabilityStatusForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const pipelineStatuses = form.getAll("pipelineStatuses");
+    const nextMapping = {
+      id: String(form.get("id") || form.get("label") || `availability-status-${Date.now()}`).trim(),
+      label: String(form.get("label") || "").trim(),
+      color: String(form.get("color") || "#e5e7eb").trim(),
+      pipelineStatuses,
+      samCodes: String(form.get("samCodes") || "")
+    };
+    const nextMappings = mappings.slice();
+    if (isCreating) nextMappings.push(nextMapping);
+    else if (editIndex != null) nextMappings[editIndex] = { ...nextMappings[editIndex], ...nextMapping };
+    const data = await api("/api/availability-settings", {
+      method: "PUT",
+      body: JSON.stringify({ ...(state.availabilitySettings || {}), statusMappings: nextMappings })
+    });
+    state.availabilitySettings = normalizeAvailabilitySettingsClient(data.availabilitySettings || {});
+    state.settingsEditing = null;
+    renderSettings();
   });
 }
 

@@ -8439,9 +8439,42 @@ function normalizeProjectBlockDefinition(input = {}, position = 0) {
 }
 
 function normalizeAvailabilitySettings(input = {}) {
+  const defaultStatusMappings = [
+    { id: "available", label: "Disponível", color: "#22c55e", pipelineStatuses: ["Disponível", "Livre"], samCodes: [] },
+    { id: "reserved", label: "Reservada", color: "#f59e0b", pipelineStatuses: ["Reservado", "Reserva", "Reserva criada"], samCodes: ["reservation_created", "reserva"] },
+    { id: "contract_issued", label: "Contrato emitido", color: "#00a8ff", pipelineStatuses: ["Contrato Emitido"], samCodes: ["contract_issued", "contrato_emitido"] },
+    { id: "sold", label: "Vendida", color: "#dc2626", pipelineStatuses: ["Contrato Assinado", "Venda Finalizada"], samCodes: ["contract_signed", "contrato_assinado", "venda_finalizada"] },
+    { id: "blocked", label: "Bloqueada", color: "#64748b", pipelineStatuses: ["Bloqueada"], samCodes: ["bloqueada"] },
+    { id: "exchange", label: "Permutante", color: "#7c3aed", pipelineStatuses: ["Permutante"], samCodes: ["permutante"] }
+  ];
+  const incomingMappings = Array.isArray(input.statusMappings) ? input.statusMappings : [];
+  const byId = new Map(defaultStatusMappings.map((item) => [item.id, item]));
+  incomingMappings.forEach((item, index) => {
+    const label = String(item?.label || "").trim();
+    const id = String(item?.id || label || `availability-status-${index}`).trim();
+    if (!id || !label) return;
+    byId.set(id, {
+      ...(byId.get(id) || {}),
+      id,
+      label,
+      color: String(item.color || item.availabilityColor || byId.get(id)?.color || "#e5e7eb").trim(),
+      pipelineStatuses: [...new Set(normalizeListFromText(Array.isArray(item.pipelineStatuses) ? item.pipelineStatuses.join("\n") : item.pipelineStatuses))],
+      samCodes: [...new Set(normalizeListFromText(Array.isArray(item.samCodes) ? item.samCodes.join("\n") : item.samCodes))],
+      position: Number(item.position ?? index) || index
+    });
+  });
+  const statusMappings = [...byId.values()].map((item, index) => ({
+    id: String(item.id || `availability-status-${index}`).trim(),
+    label: String(item.label || "").trim(),
+    color: String(item.color || "#e5e7eb").trim(),
+    pipelineStatuses: [...new Set(normalizeListFromText(Array.isArray(item.pipelineStatuses) ? item.pipelineStatuses.join("\n") : item.pipelineStatuses))],
+    samCodes: [...new Set(normalizeListFromText(Array.isArray(item.samCodes) ? item.samCodes.join("\n") : item.samCodes))],
+    position: Number(item.position ?? index) || index
+  })).filter((item) => item.label).sort((a, b) => a.position - b.position);
   return {
     architectureOptions: [...new Set(normalizeListFromText(Array.isArray(input.architectureOptions) ? input.architectureOptions.join("\n") : input.architectureOptions))],
-    typologyOptions: [...new Set(normalizeListFromText(Array.isArray(input.typologyOptions) ? input.typologyOptions.join("\n") : input.typologyOptions))]
+    typologyOptions: [...new Set(normalizeListFromText(Array.isArray(input.typologyOptions) ? input.typologyOptions.join("\n") : input.typologyOptions))],
+    statusMappings
   };
 }
 
@@ -8661,16 +8694,14 @@ function levAvailabilitySaleFromLeadRow(row = {}) {
 
 async function structuredLevAvailabilityRecords(sql) {
   const stateDb = await structuredLevFinanceDb(sql);
-  const financeRecords = [...(stateDb.levFinance.sales || []), ...(stateDb.levFinance.settlements || [])].map((record) => ({
+  const financeRecords = (stateDb.levFinance.settlements || []).map((record) => ({
     ...record,
     source: record.source || "Financeiro Lev"
   }));
-  const leadRows = await sql`SELECT id, name, status, project, unit, unit_value, created_at, updated_at, payload FROM crm_leads WHERE COALESCE(unit, '') <> ''`;
-  const leadRecords = leadRows.map(levAvailabilitySaleFromLeadRow).filter(Boolean);
   return {
     financeRecords,
-    leadRecords,
-    records: [...financeRecords, ...leadRecords]
+    leadRecords: [],
+    records: financeRecords
   };
 }
 
@@ -8685,8 +8716,8 @@ async function importStructuredLevSalesToUnits(sql) {
   let skipped = 0;
   for (const record of records) {
     const unitCode = normalizeLevUnit(record.unit || "");
-    const status = String(record.status || "").toLocaleLowerCase("pt-BR");
-    if (!unitCode || /[,.]/.test(unitCode) || unitCode.includes("R$") || status.includes("ignorada")) {
+    const status = levStatusKeyServer(record.status);
+    if (!unitCode || /[,.]/.test(unitCode) || unitCode.includes("R$") || status.includes("nao contabilizada")) {
       skipped += 1;
       continue;
     }
@@ -8709,13 +8740,17 @@ async function importStructuredLevSalesToUnits(sql) {
   let imported = 0;
   for (const sale of byUnit.values()) {
     const unitCode = normalizeLevUnit(sale.unit);
-    const project = projectForAvailabilitySale(unitCode, sale, projectDefinitions);
+    const existingRows = await sql`SELECT payload FROM crm_units WHERE sam_code = ${unitCode} OR unit = ${unitCode} LIMIT 1`;
+    const existing = existingRows[0]?.payload;
+    if (!existing) {
+      skipped += 1;
+      continue;
+    }
+    const project = existing.project || projectForAvailabilitySale(unitCode, sale, projectDefinitions);
     if (!project) {
       skipped += 1;
       continue;
     }
-    const existingRows = await sql`SELECT payload FROM crm_units WHERE sam_code = ${unitCode} OR unit = ${unitCode} LIMIT 1`;
-    const existing = existingRows[0]?.payload || {};
     const next = normalizeUnitDefinition({
       ...existing,
       project: existing.project || project,

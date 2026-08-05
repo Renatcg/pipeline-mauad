@@ -1847,6 +1847,44 @@ tr[data-open-lead] {
   border-radius: 999px;
 }
 
+.mini-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  margin: 2px 3px 2px 0;
+  border-radius: 999px;
+  background: #eef3f7;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.availability-map-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.availability-map-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  font-weight: 800;
+}
+
+.availability-map-check input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--green);
+}
+
 .table-wrap {
   overflow: auto;
   border: 1px solid var(--line);
@@ -3703,7 +3741,7 @@ th {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -3712,9 +3750,40 @@ th {
   font-size: 18px;
 }
 
-.availability-block-head span {
-  color: var(--muted);
-  font-weight: 800;
+.availability-status-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.availability-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--chip-color, #e5e7eb) 45%, #d7dee8);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--chip-color, #e5e7eb) 13%, white);
+  color: #334155;
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.availability-status-chip i {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--chip-color, #e5e7eb);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--chip-color, #e5e7eb) 18%, white);
+}
+
+.availability-status-chip strong {
+  color: var(--ink);
+  font-size: 12px;
 }
 
 .availability-grid-wrap {
@@ -3746,10 +3815,12 @@ th {
   min-height: 40px;
   border: 1px solid color-mix(in srgb, var(--unit-status-color, #e5e7eb) 72%, #334155);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--unit-status-color, #e5e7eb) 22%, white);
-  color: var(--ink);
+  background: color-mix(in srgb, var(--unit-status-color, #e5e7eb) 82%, white);
+  color: #fff;
   font-weight: 900;
   cursor: pointer;
+  box-shadow: inset 0 -10px 18px rgba(15, 23, 42, 0.1), 0 4px 10px rgba(15, 23, 42, 0.08);
+  text-shadow: 0 1px 1px rgba(15, 23, 42, 0.28);
 }
 
 .availability-unit-cell.active {
@@ -3761,6 +3832,8 @@ th {
   border-style: dashed;
   color: #64748b;
   background: #f8fafc;
+  box-shadow: none;
+  text-shadow: none;
 }
 
 .availability-detail {
