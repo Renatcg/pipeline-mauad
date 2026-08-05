@@ -2056,7 +2056,7 @@ function leadCardInfoActions(lead) {
   return `
     <div class="card-info-actions">
       ${comments.length ? `
-        <span class="card-info-action" tabindex="0" title="Comentários">
+        <span class="card-info-action" data-card-info="message" tabindex="0" title="Comentários">
           ${cardInfoIconSvg("message")}
           <span class="card-info-popover">
             <strong>Comentários</strong>
@@ -2066,7 +2066,7 @@ function leadCardInfoActions(lead) {
         </span>
       ` : ""}
       ${notes ? `
-        <span class="card-info-action" tabindex="0" title="Observações">
+        <span class="card-info-action" data-card-info="document" tabindex="0" title="Observações">
           ${cardInfoIconSvg("document")}
           <span class="card-info-popover">
             <strong>Observações</strong>

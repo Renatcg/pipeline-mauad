@@ -1461,10 +1461,17 @@ textarea {
   stroke-linejoin: round;
 }
 
+.card-info-action[data-card-info="message"] {
+  color: #25D366;
+}
+
+.card-info-action[data-card-info="document"] {
+  color: #00a8ff;
+}
+
 .card-info-action:hover,
 .card-info-action:focus {
   background: #eef7f6;
-  color: var(--brand);
   outline: 0;
 }
 
