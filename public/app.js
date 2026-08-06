@@ -53,6 +53,7 @@ const state = {
   metaCapiDiagnostics: null,
   view: "kanban",
   leadId: null,
+  selectedOpportunityId: "",
   previousView: "kanban",
   settingsTab: "users",
   settingsEditing: null,
@@ -566,17 +567,22 @@ function syncRouteFromLocation() {
     state.previousView = state.previousView || "kanban";
     state.view = "lead";
     state.leadId = decodeURIComponent(path.replace("/leads/", ""));
+    state.selectedOpportunityId = new URLSearchParams(window.location.search).get("opportunity") || "";
     return;
   }
   state.view = viewByRoute[path] || "kanban";
   state.leadId = null;
+  state.selectedOpportunityId = "";
 }
 
-function routeTo(view, leadId = null) {
+function routeTo(view, leadId = null, options = {}) {
   state.view = view;
   state.leadId = leadId;
-  const path = view === "lead" ? `/leads/${encodeURIComponent(leadId)}` : routeByView[view] || "/kanban";
-  if (window.location.pathname !== path) history.pushState({}, "", path);
+  state.selectedOpportunityId = view === "lead" ? options.opportunityId || "" : "";
+  const path = view === "lead"
+    ? `/leads/${encodeURIComponent(leadId)}${state.selectedOpportunityId ? `?opportunity=${encodeURIComponent(state.selectedOpportunityId)}` : ""}`
+    : routeByView[view] || "/kanban";
+  if (`${window.location.pathname}${window.location.search || ""}` !== path) history.pushState({}, "", path);
   renderApp();
   trackAccess();
 }
@@ -2592,21 +2598,22 @@ function leadCard(lead) {
   const broker = activeBrokerForLead(lead);
   const project = leadProjectValue(lead) || "Sem empreendimento";
   const opportunities = Array.isArray(lead.opportunityList) ? lead.opportunityList : [];
+  const opportunityNumber = opportunities.findIndex((opportunity) => opportunity.id && opportunity.id === lead.opportunityId) + 1;
   const opportunityPopover = opportunities.length > 1 ? `
-    <span class="opportunity-badge" tabindex="0">(${opportunities.length})
+    <span class="opportunity-badge" tabindex="0">#${opportunityNumber || 1}
       <span class="opportunity-popover">
         <strong>Oportunidades</strong>
-        ${opportunities.map((opportunity) => `
-          <span>
+        ${opportunities.map((opportunity, index) => `
+          <span class="${opportunity.id === lead.opportunityId ? "current" : ""}">
             <b>${escapeHtml(opportunity.project || "Sem empreendimento")}</b>
-            ${escapeHtml(opportunity.unitSamCode || opportunity.unit || "Sem unidade")} · ${escapeHtml(opportunity.assignedName || "Sem corretor")}
+            #${index + 1} · ${escapeHtml(opportunity.unitSamCode || opportunity.unit || "Sem unidade")} · ${escapeHtml(opportunity.assignedName || "Sem corretor")}
           </span>
         `).join("")}
       </span>
     </span>
   ` : "";
   return `
-    <article class="card" draggable="true" data-lead="${escapeHtml(lead.pipelineItemId || lead.id)}" data-open-lead="${escapeHtml(lead.id)}">
+    <article class="card" draggable="true" data-lead="${escapeHtml(lead.pipelineItemId || lead.id)}" data-open-lead="${escapeHtml(lead.id)}" data-open-opportunity="${escapeHtml(lead.opportunityId || "")}">
       <div class="card-title">
         <button class="favorite-inline" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button>
         <strong>${escapeHtml(lead.name)}${opportunityPopover}</strong>
@@ -2659,7 +2666,7 @@ function bindLeadActions() {
     element.addEventListener("click", (event) => {
       if (event.target.closest("button, select, input, textarea, a, [data-assign-menu], [data-tag-menu], .card-info-action")) return;
       state.previousView = state.view === "lead" ? state.previousView : state.view;
-      routeTo("lead", element.dataset.openLead);
+      routeTo("lead", element.dataset.openLead, { opportunityId: element.dataset.openOpportunity || "" });
     });
   });
   document.querySelectorAll("[data-favorite]").forEach((button) => {
@@ -2869,7 +2876,7 @@ function bindColumnDragDrop() {
 
 function leadRows(leads, options = {}) {
   return leads.map((lead) => `
-    <tr data-open-lead="${escapeHtml(lead.id)}">
+    <tr data-open-lead="${escapeHtml(lead.id)}" data-open-opportunity="${escapeHtml(lead.opportunityId || "")}">
       <td><button class="icon favorite" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button></td>
       <td>${escapeHtml(lead.name)}</td>
       <td>${escapeHtml(lead.phone)}</td>
@@ -3248,8 +3255,8 @@ function renderLeadInterest(project, lead) {
       </div>
       <div class="opportunity-list">
         ${displayed.map((opportunity, index) => `
-          <article class="opportunity-row ${opportunity.implicit ? "implicit" : ""}">
-            <strong>${escapeHtml(opportunity.project || project || "Sem empreendimento")}</strong>
+          <article class="opportunity-row ${opportunity.implicit ? "implicit" : ""} ${opportunity.id && opportunity.id === state.selectedOpportunityId ? "selected" : ""}">
+            <strong><span class="opportunity-index">#${index + 1}</span>${escapeHtml(opportunity.project || project || "Sem empreendimento")}</strong>
             <span>${escapeHtml(opportunity.unitSamCode || opportunity.unit || "Sem unidade")} · ${escapeHtml(opportunity.status || lead.status || "Sem status")}</span>
             <small>${escapeHtml(opportunity.assignedName || "Sem corretor")}${displayed.length > 1 ? ` · #${index + 1}` : ""}</small>
             ${opportunities.length ? opportunityFields(opportunity) : ""}
@@ -3722,7 +3729,7 @@ function bindDashboardControls(leads) {
     renderDashboard();
   });
   document.querySelectorAll("[data-open-lead]").forEach((row) => {
-    row.addEventListener("click", () => openLead(row.dataset.openLead));
+    row.addEventListener("click", () => routeTo("lead", row.dataset.openLead, { opportunityId: row.dataset.openOpportunity || "" }));
   });
 }
 
