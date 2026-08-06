@@ -1805,7 +1805,6 @@ function availabilityStatusLabel(unit = {}) {
   const mappings = availabilityStatusMappings();
   const soldMapping = mappings.find((mapping) => availabilityStatusKey(mapping.label) === availabilityStatusKey("Vendida"));
   const availableMapping = mappings.find((mapping) => availabilityStatusKey(mapping.label) === availabilityStatusKey("Disponível"));
-  if (unit.purchaseBuyerName || unit.purchaseSignedAt || Number(unit.purchaseValue || 0) > 0) return soldMapping?.label || "Vendida";
   const directMapping = availabilityMappingForStatus(unit.status);
   if (directMapping) return directMapping.label;
   const normalized = availabilityStatusKey(unit.status);
@@ -1813,6 +1812,7 @@ function availabilityStatusLabel(unit = {}) {
   if (normalized.includes("reserv")) return availabilityMappingForStatus("Reservada")?.label || "Reservada";
   if (normalized.includes("bloque")) return availabilityMappingForStatus("Bloqueada")?.label || "Bloqueada";
   if (normalized.includes("permut")) return availabilityMappingForStatus("Permutante")?.label || "Permutante";
+  if (unit.purchaseBuyerName || unit.purchaseSignedAt || Number(unit.purchaseValue || 0) > 0) return soldMapping?.label || "Vendida";
   return availableMapping?.label || "Disponível";
 }
 
@@ -1852,8 +1852,12 @@ function availabilityLeadUnitSnapshots(projectName) {
         leadName: lead.name,
         status: item.status,
         project: itemProject,
-        unitValue: item.unitValue || lead.unitValue || lead.value || "",
-        signedAt: item.contractSignedAt || lead.contractSignedAt || item.updatedAt || lead.updatedAt || "",
+        unitValue: availabilityStatusKey(item.status).includes("contrato assinado") || availabilityStatusKey(item.status).includes("vend")
+          ? item.unitValue || lead.unitValue || lead.value || ""
+          : "",
+        signedAt: availabilityStatusKey(item.status).includes("contrato assinado") || availabilityStatusKey(item.status).includes("vend")
+          ? item.contractSignedAt || lead.contractSignedAt || ""
+          : "",
         purchaseBuyerName: lead.name
       });
     });
