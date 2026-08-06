@@ -5285,6 +5285,33 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
   return { previousStatus, nextStatus: lead.status, appliedFields, levSale };
 }
 
+function reopenSamEventForReview(event) {
+  const previousTreatment = {
+    status: event.status || "",
+    resolution: event.resolution || "",
+    resolvedAt: event.resolvedAt || "",
+    resolvedBy: event.resolvedBy || "",
+    opportunityId: event.opportunityId || ""
+  };
+  const unit = normalizeUnitForMatch(event.unit || "");
+  const opportunities = Array.isArray(event.opportunityOptions) ? event.opportunityOptions : [];
+  const hasMatchingOpportunity = opportunities.some((opportunity) => opportunityUnitsForMatch(opportunity).includes(unit));
+  event.status = event.leadId
+    ? hasMatchingOpportunity || (!opportunities.length && (event.leadUnits || []).map(normalizeUnitForMatch).includes(unit))
+      ? "matched"
+      : "unit_mismatch"
+    : "not_found";
+  event.resolution = "reopened";
+  event.resolvedAt = "";
+  event.resolvedBy = "";
+  event.reopenedAt = new Date().toISOString();
+  event.reopenedHistory = [
+    ...(Array.isArray(event.reopenedHistory) ? event.reopenedHistory : []),
+    previousTreatment
+  ].slice(-10);
+  return event;
+}
+
 async function structuredLogsForState(db) {
   const fallback = {
     integrationLog: db.integrationLog.slice(0, 50),
@@ -9404,7 +9431,7 @@ async function fastStructuredSamWebhook(req, res, url) {
 
 async function fastStructuredSamEventAction(req, res, url) {
   if (!DATABASE_URL || req.method !== "POST") return false;
-  const match = url.pathname.match(/^\/api\/sam-events\/([^/]+)\/(link|ignore)$/);
+  const match = url.pathname.match(/^\/api\/sam-events\/([^/]+)\/(link|ignore|reopen)$/);
   if (!match) return false;
   try {
     const sql = await getSql();
@@ -9415,8 +9442,16 @@ async function fastStructuredSamEventAction(req, res, url) {
     if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão" });
     const event = await structuredSamEventById(sql, match[1]);
     if (!event) return notFound(res);
-    if (event.status === "linked" || event.status === "ignored") return sendJson(res, 400, { error: "Evento já tratado" });
     const body = await readBody(req);
+    if (match[2] === "reopen") {
+      if (!["linked", "ignored"].includes(event.status)) return sendJson(res, 400, { error: "Evento ainda está pendente" });
+      reopenSamEventForReview(event);
+      await saveStructuredSamEvent(sql, event);
+      await structuredIntegration("SAM", "REOPENED", { eventId: event.eventId, samEventId: event.id, status: event.status });
+      await structuredAudit(user, "REOPEN_SAM_EVENT", { samEventId: event.id, eventId: event.eventId, status: event.status });
+      return sendJson(res, 200, { samEvent: event });
+    }
+    if (event.status === "linked" || event.status === "ignored") return sendJson(res, 400, { error: "Evento já tratado" });
     if (match[2] === "ignore") {
       event.status = "ignored";
       event.resolution = "ignored";

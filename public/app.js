@@ -5505,6 +5505,7 @@ function renderLogSettings() {
     })
     .map((event) => {
       const canAct = !["linked", "ignored"].includes(event.status);
+      const canReopen = ["linked", "ignored"].includes(event.status);
       const leadCell = event.leadId
         ? `<button type="button" class="link-button" data-open-sam-lead="${escapeHtml(event.leadId)}">${escapeHtml(event.leadName || event.leadId)}</button>`
         : '<span class="muted-cell">Sem lead sugerido</span>';
@@ -5517,6 +5518,8 @@ function renderLogSettings() {
         event.leadId ? `<button type="button" data-sam-create-opportunity="${escapeHtml(event.id)}">Gerar nova oportunidade</button>` : "",
         `<button type="button" data-sam-find="${escapeHtml(event.id)}">Encontrar lead manualmente</button>`,
         `<button type="button" class="danger-menu-item" data-sam-ignore="${escapeHtml(event.id)}">Ignorar</button>`
+      ] : canReopen ? [
+        `<button type="button" data-sam-reopen="${escapeHtml(event.id)}">Reabrir para conferência</button>`
       ] : [];
       return `
         <tr>
@@ -5655,6 +5658,18 @@ function renderLogSettings() {
           body: JSON.stringify({ createOpportunity: true })
         });
         invalidateLeads();
+        await loadState();
+        renderLogSettings();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+  });
+  document.querySelectorAll("[data-sam-reopen]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Reabrir este evento SAM para conferência? Isso não desfaz alterações já aplicadas no lead.")) return;
+      try {
+        await api(`/api/sam-events/${encodeURIComponent(button.dataset.samReopen)}/reopen`, { method: "POST", body: JSON.stringify({}) });
         await loadState();
         renderLogSettings();
       } catch (error) {
