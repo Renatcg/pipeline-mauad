@@ -3231,6 +3231,15 @@ function renderCommentComposer() {
 function renderLeadInterest(project, lead) {
   const opportunities = realLeadOpportunities(lead);
   const displayed = opportunities.length ? opportunities : [implicitLeadOpportunity(lead)];
+  const opportunityFields = (opportunity) => `
+    <div class="opportunity-fields">
+      <div class="field"><label>Empreendimento</label><input readonly value="${escapeHtml(opportunity.project || project || "Sem empreendimento")}"></div>
+      <div class="field"><label>Unidade</label><input readonly value="${escapeHtml(opportunity.unitSamCode || opportunity.unit || "Sem unidade")}"></div>
+      <div class="field"><label>Valor da unidade</label><input readonly value="${escapeHtml(opportunity.unitValue || "")}"></div>
+      <div class="field"><label>Status</label><input readonly value="${escapeHtml(opportunity.status || lead.status || "Sem status")}"></div>
+      <div class="field"><label>Corretor</label><input readonly value="${escapeHtml(opportunity.assignedName || "Sem corretor")}"></div>
+    </div>
+  `;
   return `
     <div class="panel">
       <div class="panel-head">
@@ -3243,17 +3252,18 @@ function renderLeadInterest(project, lead) {
             <strong>${escapeHtml(opportunity.project || project || "Sem empreendimento")}</strong>
             <span>${escapeHtml(opportunity.unitSamCode || opportunity.unit || "Sem unidade")} · ${escapeHtml(opportunity.status || lead.status || "Sem status")}</span>
             <small>${escapeHtml(opportunity.assignedName || "Sem corretor")}${displayed.length > 1 ? ` · #${index + 1}` : ""}</small>
+            ${opportunities.length ? opportunityFields(opportunity) : ""}
           </article>
         `).join("")}
       </div>
-      <div class="interest-grid">
+      ${opportunities.length ? "" : `<div class="interest-grid">
         <div class="field"><label>Empreendimento desejado</label><select name="desiredProject" form="leadDetailForm">
           <option value="">Selecione</option>
           ${projectOptions(project)}
         </select></div>
         <div class="field"><label>Unidade</label><input name="desiredUnit" form="leadDetailForm" value="${escapeHtml(lead.desiredUnit || lead.unit || "")}"></div>
         <div class="field"><label>Valor da unidade</label><input name="unitValue" form="leadDetailForm" value="${escapeHtml(lead.unitValue || lead.value || "")}"></div>
-      </div>
+      </div>`}
     </div>
   `;
 }

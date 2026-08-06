@@ -1624,6 +1624,28 @@ textarea {
   font-size: 12px;
 }
 
+.opportunity-fields {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 8px;
+}
+
+.opportunity-fields .field {
+  gap: 3px;
+}
+
+.opportunity-fields .field label {
+  font-size: 10px;
+}
+
+.opportunity-fields .field input {
+  min-height: 34px;
+  padding: 7px 9px;
+  background: #fff;
+  color: var(--ink);
+}
+
 .card[data-open-lead],
 tr[data-open-lead] {
   cursor: pointer;
