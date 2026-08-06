@@ -5197,11 +5197,26 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
   const eventUnit = normalizeUnitForMatch(fields.unit || event.unit || "");
   const requestedOpportunityId = String(fields.opportunityId || "").trim();
   const shouldCreateOpportunity = Boolean(fields.createOpportunity);
+  const shouldLinkLeadDirect = Boolean(fields.linkLeadDirect);
+  const eventHadOpportunityOptions = Array.isArray(event.opportunityOptions) && event.opportunityOptions.length > 0;
   let opportunity = requestedOpportunityId
     ? existingOpportunities.find((item) => item.id === requestedOpportunityId)
     : existingOpportunities.find((item) => eventUnit && opportunityUnitsForMatch(item).includes(eventUnit));
   if (requestedOpportunityId && !opportunity) {
     throw new Error("Oportunidade selecionada não encontrada para este lead.");
+  }
+  if (!opportunity && shouldLinkLeadDirect && !eventHadOpportunityOptions) {
+    opportunity = existingOpportunities[0] || leadOpportunitySnapshot(lead, {
+      source: "SAM",
+      status: nextStatus,
+      project: fields.project || event.project || projectNameForUnit(eventUnit, projectDefinitions),
+      unit: fields.unit || eventUnit,
+      unitSamCode: eventUnit,
+      unitValue: fields.unitValue || event.rawContractValue || event.contractValue || "",
+      inPipeline: true,
+      legacyMaterialized: true
+    });
+    if (!existingOpportunities.some((item) => item.id === opportunity.id)) existingOpportunities.push(opportunity);
   }
   const previousOpportunityStatus = opportunity?.status || previousStatus;
   if (!opportunity && !shouldCreateOpportunity) {
@@ -9470,7 +9485,8 @@ async function fastStructuredSamEventAction(req, res, url) {
     const fields = {
       ...(body.fields && typeof body.fields === "object" ? body.fields : {}),
       opportunityId: body.opportunityId || body.fields?.opportunityId || "",
-      createOpportunity: Boolean(body.createOpportunity || body.fields?.createOpportunity)
+      createOpportunity: Boolean(body.createOpportunity || body.fields?.createOpportunity),
+      linkLeadDirect: Boolean(body.linkLeadDirect || body.fields?.linkLeadDirect)
     };
     const result = await applyStructuredSamEventToLead(sql, user, event, lead, fields);
     await structuredAudit(user, "LINK_SAM_EVENT", { samEventId: event.id, eventId: event.eventId, leadId: lead.id, from: result.previousStatus, to: result.nextStatus, levSaleId: result.levSale?.id || "" });

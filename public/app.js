@@ -5371,7 +5371,14 @@ function samEventStatusLabel(status) {
 
 function samEventDetailLabel(event) {
   if (event.status === "matched") return `Pronto para vincular: ${event.nextStatus || "-"}`;
-  if (event.status === "unit_mismatch" || event.status === "opportunity_required") return `Unidade recebida: ${event.unit || "-"} · Oportunidades: ${(event.opportunityOptions || []).map((item) => item.unit || "Sem unidade").join(", ") || (event.leadUnits || []).join(", ") || "-"}`;
+  if (event.status === "unit_mismatch" || event.status === "opportunity_required") {
+    const opportunities = event.opportunityOptions || [];
+    const units = (event.leadUnits || []).filter(Boolean);
+    if (opportunities.length) {
+      return `Unidade recebida: ${event.unit || "-"} · Oportunidades: ${opportunities.map((item) => `${item.unit || "Sem unidade"} (${item.project || "Sem empreendimento"})`).join(", ")}`;
+    }
+    return `Unidade recebida: ${event.unit || "-"} · Unidade no lead: ${units.join(", ") || "-"}`;
+  }
   if (event.status === "not_found") return "Procure manualmente antes de vincular";
   if (event.status === "linked") return `Tratado por ${event.resolvedBy || "-"} em ${event.resolvedAt ? dateTimeLabel(event.resolvedAt) : "-"}`;
   if (event.status === "ignored") return `Ignorado por ${event.resolvedBy || "-"}`;
@@ -5511,12 +5518,13 @@ function renderLogSettings() {
         : '<span class="muted-cell">Sem lead sugerido</span>';
       const opportunityActions = (event.opportunityOptions || [])
         .filter((opportunity) => opportunity.id)
-        .map((opportunity) => `<button type="button" data-sam-link="${escapeHtml(event.id)}" data-sam-opportunity="${escapeHtml(opportunity.id)}">Vincular: ${escapeHtml(opportunity.unit || "Sem unidade")} · ${escapeHtml(opportunity.project || "Sem empreendimento")}</button>`);
+        .map((opportunity) => `<button type="button" data-sam-link="${escapeHtml(event.id)}" data-sam-opportunity="${escapeHtml(opportunity.id)}">Vincular oportunidade: ${escapeHtml(opportunity.unit || "Sem unidade")} · ${escapeHtml(opportunity.project || "Sem empreendimento")}${opportunity.assignedName ? ` · ${escapeHtml(opportunity.assignedName)}` : ""}</button>`);
+      const hasOpportunityOptions = opportunityActions.length > 0;
       const actions = canAct ? [
         ...opportunityActions,
-        !opportunityActions.length && event.status === "matched" ? `<button type="button" data-sam-link="${escapeHtml(event.id)}">Vincular ao interesse atual</button>` : "",
+        event.leadId && !hasOpportunityOptions ? `<button type="button" data-sam-link-lead="${escapeHtml(event.id)}">Vincular ao lead</button>` : "",
         event.leadId ? `<button type="button" data-sam-create-opportunity="${escapeHtml(event.id)}">Gerar nova oportunidade</button>` : "",
-        `<button type="button" data-sam-find="${escapeHtml(event.id)}">Encontrar lead manualmente</button>`,
+        `<button type="button" data-sam-find="${escapeHtml(event.id)}">${hasOpportunityOptions ? "Encontrar lead/oportunidade manualmente" : "Encontrar lead manualmente"}</button>`,
         `<button type="button" class="danger-menu-item" data-sam-ignore="${escapeHtml(event.id)}">Ignorar</button>`
       ] : canReopen ? [
         `<button type="button" data-sam-reopen="${escapeHtml(event.id)}">Reabrir para conferência</button>`
@@ -5640,6 +5648,22 @@ function renderLogSettings() {
         await api(`/api/sam-events/${encodeURIComponent(button.dataset.samLink)}/link`, {
           method: "POST",
           body: JSON.stringify({ opportunityId: button.dataset.samOpportunity || "" })
+        });
+        invalidateLeads();
+        await loadState();
+        renderLogSettings();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+  });
+  document.querySelectorAll("[data-sam-link-lead]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Vincular este evento diretamente ao lead encontrado e aplicar a atualização do SAM?")) return;
+      try {
+        await api(`/api/sam-events/${encodeURIComponent(button.dataset.samLinkLead)}/link`, {
+          method: "POST",
+          body: JSON.stringify({ linkLeadDirect: true })
         });
         invalidateLeads();
         await loadState();
