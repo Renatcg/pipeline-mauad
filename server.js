@@ -9481,11 +9481,13 @@ async function fastStructuredSamEventAction(req, res, url) {
       const lead = await structuredLeadById(sql, event.leadId, user);
       if (!lead) return sendJson(res, 404, { error: "Lead vinculado não encontrado" });
       const opportunities = (await structuredOpportunitiesForLeadIds(sql, [lead.id])).get(lead.id) || [];
-      const eventOpportunityExists = event.opportunityId && opportunities.some((opportunity) => opportunity.id === event.opportunityId);
+      const eventUnit = normalizeUnitForMatch(event.unit || "");
+      const eventOpportunity = event.opportunityId ? opportunities.find((opportunity) => opportunity.id === event.opportunityId) : null;
+      const eventOpportunityMatchesUnit = Boolean(eventOpportunity && eventUnit && opportunityUnitsForMatch(eventOpportunity).includes(eventUnit));
       const fields = {
         ...(body.fields && typeof body.fields === "object" ? body.fields : {}),
-        opportunityId: eventOpportunityExists ? event.opportunityId : "",
-        createOpportunity: !eventOpportunityExists,
+        opportunityId: eventOpportunityMatchesUnit ? event.opportunityId : "",
+        createOpportunity: !eventOpportunityMatchesUnit,
         linkLeadDirect: false
       };
       const result = await applyStructuredSamEventToLead(sql, user, event, lead, fields);
