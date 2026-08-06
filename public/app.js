@@ -5544,6 +5544,7 @@ function renderLogSettings() {
         `<button type="button" data-sam-find="${escapeHtml(event.id)}">${hasOpportunityOptions ? "Encontrar lead/oportunidade manualmente" : "Encontrar lead manualmente"}</button>`,
         `<button type="button" class="danger-menu-item" data-sam-ignore="${escapeHtml(event.id)}">Ignorar</button>`
       ] : canReopen ? [
+        `<button type="button" data-sam-reprocess="${escapeHtml(event.id)}">Reprocessar com lógica atual</button>`,
         `<button type="button" data-sam-reopen="${escapeHtml(event.id)}">Reabrir para conferência</button>`
       ] : [];
       return `
@@ -5711,6 +5712,19 @@ function renderLogSettings() {
       if (!confirm("Reabrir este evento SAM para conferência? Isso não desfaz alterações já aplicadas no lead.")) return;
       try {
         await api(`/api/sam-events/${encodeURIComponent(button.dataset.samReopen)}/reopen`, { method: "POST", body: JSON.stringify({}) });
+        await loadState();
+        renderLogSettings();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+  });
+  document.querySelectorAll("[data-sam-reprocess]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Reprocessar este evento SAM com a regra atual de oportunidades?")) return;
+      try {
+        await api(`/api/sam-events/${encodeURIComponent(button.dataset.samReprocess)}/reprocess`, { method: "POST", body: JSON.stringify({}) });
+        invalidateLeads();
         await loadState();
         renderLogSettings();
       } catch (error) {

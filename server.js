@@ -9456,7 +9456,7 @@ async function fastStructuredSamWebhook(req, res, url) {
 
 async function fastStructuredSamEventAction(req, res, url) {
   if (!DATABASE_URL || req.method !== "POST") return false;
-  const match = url.pathname.match(/^\/api\/sam-events\/([^/]+)\/(link|ignore|reopen)$/);
+  const match = url.pathname.match(/^\/api\/sam-events\/([^/]+)\/(link|ignore|reopen|reprocess)$/);
   if (!match) return false;
   try {
     const sql = await getSql();
@@ -9475,6 +9475,22 @@ async function fastStructuredSamEventAction(req, res, url) {
       await structuredIntegration("SAM", "REOPENED", { eventId: event.eventId, samEventId: event.id, status: event.status });
       await structuredAudit(user, "REOPEN_SAM_EVENT", { samEventId: event.id, eventId: event.eventId, status: event.status });
       return sendJson(res, 200, { samEvent: event });
+    }
+    if (match[2] === "reprocess") {
+      if (!event.leadId) return sendJson(res, 400, { error: "Evento sem lead vinculado para reprocessar" });
+      const lead = await structuredLeadById(sql, event.leadId, user);
+      if (!lead) return sendJson(res, 404, { error: "Lead vinculado não encontrado" });
+      const opportunities = (await structuredOpportunitiesForLeadIds(sql, [lead.id])).get(lead.id) || [];
+      const eventOpportunityExists = event.opportunityId && opportunities.some((opportunity) => opportunity.id === event.opportunityId);
+      const fields = {
+        ...(body.fields && typeof body.fields === "object" ? body.fields : {}),
+        opportunityId: eventOpportunityExists ? event.opportunityId : "",
+        createOpportunity: !eventOpportunityExists,
+        linkLeadDirect: false
+      };
+      const result = await applyStructuredSamEventToLead(sql, user, event, lead, fields);
+      await structuredAudit(user, "REPROCESS_SAM_EVENT", { samEventId: event.id, eventId: event.eventId, leadId: lead.id, opportunityId: event.opportunityId || "", from: result.previousStatus, to: result.nextStatus });
+      return sendJson(res, 200, { samEvent: event, lead: publicLead(lead, user), levSale: result.levSale || null });
     }
     if (event.status === "linked" || event.status === "ignored") return sendJson(res, 400, { error: "Evento já tratado" });
     if (match[2] === "ignore") {
