@@ -4791,7 +4791,7 @@ function filledSamValue(...values) {
   return "";
 }
 
-function applySamDataToLead(lead, event, fields = {}, projectDefinitions = []) {
+function applySamDataToLead(lead, event, fields = {}, projectDefinitions = [], options = {}) {
   const unit = normalizeUnitForMatch(filledSamValue(fields.unit, fields.desiredUnit, event.unit));
   const project = filledSamValue(fields.project, fields.desiredProject, event.project, projectNameForUnit(unit, projectDefinitions));
   const email = filledSamValue(fields.email, event.email);
@@ -4799,15 +4799,15 @@ function applySamDataToLead(lead, event, fields = {}, projectDefinitions = []) {
   const unitValue = filledSamValue(fields.unitValue, fields.contractValue, event.contractValue, event.valorContrato);
   if (email) lead.email = email;
   if (phone) lead.phone = phone;
-  if (unit) {
+  if (!options.preserveOpportunityFields && unit) {
     lead.unit = unit;
     lead.desiredUnit = unit;
   }
-  if (project) {
+  if (!options.preserveOpportunityFields && project) {
     lead.project = project;
     lead.desiredProject = project;
   }
-  if (unitValue) lead.unitValue = unitValue;
+  if (!options.preserveOpportunityFields && unitValue) lead.unitValue = unitValue;
   return { unit, project, email, phone, unitValue };
 }
 
@@ -5254,7 +5254,10 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
   }
   lead.status = nextStatus;
   lead.inPipeline = true;
-  const appliedFields = applySamDataToLead(lead, event, fields, projectDefinitions);
+  const shouldApplySamOpportunityFieldsToLead = shouldLinkLeadDirect || (!requestedOpportunityId && !shouldCreateOpportunity);
+  const appliedFields = applySamDataToLead(lead, event, fields, projectDefinitions, {
+    preserveOpportunityFields: !shouldApplySamOpportunityFieldsToLead
+  });
   lead.samLastEvent = {
     eventId: event.eventId,
     eventType: event.eventType,
@@ -8370,11 +8373,18 @@ async function saveStructuredOpportunity(sql, opportunity) {
 async function materializeLegacyOpportunityIfNeeded(sql, lead) {
   const existing = await structuredOpportunitiesForLeadIds(sql, [lead.id]);
   const opportunities = existing.get(lead.id) || [];
-  if (opportunities.length) return opportunities;
   const legacy = leadOpportunitySnapshot(lead, { legacyMaterialized: true, createdAt: lead.createdAt || new Date().toISOString(), updatedAt: lead.updatedAt || new Date().toISOString() });
-  if (!opportunityHasMeaning(legacy)) return [];
+  if (!opportunityHasMeaning(legacy)) return opportunities;
+  if (opportunities.length) {
+    const legacyUnits = opportunityUnitsForMatch(legacy);
+    const alreadyRepresented = legacyUnits.length && opportunities.some((opportunity) => {
+      const units = opportunityUnitsForMatch(opportunity);
+      return legacyUnits.some((unit) => units.includes(unit));
+    });
+    if (alreadyRepresented || !legacyUnits.length) return opportunities;
+  }
   await saveStructuredOpportunity(sql, legacy);
-  return [legacy];
+  return [legacy, ...opportunities];
 }
 
 async function structuredLeadById(sql, leadId, user) {
