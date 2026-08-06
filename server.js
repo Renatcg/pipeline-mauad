@@ -7750,7 +7750,7 @@ async function structuredLeadsForState(db, user, scope = "all") {
     } else {
       rows = await sql`SELECT payload FROM crm_leads ORDER BY in_pipeline DESC, updated_at DESC NULLS LAST, created_at DESC NULLS LAST`;
     }
-    const leads = rows.map((row) => row.payload || {}).filter((item) => item.id);
+    const leads = await attachStructuredOpportunities(sql, rows.map((row) => row.payload || {}).filter((item) => item.id));
     const visibleStructuredLeads = visibleLeadsFromList(db, user, leads).filter((lead) => leadMatchesScope(lead, scope));
     if (fallbackLeads.length && visibleStructuredLeads.length < Math.floor(fallbackLeads.length * 0.95)) return fallback;
     return {
