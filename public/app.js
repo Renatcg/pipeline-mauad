@@ -2560,8 +2560,9 @@ function leadCardInfoActions(lead) {
   const comments = [...(Array.isArray(lead.comments) ? lead.comments : [])]
     .filter((comment) => !comment.deletedAt || currentUser()?.role === "Admin TI")
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const commentCount = Math.max(Number(lead.commentCount || 0), comments.length);
   const notes = String(lead.notes || "").trim();
-  if (!comments.length && !notes) return "";
+  if (!commentCount && !notes) return "";
   const commentPreview = comments.slice(0, 3).map((comment) => `
     <div class="card-info-preview-item">
       <strong>${escapeHtml(comment.fromLead ? lead.name : comment.userName || comment.user || "Sistema")}</strong>
@@ -2571,13 +2572,13 @@ function leadCardInfoActions(lead) {
   `).join("");
   return `
     <div class="card-info-actions">
-      ${comments.length ? `
+      ${commentCount ? `
         <span class="card-info-action" data-card-info="message" tabindex="0" title="Comentários">
           ${cardInfoIconSvg("message")}
           <span class="card-info-popover">
             <strong>Comentários</strong>
-            ${commentPreview}
-            ${comments.length > 3 ? `<em>Existem mais ${comments.length - 3} comentário(s).</em>` : ""}
+            ${commentPreview || "<p>Há comentários neste lead.</p>"}
+            ${commentCount > comments.length ? `<em>Existem mais ${commentCount - comments.length} comentário(s).</em>` : ""}
           </span>
         </span>
       ` : ""}

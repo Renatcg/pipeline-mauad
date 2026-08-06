@@ -3449,9 +3449,12 @@ function publicLead(lead, user) {
 
 function publicLeadSummary(lead, user) {
   const { comments, favoritesByUser, meta, ...summary } = lead;
+  const commentPreview = Array.isArray(comments) ? comments.slice(0, 3) : [];
   return {
     ...summary,
     meta: meta ? { ...meta, rawFields: undefined } : meta,
+    comments: commentPreview,
+    commentCount: Number(lead.commentCount || commentPreview.length || 0),
     favorite: Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite),
     detailLoaded: false
   };
@@ -7753,7 +7756,8 @@ async function structuredLeadsForState(db, user, scope = "all") {
     } else {
       rows = await sql`SELECT payload FROM crm_leads ORDER BY in_pipeline DESC, updated_at DESC NULLS LAST, created_at DESC NULLS LAST`;
     }
-    const leads = await attachStructuredOpportunities(sql, rows.map((row) => row.payload || {}).filter((item) => item.id));
+    let leads = await attachStructuredOpportunities(sql, rows.map((row) => row.payload || {}).filter((item) => item.id));
+    if (scope === "pipeline") leads = await attachStructuredCommentPreviews(sql, leads);
     const visibleStructuredLeads = visibleLeadsFromList(db, user, leads).filter((lead) => leadMatchesScope(lead, scope));
     if (fallbackLeads.length && visibleStructuredLeads.length < Math.floor(fallbackLeads.length * 0.95)) return fallback;
     return {
@@ -8336,6 +8340,27 @@ async function attachStructuredOpportunities(sql, leads = []) {
     ...lead,
     opportunities: byLead.get(lead.id) || []
   }));
+}
+
+async function attachStructuredCommentPreviews(sql, leads = []) {
+  const leadIds = leads.map((lead) => lead.id).filter(Boolean);
+  if (!leadIds.length) return leads;
+  const rows = await sql`SELECT lead_id, payload FROM crm_lead_comments WHERE lead_id = ANY(${leadIds}) AND deleted = false ORDER BY created_at DESC NULLS LAST`;
+  const commentsByLead = new Map();
+  for (const row of rows) {
+    const comment = row.payload || {};
+    if (!comment.id) continue;
+    if (!commentsByLead.has(row.lead_id)) commentsByLead.set(row.lead_id, []);
+    commentsByLead.get(row.lead_id).push(comment);
+  }
+  return leads.map((lead) => {
+    const comments = commentsByLead.get(lead.id) || [];
+    return {
+      ...lead,
+      comments: comments.slice(0, 3),
+      commentCount: comments.length
+    };
+  });
 }
 
 function leadOpportunitySnapshot(lead, overrides = {}) {
@@ -9256,8 +9281,10 @@ async function fastStructuredLeadsResponse(req, res, url) {
         previousPipelineSource: row.previous_pipeline_source
       }).some((source) => allowedSources.includes(source)));
     }
+    let leads = await attachStructuredOpportunities(sql, rows.map((row) => structuredLeadFromRow(row, row.favorite, row.tags)));
+    if (scope === "pipeline") leads = await attachStructuredCommentPreviews(sql, leads);
     return sendJson(res, 200, {
-      leads: (await attachStructuredOpportunities(sql, rows.map((row) => structuredLeadFromRow(row, row.favorite, row.tags)))).map((lead) => publicLeadSummary(lead, user)),
+      leads: leads.map((lead) => publicLeadSummary(lead, user)),
       scope,
       dataSources: { leads: "structured" }
     });
