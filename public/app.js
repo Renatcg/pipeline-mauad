@@ -912,9 +912,26 @@ function pipelineItemFromOpportunity(lead, opportunity, allOpportunities = []) {
 function pipelineItemsFromLead(lead) {
   const opportunities = realLeadOpportunities(lead);
   if (!opportunities.length) return [pipelineItemFromOpportunity(lead, implicitLeadOpportunity(lead), [])];
-  return opportunities
+  const items = opportunities
     .filter((opportunity) => opportunity.inPipeline !== false)
     .map((opportunity) => pipelineItemFromOpportunity(lead, opportunity, opportunities));
+  const implicit = implicitLeadOpportunity(lead);
+  const implicitUnit = availabilityNormalizeUnit(implicit.unitSamCode || implicit.unit);
+  const implicitHasOwnUnit = Boolean(implicitUnit) && !opportunities.some((opportunity) => {
+    const opportunityUnits = [opportunity.unitSamCode, opportunity.unit, opportunity.desiredUnit]
+      .map(availabilityNormalizeUnit)
+      .filter(Boolean);
+    return opportunityUnits.includes(implicitUnit);
+  });
+  if (implicitHasOwnUnit) {
+    const opportunityList = [implicit, ...opportunities];
+    return [pipelineItemFromOpportunity(lead, implicit, opportunityList), ...items.map((item) => ({
+      ...item,
+      opportunityCount: opportunityList.length,
+      opportunityList
+    }))];
+  }
+  return items;
 }
 
 function pipelineLeads() {
