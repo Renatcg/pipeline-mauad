@@ -1343,11 +1343,11 @@ async function loadState() {
 }
 
 function viewNeedsLeads(view = state.view) {
-  return ["kanban", "sheet", "odysseia", "dashboard", "salesReport"].includes(view);
+  return ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "availability"].includes(view);
 }
 
 function leadScopeForView(view = state.view) {
-  if (["kanban", "sheet", "dashboard", "salesReport"].includes(view)) return "pipeline";
+  if (["kanban", "sheet", "dashboard", "salesReport", "availability"].includes(view)) return "pipeline";
   if (view === "odysseia") return "bases";
   return "";
 }
@@ -1793,6 +1793,22 @@ function generatedUnitCodes(projectName, block, floor, column) {
   };
 }
 
+function availabilityUnitSamCandidates(unit = {}, projectName = unit.project || "") {
+  const candidates = [unit.samCode, unit.unitSamCode];
+  const generated = generatedUnitCodes(projectName, unit.block, unit.floor, unit.column);
+  candidates.push(generated.samCode);
+  const visualMatch = String(unit.unit || "").match(/(\d+)\D+(\d+)/);
+  if (visualMatch) {
+    const [, block, unitNumber] = visualMatch;
+    const blockCode = padUnitPart(block, 2);
+    const unitDigits = String(unitNumber || "").replace(/\D/g, "");
+    const floor = unitDigits.length > 2 ? unitDigits.slice(0, -2) : unit.floor;
+    const column = unitDigits.slice(-2) || unit.column;
+    candidates.push(generatedUnitCodes(projectName, blockCode, floor, column).samCode);
+  }
+  return [...new Set(candidates.map(availabilityNormalizeUnit).filter(Boolean))];
+}
+
 function availabilityNormalizeUnit(value) {
   return String(value || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
 }
@@ -1881,6 +1897,9 @@ function mergeAvailabilityUnitSnapshot(unit, snapshot) {
 function virtualUnitsForProject(projectName) {
   const existingByKey = new Map(unitsForAvailabilityProject(projectName).map((unit) => [`${padUnitPart(unit.block, 2)}:${String(unit.floor || "")}:${padUnitPart(unit.column, 2)}`, unit]));
   const unitStatusBySamCode = availabilityLeadUnitSnapshots(projectName);
+  const snapshotForUnit = (unit) => availabilityUnitSamCandidates(unit, projectName)
+    .map((candidate) => unitStatusBySamCode.get(candidate))
+    .find(Boolean);
   const virtualUnits = [];
   blockDefinitionsForProject(projectName).forEach((block) => {
     const floorCount = Number(block.floorCount || 0);
@@ -1893,7 +1912,6 @@ function virtualUnitsForProject(projectName) {
         const key = `${blockCode}:${floor}:${columnCode}`;
         const generated = generatedUnitCodes(projectName, block.block, floor, column);
         const existing = existingByKey.get(key) || {};
-        const snapshot = unitStatusBySamCode.get(availabilityNormalizeUnit(existing.samCode || generated.samCode));
         const unit = existing.id ? existing : {
           id: `virtual:${projectName}:${key}`,
           project: projectName,
@@ -1907,13 +1925,13 @@ function virtualUnitsForProject(projectName) {
           floorKind: block.hasPenthouse && floor === totalFloors ? "Cobertura" : "Tipo",
           structureType: block.structureType || "Bloco"
         };
-        virtualUnits.push(mergeAvailabilityUnitSnapshot(unit, snapshot));
+        virtualUnits.push(mergeAvailabilityUnitSnapshot(unit, snapshotForUnit(unit)));
       }
     }
   });
   if (virtualUnits.length) return virtualUnits;
   return unitsForAvailabilityProject(projectName).map((unit) => (
-    mergeAvailabilityUnitSnapshot(unit, unitStatusBySamCode.get(availabilityNormalizeUnit(unit.samCode)))
+    mergeAvailabilityUnitSnapshot(unit, snapshotForUnit(unit))
   ));
 }
 
