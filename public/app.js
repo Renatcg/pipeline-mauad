@@ -5363,14 +5363,15 @@ function samEventStatusLabel(status) {
     unit_mismatch: "Unidade divergente",
     not_found: "Lead não encontrado",
     linked: "Vinculado",
-    ignored: "Ignorado"
+    ignored: "Ignorado",
+    opportunity_required: "Oportunidade pendente"
   };
   return labels[status] || status || "Pendente";
 }
 
 function samEventDetailLabel(event) {
   if (event.status === "matched") return `Pronto para vincular: ${event.nextStatus || "-"}`;
-  if (event.status === "unit_mismatch") return `Unidade no lead: ${(event.leadUnits || []).join(", ") || "-"}`;
+  if (event.status === "unit_mismatch" || event.status === "opportunity_required") return `Unidade recebida: ${event.unit || "-"} · Oportunidades: ${(event.opportunityOptions || []).map((item) => item.unit || "Sem unidade").join(", ") || (event.leadUnits || []).join(", ") || "-"}`;
   if (event.status === "not_found") return "Procure manualmente antes de vincular";
   if (event.status === "linked") return `Tratado por ${event.resolvedBy || "-"} em ${event.resolvedAt ? dateTimeLabel(event.resolvedAt) : "-"}`;
   if (event.status === "ignored") return `Ignorado por ${event.resolvedBy || "-"}`;
@@ -5507,8 +5508,13 @@ function renderLogSettings() {
       const leadCell = event.leadId
         ? `<button type="button" class="link-button" data-open-sam-lead="${escapeHtml(event.leadId)}">${escapeHtml(event.leadName || event.leadId)}</button>`
         : '<span class="muted-cell">Sem lead sugerido</span>';
+      const opportunityActions = (event.opportunityOptions || [])
+        .filter((opportunity) => opportunity.id)
+        .map((opportunity) => `<button type="button" data-sam-link="${escapeHtml(event.id)}" data-sam-opportunity="${escapeHtml(opportunity.id)}">Vincular: ${escapeHtml(opportunity.unit || "Sem unidade")} · ${escapeHtml(opportunity.project || "Sem empreendimento")}</button>`);
       const actions = canAct ? [
-        event.leadId ? `<button type="button" data-sam-link="${escapeHtml(event.id)}">Vincular ao lead encontrado</button>` : "",
+        ...opportunityActions,
+        !opportunityActions.length && event.status === "matched" ? `<button type="button" data-sam-link="${escapeHtml(event.id)}">Vincular ao interesse atual</button>` : "",
+        event.leadId ? `<button type="button" data-sam-create-opportunity="${escapeHtml(event.id)}">Gerar nova oportunidade</button>` : "",
         `<button type="button" data-sam-find="${escapeHtml(event.id)}">Encontrar lead manualmente</button>`,
         `<button type="button" class="danger-menu-item" data-sam-ignore="${escapeHtml(event.id)}">Ignorar</button>`
       ] : [];
@@ -5626,9 +5632,28 @@ function renderLogSettings() {
   });
   document.querySelectorAll("[data-sam-link]").forEach((button) => {
     button.addEventListener("click", async () => {
-      if (!confirm("Vincular este evento ao lead encontrado e aplicar a atualização de status?")) return;
+      if (!confirm("Vincular este evento à oportunidade selecionada e aplicar a atualização de status?")) return;
       try {
-        await api(`/api/sam-events/${encodeURIComponent(button.dataset.samLink)}/link`, { method: "POST", body: JSON.stringify({}) });
+        await api(`/api/sam-events/${encodeURIComponent(button.dataset.samLink)}/link`, {
+          method: "POST",
+          body: JSON.stringify({ opportunityId: button.dataset.samOpportunity || "" })
+        });
+        invalidateLeads();
+        await loadState();
+        renderLogSettings();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+  });
+  document.querySelectorAll("[data-sam-create-opportunity]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Gerar uma nova oportunidade para a unidade recebida pelo SAM e aplicar a atualização?")) return;
+      try {
+        await api(`/api/sam-events/${encodeURIComponent(button.dataset.samCreateOpportunity)}/link`, {
+          method: "POST",
+          body: JSON.stringify({ createOpportunity: true })
+        });
         invalidateLeads();
         await loadState();
         renderLogSettings();
@@ -5641,8 +5666,9 @@ function renderLogSettings() {
     button.addEventListener("click", async () => {
       const search = prompt("Digite ID, nome, e-mail ou telefone do lead para vincular:");
       if (!search) return;
+      const createOpportunity = confirm("Se a unidade do SAM não existir nas oportunidades desse lead, deseja gerar uma nova oportunidade?");
       try {
-        await api(`/api/sam-events/${encodeURIComponent(button.dataset.samFind)}/link`, { method: "POST", body: JSON.stringify({ search }) });
+        await api(`/api/sam-events/${encodeURIComponent(button.dataset.samFind)}/link`, { method: "POST", body: JSON.stringify({ search, createOpportunity }) });
         invalidateLeads();
         await loadState();
         renderLogSettings();

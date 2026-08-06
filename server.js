@@ -3217,6 +3217,22 @@ function leadUnitsForMatch(lead) {
     .filter(Boolean);
 }
 
+function opportunityUnitsForMatch(opportunity) {
+  return [opportunity?.unitSamCode, opportunity?.unit, opportunity?.desiredUnit]
+    .map(normalizeUnitForMatch)
+    .filter(Boolean);
+}
+
+function samOpportunityOption(opportunity) {
+  return {
+    id: opportunity.id || "",
+    project: opportunity.project || "",
+    unit: opportunity.unitSamCode || opportunity.unit || "",
+    status: opportunity.status || "",
+    assignedName: opportunity.assignedName || ""
+  };
+}
+
 function findSamLeadCandidate(db, { email, phone }) {
   const normalizedEmail = normalizeEmail(email);
   const normalizedPhone = normalizePhoneDigits(phone);
@@ -5111,8 +5127,16 @@ async function processSamWebhookStructured(payload) {
   ]);
   const nextStatus = samStatusToPipelineStatusFromList(statuses, eventType);
   const project = projectNameForUnit(unit, projectDefinitions);
-  const leadUnits = lead ? leadUnitsForMatch(lead) : [];
-  const unitMatches = Boolean(lead && leadUnits.includes(unit));
+  const opportunityRows = lead ? await structuredOpportunitiesForLeadIds(sql, [lead.id]) : new Map();
+  const opportunities = lead ? (opportunityRows.get(lead.id) || []) : [];
+  const opportunityOptions = opportunities.map(samOpportunityOption).filter((item) => item.id);
+  const matchingOpportunity = opportunities.find((opportunity) => opportunityUnitsForMatch(opportunity).includes(unit));
+  const leadUnits = lead
+    ? opportunities.length
+      ? opportunities.flatMap(opportunityUnitsForMatch)
+      : leadUnitsForMatch(lead)
+    : [];
+  const unitMatches = Boolean(lead && (matchingOpportunity || (!opportunities.length && leadUnits.includes(unit))));
   const event = {
     id: `sam-${crypto.randomUUID()}`,
     eventId,
@@ -5129,6 +5153,8 @@ async function processSamWebhookStructured(payload) {
     leadId: lead?.id || "",
     leadName: lead?.name || "",
     leadUnits,
+    opportunityId: matchingOpportunity?.id || "",
+    opportunityOptions,
     createdAt: new Date().toISOString(),
     resolvedAt: "",
     resolvedBy: "",
@@ -5169,11 +5195,27 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
   }
   const existingOpportunities = await materializeLegacyOpportunityIfNeeded(sql, lead);
   const eventUnit = normalizeUnitForMatch(fields.unit || event.unit || "");
-  let opportunity = existingOpportunities.find((item) => {
-    const values = [item.unitSamCode, item.unit, item.desiredUnit].map(normalizeUnitForMatch).filter(Boolean);
-    return eventUnit && values.includes(eventUnit);
-  });
+  const requestedOpportunityId = String(fields.opportunityId || "").trim();
+  const shouldCreateOpportunity = Boolean(fields.createOpportunity);
+  let opportunity = requestedOpportunityId
+    ? existingOpportunities.find((item) => item.id === requestedOpportunityId)
+    : existingOpportunities.find((item) => eventUnit && opportunityUnitsForMatch(item).includes(eventUnit));
+  if (requestedOpportunityId && !opportunity) {
+    throw new Error("Oportunidade selecionada não encontrada para este lead.");
+  }
   const previousOpportunityStatus = opportunity?.status || previousStatus;
+  if (!opportunity && !shouldCreateOpportunity) {
+    event.status = "unit_mismatch";
+    event.leadId = lead.id;
+    event.leadName = lead.name || "";
+    event.leadUnits = existingOpportunities.length
+      ? existingOpportunities.flatMap(opportunityUnitsForMatch)
+      : leadUnitsForMatch(lead);
+    event.opportunityOptions = existingOpportunities.map(samOpportunityOption).filter((item) => item.id);
+    event.resolution = "needs_opportunity_selection";
+    await saveStructuredSamEvent(sql, event);
+    throw new Error("Unidade não vinculada a nenhuma oportunidade. Gere uma nova oportunidade ou selecione uma oportunidade existente em Logs > SAM.");
+  }
   if (!opportunity) {
     opportunity = leadOpportunitySnapshot(lead, {
       source: "SAM",
@@ -5209,6 +5251,8 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
   event.status = "linked";
   event.leadId = lead.id;
   event.leadName = lead.name || "";
+  event.opportunityId = opportunity.id;
+  event.opportunityOptions = existingOpportunities.map((item) => item.id === opportunity.id ? opportunity : item).map(samOpportunityOption).filter((item) => item.id);
   event.resolution = "linked";
   event.resolvedAt = lead.updatedAt;
   event.resolvedBy = user.username;
@@ -9388,7 +9432,11 @@ async function fastStructuredSamEventAction(req, res, url) {
       ? await findStructuredLeadForSamManualLink(sql, body.search)
       : await structuredLeadById(sql, body.leadId || event.leadId, user);
     if (!lead) return sendJson(res, 404, { error: "Lead não encontrado" });
-    const fields = body.fields && typeof body.fields === "object" ? body.fields : {};
+    const fields = {
+      ...(body.fields && typeof body.fields === "object" ? body.fields : {}),
+      opportunityId: body.opportunityId || body.fields?.opportunityId || "",
+      createOpportunity: Boolean(body.createOpportunity || body.fields?.createOpportunity)
+    };
     const result = await applyStructuredSamEventToLead(sql, user, event, lead, fields);
     await structuredAudit(user, "LINK_SAM_EVENT", { samEventId: event.id, eventId: event.eventId, leadId: lead.id, from: result.previousStatus, to: result.nextStatus, levSaleId: result.levSale?.id || "" });
     return sendJson(res, 200, { samEvent: event, lead: publicLead(lead, user), levSale: result.levSale || null });
