@@ -3471,9 +3471,12 @@ function publicLead(lead, user) {
 function publicLeadSummary(lead, user) {
   const { comments, favoritesByUser, meta, ...summary } = lead;
   const commentPreview = Array.isArray(comments) ? comments.slice(0, 3) : [];
+  const rawFieldKeys = meta?.rawFields && typeof meta.rawFields === "object"
+    ? Object.keys(meta.rawFields).filter(Boolean)
+    : [];
   return {
     ...summary,
-    meta: meta ? { ...meta, rawFields: undefined } : meta,
+    meta: meta ? { ...meta, rawFields: undefined, rawFieldKeys } : meta,
     comments: commentPreview,
     commentCount: Number(lead.commentCount || commentPreview.length || 0),
     favorite: Boolean(lead.favoritesByUser?.[user.id] ?? lead.favorite),

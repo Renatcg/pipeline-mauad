@@ -3149,7 +3149,10 @@ function leadProjectValue(lead) {
   if (lead.project) return lead.project;
   const metaProject = metaFormConfigForLead(lead).project;
   if (metaProject) return metaProject;
-  const rawMetaText = metaLabelKey(Object.entries(lead.meta?.rawFields || {}).flat().join(" "));
+  const rawMetaText = metaLabelKey([
+    ...Object.entries(lead.meta?.rawFields || {}).flat(),
+    ...(Array.isArray(lead.meta?.rawFieldKeys) ? lead.meta.rawFieldKeys : [])
+  ].join(" "));
   const rawProject = (state.projects || []).find((project) => rawMetaText.includes(metaLabelKey(project)));
   if (rawProject) return rawProject;
   const project = String(lead.project || "");
@@ -3173,7 +3176,10 @@ function metaFormConfigForLead(lead) {
     const matched = forms.find((item) => metaIdText(item.id || item.formId || item.form_id) === formId);
     if (matched) return matched;
   }
-  const rawQuestionKeys = Object.keys(lead.meta?.rawFields || {}).map(metaLabelKey).filter(Boolean);
+  const rawQuestionKeys = [
+    ...Object.keys(lead.meta?.rawFields || {}),
+    ...(Array.isArray(lead.meta?.rawFieldKeys) ? lead.meta.rawFieldKeys : [])
+  ].map(metaLabelKey).filter(Boolean);
   if (!rawQuestionKeys.length) return {};
   return forms.find((form) => {
     const labelKeys = Object.keys(form.questionLabels || {}).map(metaLabelKey);
