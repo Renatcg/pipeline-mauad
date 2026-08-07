@@ -2089,11 +2089,32 @@ function leadWhatsappUrl(lead) {
 
 function friendlyMetaValue(value, labels = {}) {
   const text = String(value || "").trim();
-  return labels[text] || text;
+  if (labels[text]) return labels[text];
+  const target = metaLabelKey(text);
+  const match = Object.entries(labels || {}).find(([key]) => metaLabelKey(key) === target);
+  return match?.[1] || text;
+}
+
+function metaLabelKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\s_]+/g, "_")
+    .replace(/[.。]+$/g, "")
+    .replace(/^_+|_+$/g, "");
 }
 
 function leadMetaFormConfig(db, lead) {
-  return metaFormForId(db, lead.meta?.formId) || {};
+  const direct = metaFormForId(db, metaIdValue(lead.meta?.formId || lead.meta?.form_id || lead.formId || lead.form_id));
+  if (direct) return direct;
+  const rawQuestionKeys = Object.keys(lead.meta?.rawFields || {}).map(metaLabelKey).filter(Boolean);
+  if (!rawQuestionKeys.length) return {};
+  return (db.integrations?.metaForms?.forms || []).find((form) => {
+    const labelKeys = Object.keys(form.questionLabels || {}).map(metaLabelKey);
+    return rawQuestionKeys.some((key) => labelKeys.includes(key));
+  }) || {};
 }
 
 function leadFormAnswersSummary(db, lead) {
@@ -3552,6 +3573,11 @@ function metaFieldValue(fields, names) {
   return String(field?.values?.[0] || "").trim();
 }
 
+function metaIdValue(value) {
+  if (value && typeof value === "object") return String(value.id || value.value || "").trim();
+  return String(value || "").trim();
+}
+
 function normalizePhone(value) {
   return String(value || "").replace(/[^\d+]/g, "").trim();
 }
@@ -3589,11 +3615,11 @@ function metaRuleMatches(rule, metaLead) {
   const value = String(rule.value || "").trim();
   const lowerValue = value.toLowerCase();
   const comparisons = {
-    ad_id: metaLead.ad_id,
-    form_id: metaLead.form_id,
-    campaign_id: metaLead.campaign_id,
-    ad_name_contains: metaLead.ad_name,
-    campaign_name_contains: metaLead.campaign_name
+    ad_id: metaIdValue(metaLead.ad_id),
+    form_id: metaIdValue(metaLead.form_id),
+    campaign_id: metaIdValue(metaLead.campaign_id),
+    ad_name_contains: metaIdValue(metaLead.ad_name),
+    campaign_name_contains: metaIdValue(metaLead.campaign_name)
   };
   const target = String(comparisons[rule.type] || "").trim();
   if (!target) return false;
@@ -3602,11 +3628,25 @@ function metaRuleMatches(rule, metaLead) {
 }
 
 function mappedMetaProject(db, metaLead) {
-  const formProject = metaFormForId(db, metaLead.form_id)?.project || "";
+  const formProject = metaFormForId(db, metaIdValue(metaLead.form_id))?.project || "";
   if (formProject) return formProject;
   const match = normalizeMetaMappingRules(db.integrations)
     .find((rule) => metaRuleMatches(rule, metaLead));
-  return match?.project || "";
+  if (match?.project) return match.project;
+  return metaProjectFromLeadText(db, metaLead);
+}
+
+function metaProjectFromLeadText(db, metaLead) {
+  const fieldText = (Array.isArray(metaLead?.field_data) ? metaLead.field_data : [])
+    .flatMap((field) => [field.name, ...(Array.isArray(field.values) ? field.values : [])])
+    .join(" ");
+  const text = metaLabelKey([
+    fieldText,
+    metaIdValue(metaLead?.ad_name),
+    metaIdValue(metaLead?.campaign_name)
+  ].join(" "));
+  if (!text) return "";
+  return (db.projects || []).find((project) => text.includes(metaLabelKey(project))) || "";
 }
 
 function metaFormForId(db, formId) {
@@ -4120,7 +4160,9 @@ function createMetaLead(db, leadgenId, metaLead, webhookValue) {
   if (!db.pipelineStatuses.length) db.pipelineStatuses.push("Novo Lead");
   const normalized = normalizeMetaLeadData(metaLead);
   const assignedUser = defaultMetaAssignee(db);
-  const monitoredForm = metaFormForId(db, metaLead.form_id || webhookValue.form_id);
+  const formId = metaIdValue(metaLead.form_id) || metaIdValue(webhookValue.form_id);
+  const adId = metaIdValue(metaLead.ad_id) || metaIdValue(webhookValue.ad_id);
+  const monitoredForm = metaFormForId(db, formId);
   const now = new Date().toISOString();
   const createdAt = metaLead.created_time || now;
   const lead = {
@@ -4138,7 +4180,7 @@ function createMetaLead(db, leadgenId, metaLead, webhookValue) {
     favoritesByUser: {},
     assignedTo: assignedUser?.id || null,
     assignedName: assignedUser?.name || "",
-    desiredProject: monitoredForm?.project || mappedMetaProject(db, metaLead) || normalized.desiredProject,
+    desiredProject: monitoredForm?.project || mappedMetaProject(db, { ...metaLead, form_id: formId, ad_id: adId }) || normalized.desiredProject,
     desiredUnit: "",
     unitValue: "",
     notes: "",
@@ -4148,15 +4190,15 @@ function createMetaLead(db, leadgenId, metaLead, webhookValue) {
     createdAt,
     updatedAt: now,
     meta: {
-      pageId: webhookValue.page_id || "",
-      formId: metaLead.form_id || webhookValue.form_id || "",
-      adId: metaLead.ad_id || webhookValue.ad_id || "",
-      adName: metaLead.ad_name || "",
-      adUrl: metaAdUrlForForm(monitoredForm, metaLead.ad_id || webhookValue.ad_id),
-      adsetId: metaLead.adset_id || "",
-      adsetName: metaLead.adset_name || "",
-      campaignId: metaLead.campaign_id || "",
-      campaignName: metaLead.campaign_name || "",
+      pageId: metaIdValue(webhookValue.page_id),
+      formId,
+      adId,
+      adName: metaIdValue(metaLead.ad_name),
+      adUrl: metaAdUrlForForm(monitoredForm, adId),
+      adsetId: metaIdValue(metaLead.adset_id),
+      adsetName: metaIdValue(metaLead.adset_name),
+      campaignId: metaIdValue(metaLead.campaign_id),
+      campaignName: metaIdValue(metaLead.campaign_name),
       platform: metaLead.platform || "",
       isOrganic: Boolean(metaLead.is_organic),
       rawFields: normalized.rawFields

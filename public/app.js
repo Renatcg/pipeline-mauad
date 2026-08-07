@@ -3147,6 +3147,11 @@ function bindBasePagination() {
 function leadProjectValue(lead) {
   if (lead.desiredProject) return lead.desiredProject;
   if (lead.project) return lead.project;
+  const metaProject = metaFormConfigForLead(lead).project;
+  if (metaProject) return metaProject;
+  const rawMetaText = metaLabelKey(Object.entries(lead.meta?.rawFields || {}).flat().join(" "));
+  const rawProject = (state.projects || []).find((project) => rawMetaText.includes(metaLabelKey(project)));
+  if (rawProject) return rawProject;
   const project = String(lead.project || "");
   if (project.toLowerCase().includes("guinle")) return "Reserva Guinle";
   if (project.toLowerCase().includes("golf")) return "Golf Club Resort";
@@ -3155,25 +3160,50 @@ function leadProjectValue(lead) {
 
 function metaAdUrlForLead(lead) {
   if (lead.meta?.adUrl) return lead.meta.adUrl;
-  const formId = String(lead.meta?.formId || "").trim();
-  if (!formId) return "";
-  const form = (state.integrations?.metaForms?.forms || [])
-    .find((item) => String(item.id || "").trim() === formId);
+  const form = metaFormConfigForLead(lead);
   const adId = String(lead.meta?.adId || "").trim();
   const adLink = (form?.adLinks || []).find((item) => String(item.id || "").trim() === adId);
   return String(adLink?.url || form?.adUrl || "").trim();
 }
 
 function metaFormConfigForLead(lead) {
-  const formId = String(lead.meta?.formId || "").trim();
-  if (!formId) return {};
-  return (state.integrations?.metaForms?.forms || [])
-    .find((item) => String(item.id || "").trim() === formId) || {};
+  const formId = metaIdText(lead.meta?.formId || lead.meta?.form_id || lead.formId || lead.form_id);
+  const forms = state.integrations?.metaForms?.forms || [];
+  if (formId) {
+    const matched = forms.find((item) => metaIdText(item.id || item.formId || item.form_id) === formId);
+    if (matched) return matched;
+  }
+  const rawQuestionKeys = Object.keys(lead.meta?.rawFields || {}).map(metaLabelKey).filter(Boolean);
+  if (!rawQuestionKeys.length) return {};
+  return forms.find((form) => {
+    const labelKeys = Object.keys(form.questionLabels || {}).map(metaLabelKey);
+    return rawQuestionKeys.some((key) => labelKeys.includes(key));
+  }) || {};
+}
+
+function metaIdText(value) {
+  if (value && typeof value === "object") return String(value.id || value.value || "").trim();
+  return String(value || "").trim();
+}
+
+function metaLabelKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\s_]+/g, "_")
+    .replace(/[.。]+$/g, "")
+    .replace(/^_+|_+$/g, "");
 }
 
 function friendlyMetaValue(value, labels = {}) {
   const text = String(value || "");
-  return labels[text] || text;
+  if (labels[text]) return labels[text];
+  const target = metaLabelKey(text);
+  const match = Object.entries(labels || {})
+    .find(([key]) => metaLabelKey(key) === target);
+  return match?.[1] || text;
 }
 
 function renderMetaLeadInfo(lead) {
