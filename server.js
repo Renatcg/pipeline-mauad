@@ -823,7 +823,9 @@ const DATABASE_URL = process.env.POSTGRES_URL || process.env.DATABASE_URL || pro
 const ENABLE_LEGACY_JSON_FALLBACK = process.env.ENABLE_LEGACY_JSON_FALLBACK === "true";
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const RESEND_API_KEY_TESTE = process.env.RESEND_API_KEY_TESTE || "";
 const EMAIL_FROM = process.env.EMAIL_FROM || "Pipeline Mauad <onboarding@resend.dev>";
+const EMAIL_FROM_TESTE = process.env.EMAIL_FROM_TESTE || "";
 const LEV_FINANCE_EMAIL_FROM = process.env.LEV_FINANCE_EMAIL_FROM || "Financeiro Lev <financeiro@grupocoevo.com.br>";
 const EVO_API_URL = process.env.EVO_API_URL || "";
 const EVO_API_KEY = process.env.EVO_API_KEY || "";
@@ -1503,6 +1505,40 @@ async function sendEmail(to, subject, html) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return { sent: false, reason: data.message || "Falha no envio do Resend" };
   return { sent: true, id: data.id };
+}
+
+async function sendEmailDiagnostics(user) {
+  const testFrom = EMAIL_FROM_TESTE || EMAIL_FROM;
+  if (!RESEND_API_KEY_TESTE) return { sent: false, reason: "RESEND_API_KEY_TESTE ausente" };
+  const now = new Date().toISOString();
+  const html = `
+    <div style="font-family:Arial,sans-serif;color:#17202a;line-height:1.5">
+      <h2>Teste de envio de e-mail</h2>
+      <p>Este e-mail confirma que o Pipeline Comercial Mauad conseguiu enviar uma mensagem pelo Resend de teste configurado na Vercel.</p>
+      <ul>
+        <li><strong>Remetente de teste:</strong> ${escapeHtml(testFrom)}</li>
+        <li><strong>Usuário solicitante:</strong> ${escapeHtml(user?.name || user?.username || "-")}</li>
+        <li><strong>Gerado em:</strong> ${escapeHtml(now)}</li>
+      </ul>
+      <p>Se você recebeu esta mensagem, a variável RESEND_API_KEY_TESTE está funcionando. O sistema em produção continua usando RESEND_API_KEY.</p>
+    </div>
+  `;
+  let response;
+  try {
+    response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY_TESTE}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ from: testFrom, to: "renat.cg@gmail.com", subject: "Teste de e-mail - Pipeline Comercial Mauad", html })
+    });
+  } catch (error) {
+    return { sent: false, reason: externalFetchFailureReason("Resend", error) };
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return { sent: false, reason: data.message || "Falha no envio do Resend de teste" };
+  return { sent: true, id: data.id, from: testFrom };
 }
 
 async function sendEmailWithCcFrom(from, to, cc, subject, html) {
@@ -6631,6 +6667,18 @@ async function fastStructuredSettingsRoutes(req, res, url) {
         await structuredIntegration("META", "DIAGNOSTIC_ERROR", { error: error.message });
         return sendJson(res, 400, { error: error.message });
       }
+    }
+
+    if (url.pathname === "/api/integrations/email/test" && method === "POST") {
+      if (user.role !== "Admin TI") return sendJson(res, 403, { error: "Sem permissão" });
+      const result = await sendEmailDiagnostics(user);
+      if (!result.sent) {
+        await structuredIntegration("EMAIL", "TEST_EMAIL_FAILED", { to: "renat.cg@gmail.com", reason: result.reason });
+        return sendJson(res, 400, { error: result.reason || "Não foi possível enviar o e-mail de teste" });
+      }
+      await structuredIntegration("EMAIL", "TEST_EMAIL_SENT", { to: "renat.cg@gmail.com", id: result.id || "" });
+      await structuredAudit(user, "SEND_TEST_EMAIL", { to: "renat.cg@gmail.com", id: result.id || "" });
+      return sendJson(res, 200, { ok: true, email: result, to: "renat.cg@gmail.com", from: EMAIL_FROM, dataSources: { action: "structured" } });
     }
 
     if (url.pathname === "/api/integrations/meta/capi-diagnostics" && method === "POST") {

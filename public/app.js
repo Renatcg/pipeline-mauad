@@ -5150,6 +5150,15 @@ function renderIntegrationSettings() {
         ${renderMetaDiagnostics()}
       </section>
       <section class="integration-help">
+        <div class="panel-head">
+          <div>
+            <h2>Teste de e-mail</h2>
+            <p class="muted">Envia uma mensagem para renat.cg@gmail.com usando RESEND_API_KEY_TESTE e EMAIL_FROM_TESTE, sem alterar o envio em produção.</p>
+          </div>
+          <button type="button" data-test-email>Enviar teste</button>
+        </div>
+      </section>
+      <section class="integration-help">
         <h2>Assinar webhook da Página</h2>
         <p class="muted">Use quando o app Mauad Pipeline não aparecer no teste de leads de uma Página. Informe o ID da Página, não o ID do formulário.</p>
         <form id="metaPageSubscribeForm" class="form-grid compact-form">
@@ -5326,6 +5335,18 @@ function renderIntegrationSettings() {
       const data = await api("/api/integrations/meta/diagnostics", { method: "POST" });
       state.metaDiagnostics = data.diagnostics;
       state.settingsNotice = "Diagnóstico Meta atualizado.";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+  document.querySelector("[data-test-email]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Enviando...");
+      const data = await api("/api/integrations/email/test", { method: "POST", body: JSON.stringify({}) });
+      state.settingsNotice = `E-mail de teste enviado para ${data.to}.`;
       renderSettings();
     } catch (error) {
       setButtonBusy(button, false);
