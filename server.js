@@ -826,7 +826,7 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const RESEND_API_KEY_TESTE = process.env.RESEND_API_KEY_TESTE || "";
 const EMAIL_FROM = process.env.EMAIL_FROM || "Pipeline Mauad <onboarding@resend.dev>";
 const EMAIL_FROM_TESTE = process.env.EMAIL_FROM_TESTE || "";
-const LEV_FINANCE_EMAIL_FROM = process.env.LEV_FINANCE_EMAIL_FROM || "Financeiro Lev <financeiro@grupocoevo.com.br>";
+const LEV_FINANCE_EMAIL_FROM = process.env.EMAIL_FROM_FINAN_COEVO || process.env.LEV_FINANCE_EMAIL_FROM || "Financeiro Lev <financeiro@grupocoevo.com.br>";
 const EVO_API_URL = process.env.EVO_API_URL || "";
 const EVO_API_KEY = process.env.EVO_API_KEY || "";
 const EVO_INSTANCE = process.env.EVO_INSTANCE || "";
@@ -6677,9 +6677,9 @@ async function fastStructuredSettingsRoutes(req, res, url) {
         await structuredIntegration("EMAIL", "TEST_EMAIL_FAILED", { to: "renat.cg@gmail.com", reason: result.reason });
         return sendJson(res, 400, { error: result.reason || "Não foi possível enviar o e-mail de teste" });
       }
-      await structuredIntegration("EMAIL", "TEST_EMAIL_SENT", { to: "renat.cg@gmail.com", id: result.id || "" });
-      await structuredAudit(user, "SEND_TEST_EMAIL", { to: "renat.cg@gmail.com", id: result.id || "" });
-      return sendJson(res, 200, { ok: true, email: result, to: "renat.cg@gmail.com", from: EMAIL_FROM, dataSources: { action: "structured" } });
+      await structuredIntegration("EMAIL", "TEST_EMAIL_SENT", { to: "renat.cg@gmail.com", id: result.id || "", from: result.from || "" });
+      await structuredAudit(user, "SEND_TEST_EMAIL", { to: "renat.cg@gmail.com", id: result.id || "", from: result.from || "" });
+      return sendJson(res, 200, { ok: true, email: result, to: "renat.cg@gmail.com", from: result.from || EMAIL_FROM, dataSources: { action: "structured" } });
     }
 
     if (url.pathname === "/api/integrations/meta/capi-diagnostics" && method === "POST") {
