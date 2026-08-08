@@ -1541,8 +1541,10 @@ async function sendEmailDiagnostics(user) {
   return { sent: true, id: data.id, from: testFrom };
 }
 
-async function sendEmailWithCcFrom(from, to, cc, subject, html) {
-  if (!RESEND_API_KEY) return { sent: false, reason: "RESEND_API_KEY ausente" };
+async function sendEmailWithCcFrom(from, to, cc, subject, html, options = {}) {
+  const apiKey = options.apiKey || RESEND_API_KEY;
+  const apiKeyLabel = options.apiKeyLabel || "RESEND_API_KEY";
+  if (!apiKey) return { sent: false, reason: `${apiKeyLabel} ausente` };
   const recipients = String(to || "").split(",").map((item) => item.trim()).filter(Boolean);
   const ccRecipients = String(cc || "").split(",").map((item) => item.trim()).filter(Boolean);
   if (!recipients.length) return { sent: false, reason: "E-mail Para não configurado" };
@@ -1551,7 +1553,7 @@ async function sendEmailWithCcFrom(from, to, cc, subject, html) {
     response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${RESEND_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({ from: from || EMAIL_FROM, to: recipients, cc: ccRecipients.length ? ccRecipients : undefined, subject, html })
@@ -1561,7 +1563,7 @@ async function sendEmailWithCcFrom(from, to, cc, subject, html) {
   }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return { sent: false, reason: data.message || "Falha no envio do Resend" };
-  return { sent: true, id: data.id };
+  return { sent: true, id: data.id, from: from || EMAIL_FROM };
 }
 
 async function sendEmailWithCc(to, cc, subject, html) {
@@ -2083,7 +2085,14 @@ async function sendLevMauadPendingEmail(sql, db, sales = [], options = {}) {
       <p style="margin-top:28px">Obrigado.</p>
     </div>
   `;
-  return sendEmailWithCcFrom(LEV_FINANCE_EMAIL_FROM, to, cc, `${options.subjectPrefix || ""}Autorização de comissões Lev - vendas confirmadas`, html);
+  return sendEmailWithCcFrom(
+    options.from || LEV_FINANCE_EMAIL_FROM,
+    to,
+    cc,
+    `${options.subjectPrefix || ""}Autorização de comissões Lev - vendas confirmadas`,
+    html,
+    options.emailOptions || {}
+  );
 }
 
 function leadUrl(lead) {
@@ -7279,7 +7288,12 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
       const testTo = "renat.cg@gmail.com";
       const pendingSales = stateDb.levFinance.sales.filter((sale) => isLikelyLevUnit(sale.unit) && levRecordIsPendingMauad(sale) && levRecordIsConfirmedForMauad(sale));
       if (!pendingSales.length) return sendJson(res, 400, { error: "Nenhuma venda confirmada para testar" });
-      const email = await sendLevMauadPendingEmail(sql, stateDb, pendingSales, { to: testTo, cc: "", subjectPrefix: "[TESTE] " });
+      const email = await sendLevMauadPendingEmail(sql, stateDb, pendingSales, {
+        to: testTo,
+        cc: "",
+        subjectPrefix: "[TESTE] ",
+        emailOptions: { apiKey: RESEND_API_KEY_TESTE, apiKeyLabel: "RESEND_API_KEY_TESTE" }
+      });
       if (!email.sent) {
         await structuredIntegration("LEV_FINANCE", "MAUAD_PENDING_TEST_EMAIL_FAILED", { reason: email.reason, count: pendingSales.length, to: testTo });
         return sendJson(res, 400, { error: email.reason || "Não foi possível enviar o teste para o e-mail autorizado" });
