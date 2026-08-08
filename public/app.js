@@ -5539,6 +5539,12 @@ function renderMetaCapiDiagnostics() {
   `;
 }
 
+async function refreshMetaCapiEvents() {
+  const result = await api("/api/integrations/meta/capi-events");
+  state.metaConversionEvents = result.events || [];
+  return state.metaConversionEvents;
+}
+
 function renderLogSettings() {
   const term = state.settingsLogSearch.trim().toLowerCase();
   const matches = (value) => !term || String(value || "").toLowerCase().includes(term);
@@ -5693,9 +5699,17 @@ function renderLogSettings() {
     </section>
   `);
   document.querySelectorAll("[data-log-tab]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       state.settingsLogTab = button.dataset.logTab;
       renderLogSettings();
+      if (state.settingsLogTab === "metaCapi") {
+        try {
+          await refreshMetaCapiEvents();
+          renderLogSettings();
+        } catch (error) {
+          alert(error.message);
+        }
+      }
     });
   });
   document.querySelector("#settingsLogSearch")?.addEventListener("input", (event) => {
@@ -5726,6 +5740,7 @@ function renderLogSettings() {
       setButtonBusy(button, true, "Diagnosticando...");
       const result = await api("/api/integrations/meta/capi-diagnostics", { method: "POST", body: JSON.stringify({}) });
       state.metaCapiDiagnostics = result.diagnostics || null;
+      state.metaConversionEvents = result.events || state.metaConversionEvents || [];
       renderLogSettings();
     } catch (error) {
       setButtonBusy(button, false);

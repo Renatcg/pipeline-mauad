@@ -6702,15 +6702,22 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
       try {
         const diagnostics = await metaCapiDiagnostics(sql);
+        const events = await metaCapiRowsForState(sql);
         await structuredAudit(user, "DIAGNOSE_META_CAPI", {
           queue: diagnostics.queue,
           checks: diagnostics.checks.map((check) => ({ label: check.label, ok: check.ok }))
         });
-        return sendJson(res, 200, { ok: true, diagnostics, dataSources: { action: "structured" } });
+        return sendJson(res, 200, { ok: true, diagnostics, events, dataSources: { action: "structured" } });
       } catch (error) {
         await structuredIntegration("META", "CAPI_DIAGNOSTIC_ERROR", { error: error.message });
         return sendJson(res, 400, { error: error.message });
       }
+    }
+
+    if (url.pathname === "/api/integrations/meta/capi-events" && method === "GET") {
+      if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const events = await metaCapiRowsForState(sql);
+      return sendJson(res, 200, { ok: true, events, dataSources: { action: "structured" } });
     }
 
     const capiResendMatch = url.pathname.match(/^\/api\/integrations\/meta\/capi-events\/([^/]+)\/resend$/);
