@@ -3941,15 +3941,21 @@ async function sendStructuredMetaConversionEvent(sql, eventId) {
     }
     const data = await response.json().catch(async () => ({ raw: await response.text().catch(() => "") }));
     if (!response.ok) throw new Error(data.error?.message || data.message || `Meta CAPI HTTP ${response.status}`);
+    const eventsReceived = Number(data.events_received ?? data.eventsReceived ?? 0);
+    const warningMessage = eventsReceived === 0
+      ? "Meta respondeu 200, mas não confirmou nenhum evento recebido."
+      : null;
     await sql`UPDATE crm_meta_conversion_events
-      SET status = 'sent', attempts = attempts + 1, last_error = null, response = ${JSON.stringify(data)}::jsonb, sent_at = now()
+      SET status = ${warningMessage ? "warning" : "sent"}, attempts = attempts + 1, last_error = ${warningMessage}, response = ${JSON.stringify(data)}::jsonb, sent_at = now()
       WHERE id = ${eventId}`;
     await structuredIntegration("META", "CAPI_EVENT_SENT", {
       eventId,
       leadId: row.lead_id,
       eventName: row.event_name,
       sourceType: row.source_type,
-      sourceKey: row.source_key
+      sourceKey: row.source_key,
+      eventsReceived,
+      warning: warningMessage || ""
     });
     return data;
   } catch (error) {

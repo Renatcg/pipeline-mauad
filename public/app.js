@@ -51,6 +51,7 @@ const state = {
   canCreateKnowledge: false,
   metaDiagnostics: null,
   metaCapiDiagnostics: null,
+  metaCapiResponseEventId: "",
   view: "kanban",
   leadId: null,
   selectedOpportunityId: "",
@@ -5503,10 +5504,19 @@ function metaCapiStatusLabel(status) {
   const labels = {
     pending: "Pendente",
     sent: "Enviado",
+    warning: "Atenção",
     error: "Erro",
     skipped: "Ignorado"
   };
   return labels[status] || status || "Pendente";
+}
+
+function metaCapiStatusClass(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "sent") return "success-chip";
+  if (normalized === "warning") return "chip-warning";
+  if (normalized === "error") return "danger-chip";
+  return "";
 }
 
 function metaCapiSourceLabel(event) {
@@ -5515,6 +5525,57 @@ function metaCapiSourceLabel(event) {
   if (sourceType === "tag") return `Etiqueta: ${event.sourceKey || "-"}`;
   if (sourceType === "manual_test") return "Teste manual";
   return event.sourceKey || event.sourceType || "-";
+}
+
+function metaCapiResponseSummary(event) {
+  const response = event?.response || {};
+  const received = response.events_received ?? response.eventsReceived;
+  const messages = Array.isArray(response.messages) ? response.messages : [];
+  const firstMessage = messages[0]?.message || messages[0]?.title || messages[0]?.code || "";
+  if (received !== undefined && received !== null) {
+    return `${Number(received || 0).toLocaleString("pt-BR")} recebido(s)${firstMessage ? ` · ${firstMessage}` : ""}`;
+  }
+  if (response.fbtrace_id) return `fbtrace_id: ${response.fbtrace_id}`;
+  if (response.raw) return String(response.raw).slice(0, 120);
+  return event?.sentAt ? "Sem retorno detalhado" : "-";
+}
+
+function renderMetaCapiResponseModal() {
+  const event = (state.metaConversionEvents || []).find((item) => item.id === state.metaCapiResponseEventId);
+  if (!event) return "";
+  const payloadJson = JSON.stringify(event.payload || {}, null, 2);
+  const responseJson = JSON.stringify(event.response || {}, null, 2);
+  return `
+    <div class="modal-backdrop" data-close-meta-capi-response>
+      <section class="modal-card wide-modal" role="dialog" aria-modal="true" aria-labelledby="metaCapiResponseTitle">
+        <div class="modal-head">
+          <div>
+            <h2 id="metaCapiResponseTitle">Resposta Meta CAPI</h2>
+            <p class="modal-subtitle">${escapeHtml(event.leadName || event.leadId || "Sem lead")} · ${escapeHtml(event.eventName || "")}</p>
+          </div>
+          <button type="button" class="ghost-button" data-close-meta-capi-response>Fechar</button>
+        </div>
+        <div class="capi-response-grid">
+          <div class="sub-panel">
+            <h3>Resumo</h3>
+            <p><strong>Status:</strong> ${escapeHtml(metaCapiStatusLabel(event.status))}</p>
+            <p><strong>Retorno:</strong> ${escapeHtml(metaCapiResponseSummary(event))}</p>
+            ${event.lastError ? `<p><strong>Mensagem:</strong> ${escapeHtml(event.lastError)}</p>` : ""}
+            <p><strong>Tentativas:</strong> ${Number(event.attempts || 0).toLocaleString("pt-BR")}</p>
+            <p><strong>Enviado em:</strong> ${escapeHtml(event.sentAt ? dateTimeLabel(event.sentAt) : "-")}</p>
+          </div>
+          <div class="sub-panel">
+            <h3>Payload enviado</h3>
+            <pre class="json-preview">${escapeHtml(payloadJson)}</pre>
+          </div>
+          <div class="sub-panel full">
+            <h3>Resposta da Meta</h3>
+            <pre class="json-preview">${escapeHtml(responseJson)}</pre>
+          </div>
+        </div>
+      </section>
+    </div>
+  `;
 }
 
 function renderMetaCapiDiagnostics() {
@@ -5528,10 +5589,11 @@ function renderMetaCapiDiagnostics() {
     </tr>
   `).join("");
   const queue = diagnostics.queue || {};
+  const warningTotal = Number(queue.warning || 0);
   return `
     <div class="sub-panel">
       <h3>Diagnóstico Meta CAPI</h3>
-      <p class="muted">Atualizado em ${escapeHtml(dateTimeLabel(diagnostics.checkedAt))} · Pendente ${Number(queue.pending || 0).toLocaleString("pt-BR")} · Erro ${Number(queue.error || 0).toLocaleString("pt-BR")} · Enviado ${Number(queue.sent || 0).toLocaleString("pt-BR")}</p>
+      <p class="muted">Atualizado em ${escapeHtml(dateTimeLabel(diagnostics.checkedAt))} · Pendente ${Number(queue.pending || 0).toLocaleString("pt-BR")} · Atenção ${warningTotal.toLocaleString("pt-BR")} · Erro ${Number(queue.error || 0).toLocaleString("pt-BR")} · Enviado ${Number(queue.sent || 0).toLocaleString("pt-BR")}</p>
       <div class="table-wrap compact-table">
         <table><thead><tr><th>Item</th><th>Status</th><th>Detalhe</th></tr></thead><tbody>${checks || '<tr><td colspan="3" class="empty">Sem diagnóstico.</td></tr>'}</tbody></table>
       </div>
@@ -5581,21 +5643,28 @@ function renderLogSettings() {
   const metaCapiRows = (state.metaConversionEvents || [])
     .filter((event) => {
       const details = JSON.stringify(event.payload || {});
-      return [event.leadName, event.leadId, event.eventName, event.eventId, event.sourceType, event.sourceKey, event.status, event.lastError, metaCapiSourceLabel(event), details].some(matches);
+      const response = JSON.stringify(event.response || {});
+      return [event.leadName, event.leadId, event.eventName, event.eventId, event.sourceType, event.sourceKey, event.status, event.lastError, metaCapiSourceLabel(event), metaCapiResponseSummary(event), details, response].some(matches);
     })
     .map((event) => {
-      const canResend = ["pending", "error", "skipped"].includes(String(event.status || ""));
+      const canResend = ["pending", "error", "skipped", "warning"].includes(String(event.status || ""));
       return `
         <tr>
           <td>${escapeHtml(dateTimeLabel(event.createdAt))}</td>
           <td>${event.leadId ? `<button type="button" class="link-button" data-open-meta-capi-lead="${escapeHtml(event.leadId)}">${escapeHtml(event.leadName || event.leadId)}</button>` : '<span class="muted-cell">Sem lead</span>'}</td>
           <td>${escapeHtml(event.eventName || "")}</td>
           <td>${escapeHtml(metaCapiSourceLabel(event))}</td>
-          <td><span class="chip">${escapeHtml(metaCapiStatusLabel(event.status))}</span></td>
+          <td><span class="chip ${metaCapiStatusClass(event.status)}">${escapeHtml(metaCapiStatusLabel(event.status))}</span></td>
           <td>${Number(event.attempts || 0).toLocaleString("pt-BR")}</td>
           <td>${escapeHtml(event.sentAt ? dateTimeLabel(event.sentAt) : "")}</td>
+          <td>${escapeHtml(metaCapiResponseSummary(event))}</td>
           <td>${escapeHtml(event.lastError || "")}</td>
-          <td>${canResend ? `<button type="button" data-meta-capi-resend="${escapeHtml(event.id)}">Reenviar</button>` : '<span class="muted-cell">-</span>'}</td>
+          <td>
+            <div class="row-actions compact-row-actions">
+              <button type="button" data-meta-capi-response="${escapeHtml(event.id)}">Ver resposta</button>
+              ${canResend ? `<button type="button" data-meta-capi-resend="${escapeHtml(event.id)}">Reenviar</button>` : ""}
+            </div>
+          </td>
         </tr>
       `;
     }).join("");
@@ -5689,13 +5758,14 @@ function renderLogSettings() {
           : state.settingsLogTab === "meta"
             ? `<table><thead><tr><th>Data</th><th>Evento</th><th>ID</th><th>Status/Projeto</th><th>Detalhe</th></tr></thead><tbody>${metaRows || '<tr><td colspan="5" class="empty">Nenhum log Meta encontrado.</td></tr>'}</tbody></table>`
           : state.settingsLogTab === "metaCapi"
-            ? `<table><thead><tr><th>Criado em</th><th>Lead</th><th>Evento</th><th>Origem</th><th>Status</th><th>Tentativas</th><th>Enviado em</th><th>Erro</th><th>Ações</th></tr></thead><tbody>${metaCapiRows || '<tr><td colspan="9" class="empty">Nenhum evento CAPI encontrado.</td></tr>'}</tbody></table>`
+            ? `<table><thead><tr><th>Criado em</th><th>Lead</th><th>Evento</th><th>Origem</th><th>Status</th><th>Tentativas</th><th>Enviado em</th><th>Retorno Meta</th><th>Erro</th><th>Ações</th></tr></thead><tbody>${metaCapiRows || '<tr><td colspan="10" class="empty">Nenhum evento CAPI encontrado.</td></tr>'}</tbody></table>`
           : state.settingsLogTab === "sam"
             ? `<table><thead><tr><th>Recebido em</th><th>Evento</th><th>Unidade</th><th>E-mail</th><th>Telefone</th><th>Status</th><th>Lead</th><th>Detalhe</th><th>Ações</th></tr></thead><tbody>${samRows || '<tr><td colspan="9" class="empty">Nenhum evento SAM encontrado.</td></tr>'}</tbody></table>`
           : state.settingsLogTab === "fup"
             ? `<table><thead><tr><th>Data</th><th>Lead</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr></thead><tbody>${fupRows || '<tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`
           : `<table><thead><tr><th>Data</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr></thead><tbody>${auditRows || '<tr><td colspan="4" class="empty">Nenhum evento encontrado.</td></tr>'}</tbody></table>`}
       </div>
+      ${renderMetaCapiResponseModal()}
     </section>
   `);
   document.querySelectorAll("[data-log-tab]").forEach((button) => {
@@ -5750,6 +5820,19 @@ function renderLogSettings() {
   bindSettingsActionMenus();
   document.querySelectorAll("[data-open-meta-capi-lead]").forEach((button) => {
     button.addEventListener("click", () => routeTo("lead", button.dataset.openMetaCapiLead));
+  });
+  document.querySelectorAll("[data-meta-capi-response]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.metaCapiResponseEventId = button.dataset.metaCapiResponse || "";
+      renderLogSettings();
+    });
+  });
+  document.querySelectorAll("[data-close-meta-capi-response]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (event.target !== element && element.hasAttribute("data-close-meta-capi-response")) return;
+      state.metaCapiResponseEventId = "";
+      renderLogSettings();
+    });
   });
   document.querySelectorAll("[data-meta-capi-resend]").forEach((button) => {
     button.addEventListener("click", async () => {

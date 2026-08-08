@@ -1714,9 +1714,50 @@ tr[data-open-lead] {
   color: var(--warn);
 }
 
+.danger-chip {
+  background: #fee2e2;
+  color: var(--danger);
+}
+
 .chip-info {
   background: #e0f2fe;
   color: #075985;
+}
+
+.compact-row-actions {
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.compact-row-actions button {
+  min-height: 30px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.capi-response-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+}
+
+.capi-response-grid .full {
+  grid-column: 1 / -1;
+}
+
+.json-preview {
+  max-height: 300px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .notification-icons {
