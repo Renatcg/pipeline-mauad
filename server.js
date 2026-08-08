@@ -6574,6 +6574,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
   const isSettingsRoute =
     url.pathname === "/api/integrations" ||
     url.pathname.startsWith("/api/integrations/meta/") ||
+    url.pathname.startsWith("/api/integrations/email/") ||
     url.pathname === "/api/commercial-settings" ||
     url.pathname === "/api/knowledge" ||
     url.pathname.startsWith("/api/knowledge/") ||
