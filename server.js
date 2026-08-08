@@ -2075,11 +2075,18 @@ async function sendLevMauadPendingEmail(sql, db, sales = [], options = {}) {
     `;
   }).join("");
   const totalCommission = sales.reduce((sum, item) => sum + Number(item.commissionValue || 0), 0);
+  const scheduledPaymentDate = provisionDateFromPaymentSchedule(settings, options.sentAt || new Date());
+  const scheduledPaymentDateLabel = scheduledPaymentDate
+    ? new Date(`${scheduledPaymentDate}T00:00:00`).toLocaleDateString("pt-BR")
+    : "";
   const html = `
     <div style="font-family:Arial,sans-serif;color:#101828;line-height:1.5">
       <h2>Solicitação de autorização - Comissões Lev</h2>
       <p>Prezados,</p>
-      <p>Segue a relação de vendas confirmadas para autorização, agrupadas por empreendimento.</p>
+      <p>Segue o demonstrativo de comissões da Lev referente às vendas confirmadas no período, conforme relação abaixo.</p>
+      <p>Solicitamos, por gentileza, o aprovisionamento dos valores para a data de <strong>${escapeHtml(scheduledPaymentDateLabel || scheduledPaymentDate || "-")}</strong>, conforme calendário financeiro da Mauad.</p>
+      <p>Tão logo confirmado o aprovisionamento, emitiremos a(s) respectiva(s) Nota(s) Fiscal(is).</p>
+      <p>Quaisquer dúvidas, seguimos à disposição.</p>
       <p><strong>Total geral da NF de comissões:</strong> ${escapeHtml(formatCurrency(totalCommission))}</p>
       ${projectBlocks}
       <p style="margin-top:28px">Obrigado.</p>

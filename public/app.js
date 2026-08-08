@@ -6847,6 +6847,17 @@ function renderLevMauadEmailPreviewModal(pendingSales = []) {
     return map;
   }, new Map());
   const totalCommission = sales.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const scheduleMatch = (Array.isArray(settings.paymentSchedule) ? settings.paymentSchedule : []).find((item) => {
+    const start = new Date(`${item.start}T00:00:00`);
+    const end = new Date(`${item.end}T23:59:59`);
+    return !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && today >= start && today <= end;
+  });
+  const scheduledPaymentDate = scheduleMatch?.paymentDate || "";
+  const scheduledPaymentDateLabel = scheduledPaymentDate
+    ? new Date(`${scheduledPaymentDate}T00:00:00`).toLocaleDateString("pt-BR")
+    : "-";
   const projectBlocks = [...groups.entries()].map(([project, items]) => {
     const projectCommission = items.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0);
     const rows = items.map((sale) => `
@@ -6886,7 +6897,10 @@ function renderLevMauadEmailPreviewModal(pendingSales = []) {
           <div class="email-preview-body">
             ${sales.length ? `
               <p>Prezados,</p>
-              <p>Segue a relação de vendas confirmadas para autorização, agrupadas por empreendimento.</p>
+              <p>Segue o demonstrativo de comissões da Lev referente às vendas confirmadas no período, conforme relação abaixo.</p>
+              <p>Solicitamos, por gentileza, o aprovisionamento dos valores para a data de <strong>${escapeHtml(scheduledPaymentDateLabel)}</strong>, conforme calendário financeiro da Mauad.</p>
+              <p>Tão logo confirmado o aprovisionamento, emitiremos a(s) respectiva(s) Nota(s) Fiscal(is).</p>
+              <p>Quaisquer dúvidas, seguimos à disposição.</p>
               <p><strong>Total geral da NF de comissões:</strong> ${money(totalCommission)}</p>
               ${projectBlocks}
               <p>Obrigado.</p>
