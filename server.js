@@ -17,6 +17,11 @@ const REDIS_KEY_PREFIX = process.env.REDIS_KEY_PREFIX || "pipeline-mauad";
 const REDIS_TIMEOUT_MS = Number(process.env.REDIS_TIMEOUT_MS || 800);
 const REDIS_CONFIG_TTL_SECONDS = Number(process.env.REDIS_CONFIG_TTL_SECONDS || 120);
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor", "Gerente Financeiro", "Auxiliar Financeiro", "Gestor de Tráfego", "Coordenador de Marketing"];
+const META_HEALTH_NOTIFICATION_ROLES = new Set(["Admin TI", "Gestor de Tráfego", "Coordenador de Marketing"]);
+const META_HEALTH_ALERT_FACTOR = Number(process.env.META_HEALTH_ALERT_FACTOR || 2.5);
+const META_HEALTH_MIN_SAMPLE = Number(process.env.META_HEALTH_MIN_SAMPLE || 5);
+const META_HEALTH_MIN_GAP_MINUTES = Number(process.env.META_HEALTH_MIN_GAP_MINUTES || 180);
+const META_HEALTH_ALERT_COOLDOWN_HOURS = Number(process.env.META_HEALTH_ALERT_COOLDOWN_HOURS || 6);
 const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
 const PERMISSION_SCREENS = [
   { id: "screen:kanban", label: "Kanban", view: "kanban" },
@@ -1422,7 +1427,8 @@ function normalizeNotificationPreferences(value = {}) {
   return {
     email: Boolean(value.email),
     whatsapp: Boolean(value.whatsapp),
-    whatsappNumber: String(value.whatsappNumber || "").trim()
+    whatsappNumber: String(value.whatsappNumber || "").trim(),
+    metaHealthWhatsapp: Boolean(value.metaHealthWhatsapp)
   };
 }
 
@@ -3338,6 +3344,8 @@ async function applySamEventToLead(db, user, event, lead) {
   if (!nextStatus) {
     throw new Error("Código SAM sem status de pipeline vinculado.");
   }
+  if (!lead.inPipeline) rememberLeadBaseOrigin(lead);
+  if (!lead.inPipeline) rememberLeadBaseOrigin(lead);
   lead.status = nextStatus;
   lead.inPipeline = true;
   lead.samLastEvent = {
@@ -4616,6 +4624,17 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_audit_logs (id text PRIMARY KEY, at timestamptz, actor text, actor_name text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_access_logs (id text PRIMARY KEY, at timestamptz, actor text, actor_name text, role text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, ip text, user_agent text, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_integration_logs (id text PRIMARY KEY, at timestamptz, provider text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_meta_lead_health (
+    project text PRIMARY KEY,
+    last_lead_at timestamptz,
+    average_gap_minutes numeric,
+    current_gap_minutes numeric,
+    sample_size integer NOT NULL DEFAULT 0,
+    status text NOT NULL DEFAULT 'ok',
+    alerted_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb
+  )`;
   await sql`CREATE TABLE IF NOT EXISTS crm_fup_lead_logs (id text PRIMARY KEY, at timestamptz, lead_id text, lead_name text, actor text, actor_name text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_meta_conversion_events (
     id text PRIMARY KEY,
@@ -5551,6 +5570,7 @@ async function structuredStateForPermissions(sql, users = null) {
 
 async function saveStructuredPermissions(sql, permissions) {
   await sql`DELETE FROM crm_permissions`;
+  const rows = [];
   for (const [scope, owners] of Object.entries(permissions || {})) {
     const ownerType = scope === "roles" ? "role" : scope === "users" ? "user" : "";
     if (!ownerType || !owners || typeof owners !== "object" || Array.isArray(owners)) continue;
@@ -5558,11 +5578,22 @@ async function saveStructuredPermissions(sql, permissions) {
       if (!rules || typeof rules !== "object" || Array.isArray(rules)) continue;
       for (const [resourceId, rawCell] of Object.entries(rules)) {
         const cell = normalizePermissionCell(rawCell);
-        await sql`INSERT INTO crm_permissions (owner_type, owner_id, resource_id, can_access, can_act)
-          VALUES (${ownerType}, ${ownerId}, ${resourceId}, ${Boolean(cell.access || cell.action)}, ${Boolean(cell.action)})
-          ON CONFLICT (owner_type, owner_id, resource_id) DO UPDATE SET can_access = EXCLUDED.can_access, can_act = EXCLUDED.can_act`;
+        rows.push({
+          owner_type: ownerType,
+          owner_id: String(ownerId),
+          resource_id: String(resourceId),
+          can_access: Boolean(cell.access || cell.action),
+          can_act: Boolean(cell.action)
+        });
       }
     }
+  }
+  if (rows.length) {
+    await sql`INSERT INTO crm_permissions (owner_type, owner_id, resource_id, can_access, can_act)
+      SELECT owner_type, owner_id, resource_id, can_access, can_act
+      FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb)
+        AS item(owner_type text, owner_id text, resource_id text, can_access boolean, can_act boolean)
+      ON CONFLICT (owner_type, owner_id, resource_id) DO UPDATE SET can_access = EXCLUDED.can_access, can_act = EXCLUDED.can_act`;
   }
   void invalidateStructuredConfigCache().catch((error) => mirrorStructuredError("redis-config-invalidate", error));
 }
@@ -6567,6 +6598,138 @@ async function syncRecentMetaLeadsStructured(sql, actor, { days = 7, limitPerFor
     errors: result.errors.length
   });
   return result;
+}
+
+function projectForMetaHealthLead(lead = {}) {
+  const payload = lead.payload || {};
+  const opportunities = Array.isArray(payload.opportunities) ? payload.opportunities : [];
+  return String(
+    lead.project ||
+    payload.desiredProject ||
+    payload.project ||
+    payload.empreendimento ||
+    opportunities[0]?.project ||
+    "Sem empreendimento"
+  ).trim() || "Sem empreendimento";
+}
+
+function minutesBetweenDates(start, end) {
+  const startTime = new Date(start).getTime();
+  const endTime = new Date(end).getTime();
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return 0;
+  return Math.max(0, (endTime - startTime) / 60000);
+}
+
+function formatMetaHealthMinutes(minutes) {
+  const value = Number(minutes || 0);
+  if (value >= 1440) return `${(value / 1440).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} dia(s)`;
+  if (value >= 60) return `${(value / 60).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} hora(s)`;
+  return `${value.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} minuto(s)`;
+}
+
+async function metaHealthRecipients(sql) {
+  const users = await structuredUsers(sql);
+  return users.filter((user) => (
+    user.active &&
+    META_HEALTH_NOTIFICATION_ROLES.has(user.role) &&
+    user.notifications?.whatsapp &&
+    user.notifications?.metaHealthWhatsapp
+  ));
+}
+
+async function analyzeStructuredMetaLeadHealth(sql, { notify = false } = {}) {
+  const now = new Date();
+  const rows = await sql`SELECT id, name, project, created_at, payload
+    FROM crm_leads
+    WHERE upper(COALESCE(source, payload->>'source', '')) = 'META'
+      AND created_at IS NOT NULL
+      AND created_at >= now() - interval '45 days'
+    ORDER BY created_at ASC`;
+  const groups = new Map();
+  for (const row of rows) {
+    const project = projectForMetaHealthLead(row);
+    if (!groups.has(project)) groups.set(project, []);
+    groups.get(project).push(row);
+  }
+  const health = [];
+  const alerts = [];
+  let sent = 0;
+  for (const [project, leads] of groups.entries()) {
+    const ordered = leads
+      .map((lead) => ({ ...lead, createdAtMs: new Date(lead.created_at).getTime() }))
+      .filter((lead) => Number.isFinite(lead.createdAtMs))
+      .sort((a, b) => a.createdAtMs - b.createdAtMs);
+    if (!ordered.length) continue;
+    const gaps = [];
+    for (let index = 1; index < ordered.length; index += 1) {
+      gaps.push(Math.max(0, (ordered[index].createdAtMs - ordered[index - 1].createdAtMs) / 60000));
+    }
+    const averageGapMinutes = gaps.length ? gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length : 0;
+    const lastLeadAt = new Date(ordered[ordered.length - 1].createdAtMs);
+    const currentGapMinutes = minutesBetweenDates(lastLeadAt, now);
+    const isAbnormal = gaps.length >= META_HEALTH_MIN_SAMPLE &&
+      currentGapMinutes >= META_HEALTH_MIN_GAP_MINUTES &&
+      averageGapMinutes > 0 &&
+      currentGapMinutes >= averageGapMinutes * META_HEALTH_ALERT_FACTOR;
+    const previousRows = await sql`SELECT alerted_at FROM crm_meta_lead_health WHERE project = ${project} LIMIT 1`;
+    const previousAlertAt = previousRows[0]?.alerted_at ? new Date(previousRows[0].alerted_at) : null;
+    const cooldownMs = Math.max(1, META_HEALTH_ALERT_COOLDOWN_HOURS) * 60 * 60 * 1000;
+    const canAlert = isAbnormal && (!previousAlertAt || now.getTime() - previousAlertAt.getTime() >= cooldownMs);
+    const payload = {
+      project,
+      leadCount: ordered.length,
+      lastLeadId: ordered[ordered.length - 1]?.id || "",
+      lastLeadName: ordered[ordered.length - 1]?.name || "",
+      averageGapMinutes,
+      currentGapMinutes,
+      factor: META_HEALTH_ALERT_FACTOR,
+      minSample: META_HEALTH_MIN_SAMPLE,
+      minGapMinutes: META_HEALTH_MIN_GAP_MINUTES
+    };
+    await sql`INSERT INTO crm_meta_lead_health (project, last_lead_at, average_gap_minutes, current_gap_minutes, sample_size, status, alerted_at, updated_at, payload)
+      VALUES (${project}, ${lastLeadAt.toISOString()}, ${averageGapMinutes}, ${currentGapMinutes}, ${gaps.length}, ${isAbnormal ? "alert" : "ok"}, ${notify && canAlert ? now.toISOString() : previousRows[0]?.alerted_at || null}, now(), ${JSON.stringify(payload)}::jsonb)
+      ON CONFLICT (project) DO UPDATE SET
+        last_lead_at = EXCLUDED.last_lead_at,
+        average_gap_minutes = EXCLUDED.average_gap_minutes,
+        current_gap_minutes = EXCLUDED.current_gap_minutes,
+        sample_size = EXCLUDED.sample_size,
+        status = EXCLUDED.status,
+        alerted_at = EXCLUDED.alerted_at,
+        updated_at = now(),
+        payload = EXCLUDED.payload`;
+    const item = { ...payload, status: isAbnormal ? "alert" : "ok", canAlert };
+    health.push(item);
+    if (notify && canAlert) {
+      const recipients = await metaHealthRecipients(sql);
+      const text = [
+        `Alerta Meta Leads - ${project}`,
+        "",
+        `O intervalo sem novos leads está acima do comportamento médio.`,
+        `Último lead: ${lastLeadAt.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}`,
+        `Tempo atual sem lead: ${formatMetaHealthMinutes(currentGapMinutes)}`,
+        `Média histórica: ${formatMetaHealthMinutes(averageGapMinutes)}`,
+        "",
+        "Verifique crédito, campanha, conjunto de anúncios, formulário e entrega no Meta."
+      ].join("\n");
+      if (!recipients.length) {
+        await structuredIntegration("META", "HEALTH_ALERT_NO_RECIPIENTS", { project, currentGapMinutes, averageGapMinutes });
+      }
+      for (const recipient of recipients) {
+        const result = await sendUserWhatsappText(recipient, text);
+        sent += result.sent ? 1 : 0;
+        await structuredIntegration("META", result.sent ? "HEALTH_ALERT_SENT" : "HEALTH_ALERT_FAILED", {
+          project,
+          userId: recipient.id,
+          user: recipient.name,
+          currentGapMinutes,
+          averageGapMinutes,
+          reason: result.reason || ""
+        });
+      }
+      alerts.push(item);
+    }
+  }
+  return { checkedAt: now.toISOString(), projects: health, alerts, sent };
 }
 
 async function replaceStructuredProjects(sql, projects) {
@@ -7647,7 +7810,7 @@ async function fastStructuredOperationalRoutes(req, res, url) {
 async function fastStructuredMetaRoutes(req, res, url) {
   if (!DATABASE_URL) return false;
   const method = req.method;
-  const isMetaRoute = url.pathname === "/api/webhooks/meta" || url.pathname === "/api/cron/meta-sync";
+  const isMetaRoute = url.pathname === "/api/webhooks/meta" || url.pathname === "/api/cron/meta-sync" || url.pathname === "/api/cron/meta-health";
   if (!isMetaRoute) return false;
   try {
     const sql = await getSql();
@@ -7696,6 +7859,19 @@ async function fastStructuredMetaRoutes(req, res, url) {
         return sendJson(res, 200, { ok: true, ...result, dataSources: { action: "structured" } });
       } catch (error) {
         await structuredIntegration("META", "SYNC_CRON_ERROR", { error: error.message });
+        return sendJson(res, 400, { error: error.message });
+      }
+    }
+
+    if (method === "GET" && url.pathname === "/api/cron/meta-health") {
+      const secret = process.env.CRON_SECRET || "";
+      if (!secret) return sendJson(res, 500, { error: "CRON_SECRET ausente" });
+      if (req.headers.authorization !== `Bearer ${secret}`) return sendJson(res, 401, { error: "Não autorizado" });
+      try {
+        const result = await analyzeStructuredMetaLeadHealth(sql, { notify: true });
+        return sendJson(res, 200, { ok: true, ...result, dataSources: { action: "structured" } });
+      } catch (error) {
+        await structuredIntegration("META", "HEALTH_CRON_ERROR", { error: error.message });
         return sendJson(res, 400, { error: error.message });
       }
     }
@@ -9248,12 +9424,13 @@ async function structuredPermissionForUser(sql, user, resourceId) {
 }
 
 async function structuredCanAccessBaseLead(sql, user, lead) {
-  if (!isAvailableBaseLead(lead) && lead.source !== "META") return false;
   const sources = baseSourcesForLead(lead);
   if (!sources.length) return false;
   for (const source of sources) {
-    const permission = await structuredPermissionForUser(sql, user, basePermissionId(source));
-    if (permission.access) return true;
+    for (const alias of structuredBaseSourceAliases(source)) {
+      const permission = await structuredPermissionForUser(sql, user, basePermissionId(alias));
+      if (permission.access) return true;
+    }
   }
   return false;
 }
@@ -9261,8 +9438,10 @@ async function structuredCanAccessBaseLead(sql, user, lead) {
 async function structuredCanActBaseLead(sql, user, lead) {
   if (!(await structuredCanAccessBaseLead(sql, user, lead))) return false;
   for (const source of baseSourcesForLead(lead)) {
-    const permission = await structuredPermissionForUser(sql, user, basePermissionId(source));
-    if (permission.action) return true;
+    for (const alias of structuredBaseSourceAliases(source)) {
+      const permission = await structuredPermissionForUser(sql, user, basePermissionId(alias));
+      if (permission.action) return true;
+    }
   }
   return false;
 }
@@ -9371,6 +9550,7 @@ async function fastStructuredLeadsResponse(req, res, url) {
             AND (${!searchFilter} OR lower(concat_ws(' ', l.name, l.phone, l.email, l.assigned_name, l.source, l.status, l.assistant, l.external_id)) LIKE ${searchLike})
           GROUP BY l.id, f.favorite
           ORDER BY
+            CASE WHEN l.in_pipeline = true THEN 0 ELSE 1 END ASC,
             CASE WHEN ${sortKey} = 'name' AND ${sortDirection} = 'asc' THEN lower(l.name) END ASC NULLS LAST,
             CASE WHEN ${sortKey} = 'name' AND ${sortDirection} = 'desc' THEN lower(l.name) END DESC NULLS LAST,
             CASE WHEN ${sortKey} = 'phone' AND ${sortDirection} = 'asc' THEN lower(l.phone) END ASC NULLS LAST,

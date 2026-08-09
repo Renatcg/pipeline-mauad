@@ -5,6 +5,11 @@ let presencePollTimer = null;
 let presencePollInFlight = false;
 const MANUAL_BASE_SOURCES = ["Stand", "Lista RMeirelles"];
 const PRESENCE_POLL_INTERVAL_MS = 30000;
+const META_HEALTH_NOTIFICATION_ROLES = ["Admin TI", "Gestor de Tráfego", "Coordenador de Marketing"];
+
+function canUseMetaHealthAlertsForRole(role) {
+  return META_HEALTH_NOTIFICATION_ROLES.includes(role);
+}
 
 const state = {
   user: null,
@@ -346,10 +351,18 @@ function leadBaseSourcesForPermission(lead) {
   return [lead.source, lead.baseSourceBeforePipeline, lead.previousPipelineSource].filter(Boolean);
 }
 
+function baseSourceMatchesPermission(source, permissionSource) {
+  const sourceAliases = baseSourceAliases(source).map((item) => item.toLocaleUpperCase("pt-BR"));
+  const permissionAliases = baseSourceAliases(permissionSource).map((item) => item.toLocaleUpperCase("pt-BR"));
+  return sourceAliases.some((alias) => permissionAliases.includes(alias));
+}
+
 function canActOnBaseLead(lead) {
   if (state.user?.role === "Admin TI") return true;
   const actionable = state.actionableBaseSources || [];
-  return leadBaseSourcesForPermission(lead).some((source) => actionable.includes(source));
+  return leadBaseSourcesForPermission(lead).some((source) => (
+    actionable.some((permissionSource) => baseSourceMatchesPermission(source, permissionSource))
+  ));
 }
 
 function canEditUserEmail() {
@@ -1008,7 +1021,6 @@ function baseLeads() {
   return sortBaseLeads(filteredLeads().filter((lead) => {
     if (state.baseSource === "META") return leadMatchesBaseSource(lead, "META");
     if (MANUAL_BASE_SOURCES.includes(state.baseSource)) return leadMatchesBaseSource(lead, state.baseSource);
-    if (!isAvailableBaseLead(lead)) return false;
     return leadMatchesBaseSource(lead, state.baseSource);
   }));
 }
@@ -1054,7 +1066,10 @@ function sortLeadsForTable(leads, sort, options = {}) {
 }
 
 function sortBaseLeads(leads) {
-  return sortLeadsForTable(leads, state.baseSort, { blankHistoricalBaseStatus: true });
+  return sortLeadsForTable(leads, state.baseSort, { blankHistoricalBaseStatus: true }).sort((a, b) => {
+    if (Boolean(a.inPipeline) !== Boolean(b.inPipeline)) return a.inPipeline ? -1 : 1;
+    return 0;
+  });
 }
 
 function statusDefinitionFor(status) {
@@ -1413,6 +1428,10 @@ async function loadLeads(force = false, options = {}) {
   }
 }
 
+async function loadLeadsForCurrentView(force = true) {
+  await loadLeads(force);
+}
+
 function invalidateLeads() {
   state.leadsLoaded = false;
   state.leadsScope = "";
@@ -1541,6 +1560,7 @@ function renderOwnProfileModal() {
           <div class="field full"><label>Número de WhatsApp</label><input name="whatsappNumber" value="${escapeHtml(notifications.whatsappNumber || "")}" placeholder="Ex.: 5521999999999"><small>Use DDD. Se não informar o código do país, o sistema considera Brasil (+55).</small></div>
           <div class="field"><label>Notificação por e-mail</label><label class="checkline settings-check"><input type="checkbox" name="notifyEmail" ${notifications.email ? "checked" : ""}> Receber alertas</label></div>
           <div class="field"><label>Notificação por WhatsApp</label><label class="checkline settings-check"><input type="checkbox" name="notifyWhatsapp" ${notifications.whatsapp ? "checked" : ""}> Receber alertas</label></div>
+          ${canUseMetaHealthAlertsForRole(user.role) ? `<div class="field full"><label>Monitoramento Meta</label><label class="checkline settings-check"><input type="checkbox" name="notifyMetaHealthWhatsapp" ${notifications.metaHealthWhatsapp ? "checked" : ""}> Receber alerta de queda/anomalia de leads Meta por WhatsApp</label></div>` : ""}
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-close-own-profile>Cancelar</button></div></div>
         </form>
       </section>
@@ -1587,7 +1607,8 @@ function bindOwnProfileModal() {
       notifications: {
         email: form.get("notifyEmail") === "on",
         whatsapp: form.get("notifyWhatsapp") === "on",
-        whatsappNumber: form.get("whatsappNumber")
+        whatsappNumber: form.get("whatsappNumber"),
+        metaHealthWhatsapp: canUseMetaHealthAlertsForRole(state.user?.role) && form.get("notifyMetaHealthWhatsapp") === "on"
       },
       photoUrl: state.profilePhotoDraft !== null ? state.profilePhotoDraft : undefined
     };
@@ -3001,12 +3022,14 @@ function bindRollbackControls(renderFn) {
   document.querySelectorAll("[data-rollback]").forEach((button) => {
     button.addEventListener("click", async () => {
       if (!confirm("Enviar este lead para a base Pipeline GDrive?")) return;
+      const scrollY = window.scrollY;
       try {
         setButtonBusy(button, true, "Voltando...");
         const result = await api(`/api/leads/${button.dataset.rollback}/rollback`, { method: "POST", body: JSON.stringify({ movementSource: "base" }) });
         const lead = state.leads.find((item) => item.id === result.lead.id);
         Object.assign(lead, result.lead);
         renderFn();
+        requestAnimationFrame(() => window.scrollTo({ top: scrollY }));
       } catch (error) {
         setButtonBusy(button, false);
         alert(error.message);
@@ -3078,6 +3101,7 @@ function renderLeadBases() {
   });
   document.querySelectorAll("[data-rescue]").forEach((button) => {
     button.addEventListener("click", async () => {
+      const scrollY = window.scrollY;
       try {
         setButtonBusy(button, true, "Resgatando...");
         let assignToSelf = false;
@@ -3088,6 +3112,7 @@ function renderLeadBases() {
         const lead = state.leads.find((item) => item.id === result.lead.id);
         Object.assign(lead, result.lead);
         renderLeadBases();
+        requestAnimationFrame(() => window.scrollTo({ top: scrollY }));
       } catch (error) {
         setButtonBusy(button, false);
         alert(error.message);
@@ -4780,7 +4805,8 @@ function renderUserSettings() {
       notifications: {
         email: form.get("notifyEmail") === "on",
         whatsapp: form.get("notifyWhatsapp") === "on",
-        whatsappNumber: form.get("whatsappNumber")
+        whatsappNumber: form.get("whatsappNumber"),
+        metaHealthWhatsapp: canUseMetaHealthAlertsForRole(String(form.get("role") || "")) && form.get("notifyMetaHealthWhatsapp") === "on"
       },
       operatesAsBroker: form.get("operatesAsBroker") === "on"
     };
@@ -4830,6 +4856,7 @@ function renderUserEditorModal(formUser, isEditing, roleOptions) {
           <div class="field full"><label>Operação comercial</label><label class="checkline settings-check"><input type="checkbox" name="operatesAsBroker" ${formUser.operatesAsBroker ? "checked" : ""}> Operar também como corretor</label><small>Quando ativo para Head ou Supervisor, o usuário pode receber leads como corretor sem perder a visão gerencial.</small></div>
           <div class="field"><label>Notificar por e-mail</label><label class="checkline settings-check"><input type="checkbox" name="notifyEmail" ${formUser.notifications?.email ? "checked" : ""}> Receber novos leads</label></div>
           <div class="field"><label>Notificar por WhatsApp</label><label class="checkline settings-check"><input type="checkbox" name="notifyWhatsapp" ${formUser.notifications?.whatsapp ? "checked" : ""}> Receber novos leads</label></div>
+          ${canUseMetaHealthAlertsForRole(formUser.role) ? `<div class="field full"><label>Monitoramento Meta</label><label class="checkline settings-check"><input type="checkbox" name="notifyMetaHealthWhatsapp" ${formUser.notifications?.metaHealthWhatsapp ? "checked" : ""}> Receber alerta de queda/anomalia de leads Meta por WhatsApp</label></div>` : ""}
           <div class="field full"><label>Número de WhatsApp</label><input name="whatsappNumber" value="${escapeHtml(formUser.notifications?.whatsappNumber || "")}" placeholder="Ex.: 5521999999999"><small>Use DDD. Se não informar o código do país, o sistema considera Brasil (+55).</small></div>
           <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar</button><button type="button" data-cancel-settings>Cancelar</button></div></div>
         </form>
