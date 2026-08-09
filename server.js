@@ -4591,6 +4591,10 @@ async function ensureStructuredSchema(sql) {
       OR (NULLIF(odysseia_status, '') IS NULL AND COALESCE(NULLIF(payload->>'odysseiaStatus', ''), NULLIF(payload->>'odysseia_status', '')) IS NOT NULL)
       OR (NULLIF(assistant, '') IS NULL AND NULLIF(payload->>'assistant', '') IS NOT NULL)
       OR (NULLIF(external_id, '') IS NULL AND COALESCE(NULLIF(payload->>'externalId', ''), NULLIF(payload->>'external_id', '')) IS NOT NULL)`;
+  await sql`UPDATE crm_leads
+    SET in_pipeline = true
+    WHERE in_pipeline = false
+      AND lower(COALESCE(payload->>'inPipeline', payload->>'in_pipeline', 'false')) = 'true'`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lead_comments (id text PRIMARY KEY, lead_id text NOT NULL, author_user_id text, author_name text, comment_text text, from_user boolean NOT NULL DEFAULT false, deleted boolean NOT NULL DEFAULT false, created_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_lead_comments_lead_idx ON crm_lead_comments (lead_id)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lead_tags (lead_id text NOT NULL, tag_id text NOT NULL, PRIMARY KEY (lead_id, tag_id))`;
@@ -8546,6 +8550,7 @@ async function fastStructuredUserPermissionRoutes(req, res, url) {
 
 function publicStructuredLeadSummary(row, user) {
   const payload = row.payload || {};
+  const rowInPipeline = row.in_pipeline === true || String(payload.inPipeline || payload.in_pipeline || "").toLowerCase() === "true";
   const lead = {
     ...payload,
     id: row.id || payload.id,
@@ -8556,7 +8561,7 @@ function publicStructuredLeadSummary(row, user) {
     sourceStatus: row.source_status || "",
     odysseiaStatus: row.odysseia_status || "",
     status: row.status || payload.status || "",
-    inPipeline: Boolean(row.in_pipeline ?? payload.inPipeline),
+    inPipeline: rowInPipeline,
     assignedTo: row.assigned_to || payload.assignedTo || "",
     assignedName: row.assigned_name || payload.assignedName || "",
     project: row.project || payload.project || payload.empreendimento || payload.desiredProject || "",
@@ -8576,6 +8581,7 @@ function publicStructuredLeadSummary(row, user) {
 
 function structuredLeadFromRow(row, favorite = false, tags = []) {
   const payload = row?.payload || {};
+  const rowInPipeline = row?.in_pipeline === true || String(payload.inPipeline || payload.in_pipeline || "").toLowerCase() === "true";
   const lead = {
     ...payload,
     id: row.id || payload.id,
@@ -8586,7 +8592,7 @@ function structuredLeadFromRow(row, favorite = false, tags = []) {
     sourceStatus: row.source_status || "",
     odysseiaStatus: row.odysseia_status || "",
     status: row.status || payload.status || "",
-    inPipeline: Boolean(row.in_pipeline ?? payload.inPipeline),
+    inPipeline: rowInPipeline,
     assignedTo: row.assigned_to || payload.assignedTo || "",
     assignedName: row.assigned_name || payload.assignedName || "",
     project: row.project || payload.project || payload.empreendimento || payload.desiredProject || "",
@@ -9470,14 +9476,14 @@ async function fastStructuredLeadsResponse(req, res, url) {
             FROM crm_leads l
             LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
             LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
-            WHERE l.in_pipeline = true AND l.assigned_to = ${user.id}
+            WHERE (l.in_pipeline = true OR lower(COALESCE(l.payload->>'inPipeline', l.payload->>'in_pipeline', 'false')) = 'true') AND l.assigned_to = ${user.id}
             GROUP BY l.id, f.favorite
             ORDER BY l.updated_at DESC NULLS LAST, l.created_at DESC NULLS LAST`
         : await sql`SELECT l.*, COALESCE(f.favorite, false) AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
             FROM crm_leads l
             LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
             LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
-            WHERE l.in_pipeline = true
+            WHERE (l.in_pipeline = true OR lower(COALESCE(l.payload->>'inPipeline', l.payload->>'in_pipeline', 'false')) = 'true')
             GROUP BY l.id, f.favorite
             ORDER BY l.updated_at DESC NULLS LAST, l.created_at DESC NULLS LAST`;
     } else if (scope === "bases") {
@@ -9499,19 +9505,11 @@ async function fastStructuredLeadsResponse(req, res, url) {
       const searchLike = `%${searchFilter}%`;
       const summaryRows = await sql`SELECT
           COUNT(*)::int AS total,
-          COALESCE(SUM(CASE WHEN l.in_pipeline = false THEN 1 ELSE 0 END), 0)::int AS pending,
-          COALESCE(SUM(CASE WHEN l.in_pipeline = true THEN 1 ELSE 0 END), 0)::int AS rescued
+          COALESCE(SUM(CASE WHEN NOT (l.in_pipeline = true OR lower(COALESCE(l.payload->>'inPipeline', l.payload->>'in_pipeline', 'false')) = 'true') THEN 1 ELSE 0 END), 0)::int AS pending,
+          COALESCE(SUM(CASE WHEN (l.in_pipeline = true OR lower(COALESCE(l.payload->>'inPipeline', l.payload->>'in_pipeline', 'false')) = 'true') THEN 1 ELSE 0 END), 0)::int AS rescued
         FROM crm_leads l
         LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
-        WHERE (
-            l.in_pipeline = false
-            OR l.source IN ('META', 'Stand', 'Lista RMeirelles')
-            OR COALESCE(l.base_source_before_pipeline, '') <> ''
-            OR COALESCE(l.previous_pipeline_source, '') <> ''
-            OR COALESCE(l.source_status, '') <> ''
-            OR COALESCE(l.odysseia_status, '') <> ''
-          )
-          AND (${sourceIsAll}
+        WHERE (${sourceIsAll}
             OR l.source = ANY(${sourceFilterAliases})
             OR l.base_source_before_pipeline = ANY(${sourceFilterAliases})
             OR l.previous_pipeline_source = ANY(${sourceFilterAliases})
@@ -9528,15 +9526,7 @@ async function fastStructuredLeadsResponse(req, res, url) {
           FROM crm_leads l
           LEFT JOIN crm_lead_favorites f ON f.lead_id = l.id AND f.user_id = ${user.id}
           LEFT JOIN crm_lead_tags t ON t.lead_id = l.id
-          WHERE (
-              l.in_pipeline = false
-              OR l.source IN ('META', 'Stand', 'Lista RMeirelles')
-              OR COALESCE(l.base_source_before_pipeline, '') <> ''
-              OR COALESCE(l.previous_pipeline_source, '') <> ''
-              OR COALESCE(l.source_status, '') <> ''
-              OR COALESCE(l.odysseia_status, '') <> ''
-            )
-            AND (${sourceIsAll}
+          WHERE (${sourceIsAll}
               OR l.source = ANY(${sourceFilterAliases})
               OR l.base_source_before_pipeline = ANY(${sourceFilterAliases})
               OR l.previous_pipeline_source = ANY(${sourceFilterAliases})
@@ -9550,7 +9540,7 @@ async function fastStructuredLeadsResponse(req, res, url) {
             AND (${!searchFilter} OR lower(concat_ws(' ', l.name, l.phone, l.email, l.assigned_name, l.source, l.status, l.assistant, l.external_id)) LIKE ${searchLike})
           GROUP BY l.id, f.favorite
           ORDER BY
-            CASE WHEN l.in_pipeline = true THEN 0 ELSE 1 END ASC,
+            CASE WHEN (l.in_pipeline = true OR lower(COALESCE(l.payload->>'inPipeline', l.payload->>'in_pipeline', 'false')) = 'true') THEN 0 ELSE 1 END ASC,
             CASE WHEN ${sortKey} = 'name' AND ${sortDirection} = 'asc' THEN lower(l.name) END ASC NULLS LAST,
             CASE WHEN ${sortKey} = 'name' AND ${sortDirection} = 'desc' THEN lower(l.name) END DESC NULLS LAST,
             CASE WHEN ${sortKey} = 'phone' AND ${sortDirection} = 'asc' THEN lower(l.phone) END ASC NULLS LAST,

@@ -11,6 +11,10 @@ function canUseMetaHealthAlertsForRole(role) {
   return META_HEALTH_NOTIFICATION_ROLES.includes(role);
 }
 
+function canReorderKanbanColumns() {
+  return ["Admin TI", "Head Comercial", "Coordenador de Marketing"].includes(state.user?.role);
+}
+
 const state = {
   user: null,
   roles: [],
@@ -2679,6 +2683,7 @@ function leadCard(lead) {
 
 function renderKanban() {
   const leads = pipelineLeads();
+  const canReorderColumns = canReorderKanbanColumns();
   const byStatus = Object.groupBy ? Object.groupBy(leads, (lead) => lead.status) : leads.reduce((acc, lead) => {
     (acc[lead.status] ||= []).push(lead);
     return acc;
@@ -2691,7 +2696,7 @@ function renderKanban() {
     });
     return `
       <section class="column" data-status="${escapeHtml(status)}" data-status-index="${index}">
-        <div class="column-head" draggable="true" data-column-drag="${index}" title="Arraste para ordenar">
+        <div class="column-head" ${canReorderColumns ? `draggable="true" data-column-drag="${index}" title="Arraste para ordenar"` : ""}>
           <strong>${escapeHtml(status)}</strong>
           <span class="count">${items.length}</span>
         </div>
@@ -2889,6 +2894,7 @@ function bindDragDrop() {
 }
 
 function bindColumnDragDrop() {
+  if (!canReorderKanbanColumns()) return;
   let draggedIndex = null;
   document.querySelectorAll("[data-column-drag]").forEach((head) => {
     head.addEventListener("dragstart", (event) => {
