@@ -1022,11 +1022,8 @@ function baseSources() {
 function baseLeads() {
   const sources = baseSources();
   if (!sources.includes(state.baseSource)) state.baseSource = sources[0] || "TODOS";
-  return sortBaseLeads(filteredLeads().filter((lead) => {
-    if (state.baseSource === "META") return leadMatchesBaseSource(lead, "META");
-    if (MANUAL_BASE_SOURCES.includes(state.baseSource)) return leadMatchesBaseSource(lead, state.baseSource);
-    return leadMatchesBaseSource(lead, state.baseSource);
-  }));
+  if (state.leadsScope === "bases") return sortBaseLeads(state.leads || []);
+  return sortBaseLeads(filteredLeads().filter((lead) => leadMatchesBaseSource(lead, state.baseSource)));
 }
 
 function sortStorageKey(scope) {
