@@ -1,6 +1,7 @@
 const app = document.querySelector("#app");
 let knowledgeTypingTimer = null;
 let pageSearchRenderTimer = null;
+let pageSearchRequestSeq = 0;
 let presencePollTimer = null;
 let presencePollInFlight = false;
 const MANUAL_BASE_SOURCES = ["Stand", "Lista RMeirelles"];
@@ -2166,26 +2167,61 @@ function renderPipelineFilterControls() {
   `;
 }
 
+function pageSearchSnapshot(input) {
+  if (!input) return null;
+  return {
+    start: input.selectionStart,
+    end: input.selectionEnd
+  };
+}
+
+function restorePageSearchFocus(snapshot) {
+  requestAnimationFrame(() => {
+    const nextSearch = document.querySelector("#pageSearch");
+    if (!nextSearch) return;
+    nextSearch.focus({ preventScroll: true });
+    if (!snapshot) return;
+    const start = typeof snapshot.start === "number" ? snapshot.start : nextSearch.value.length;
+    const end = typeof snapshot.end === "number" ? snapshot.end : start;
+    try {
+      nextSearch.setSelectionRange(start, end);
+    } catch {}
+  });
+}
+
+function renderSearchView(view) {
+  if (view === "odysseia") return renderLeadBases();
+  if (view === "sheet") return renderSheet();
+  return renderApp();
+}
+
+async function refreshSearchView(view, sequence, snapshot) {
+  if (view === "odysseia") {
+    while (state.leadsLoading) await new Promise((resolve) => setTimeout(resolve, 80));
+    if (sequence !== pageSearchRequestSeq || state.view !== view) return;
+    await loadLeadsForCurrentView(true);
+    if (sequence !== pageSearchRequestSeq || state.view !== view) return;
+  }
+  renderSearchView(view);
+  restorePageSearchFocus(snapshot);
+}
+
 function bindPageFilters() {
   const search = document.querySelector("#pageSearch");
   const favoriteToggle = document.querySelector("#pageFavoriteToggle");
   const addLeadButton = document.querySelector("#addLeadButton");
   let composingSearch = false;
-  const scheduleSearchRender = () => {
+  const scheduleSearchRender = (snapshot) => {
+    const view = state.view;
+    const sequence = ++pageSearchRequestSeq;
     if (pageSearchRenderTimer) clearTimeout(pageSearchRenderTimer);
     pageSearchRenderTimer = setTimeout(() => {
       pageSearchRenderTimer = null;
-      if (state.view === "odysseia") {
-        loadLeadsForCurrentView().then(() => renderLeadBases()).catch(() => renderLeadBases());
-      } else {
-        renderApp();
-      }
-      requestAnimationFrame(() => {
-        const nextSearch = document.querySelector("#pageSearch");
-        if (!nextSearch) return;
-        nextSearch.focus({ preventScroll: true });
-        const position = nextSearch.value.length;
-        nextSearch.setSelectionRange(position, position);
+      refreshSearchView(view, sequence, snapshot).catch(() => {
+        if (sequence === pageSearchRequestSeq && state.view === view) {
+          renderSearchView(view);
+          restorePageSearchFocus(snapshot);
+        }
       });
     }, 320);
   };
@@ -2196,22 +2232,20 @@ function bindPageFilters() {
     composingSearch = false;
     state.search = event.target.value;
     if (state.view === "odysseia") resetBasePagination();
-    scheduleSearchRender();
+    scheduleSearchRender(pageSearchSnapshot(event.target));
   });
   search?.addEventListener("input", (event) => {
     state.search = event.target.value;
     if (state.view === "odysseia") resetBasePagination();
-    if (!composingSearch) scheduleSearchRender();
+    if (!composingSearch) scheduleSearchRender(pageSearchSnapshot(event.target));
   });
   search?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     if (pageSearchRenderTimer) clearTimeout(pageSearchRenderTimer);
     pageSearchRenderTimer = null;
-    if (state.view === "odysseia") {
-      loadLeadsForCurrentView().then(() => renderLeadBases()).catch(() => renderLeadBases());
-    } else {
-      renderApp();
-    }
+    const view = state.view;
+    const sequence = ++pageSearchRequestSeq;
+    refreshSearchView(view, sequence, pageSearchSnapshot(event.target)).catch(() => renderSearchView(view));
   });
   favoriteToggle?.addEventListener("click", () => {
     state.favoritesOnly = !state.favoritesOnly;
