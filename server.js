@@ -184,6 +184,16 @@ const DEFAULT_LEV_PAYMENT_SCHEDULE = [
   { start: "2026-11-24", end: "2026-11-30", paymentDate: "2026-12-18" },
   { start: "2026-12-01", end: "2026-12-07", paymentDate: "2026-12-25" }
 ];
+const DEFAULT_LEV_EMAIL_TEMPLATE_HTML = `
+  <p>Prezados,</p>
+  <p>Segue o demonstrativo de comissões da Lev referente às vendas confirmadas no período, conforme relação abaixo.</p>
+  <p>Solicitamos, por gentileza, o aprovisionamento dos valores para a data de <strong>{{data_pagamento}}</strong>, conforme calendário financeiro da Mauad.</p>
+  <p>Tão logo confirmado o aprovisionamento, emitiremos a(s) respectiva(s) Nota(s) Fiscal(is).</p>
+  <p>Quaisquer dúvidas, seguimos à disposição.</p>
+  <p><strong>Total geral da NF de comissões:</strong> {{total_comissoes}}</p>
+  {{tabela_vendas}}
+  <p>Obrigado.</p>
+`;
 const DEFAULT_LEV_SETTLEMENTS = [
   {
     "unit": "RGLQDLF19",
@@ -896,6 +906,41 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function sanitizeRichHtml(value) {
+  return String(value || "")
+    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "")
+    .replace(/\son\w+="[^"]*"/gi, "")
+    .replace(/\son\w+='[^']*'/gi, "")
+    .replace(/javascript:/gi, "");
+}
+
+function normalizeLevFinanceEmailTemplate(template = {}) {
+  return {
+    html: sanitizeRichHtml(template.html || DEFAULT_LEV_EMAIL_TEMPLATE_HTML),
+    fontFamily: String(template.fontFamily || "Arial").trim() || "Arial",
+    fontSize: String(template.fontSize || "14px").trim() || "14px",
+    color: String(template.color || "#101828").trim() || "#101828"
+  };
+}
+
+function renderLevFinanceEmailTemplate(settings = {}, variables = {}) {
+  const template = normalizeLevFinanceEmailTemplate(settings.emailTemplate || {});
+  const sourceHtml = template.html || DEFAULT_LEV_EMAIL_TEMPLATE_HTML;
+  const hasSalesTableVariable = /\{\{\s*(tabela_vendas|lista_vendas)\s*\}\}/i.test(sourceHtml);
+  let html = sourceHtml;
+  Object.entries(variables).forEach(([key, value]) => {
+    html = html.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "gi"), String(value ?? ""));
+  });
+  if (!hasSalesTableVariable && variables.tabela_vendas) {
+    html += `<p><strong>Total geral da NF de comissões:</strong> ${variables.total_comissoes || "-"}</p>${variables.tabela_vendas}`;
+  }
+  return `
+    <div style="font-family:${escapeHtml(template.fontFamily)};font-size:${escapeHtml(template.fontSize)};color:${escapeHtml(template.color)};line-height:1.5">
+      ${sanitizeRichHtml(html)}
+    </div>
+  `;
+}
+
 function buildDefaultDb() {
   if (fs.existsSync(DB_PATH)) {
     const db = migrateDb(readJson(DB_PATH));
@@ -1141,6 +1186,7 @@ function migrateDb(db) {
     commissionPercent: Number(db.levFinance.settings.commissionPercent || 0),
     provisionTo: String(db.levFinance.settings.provisionTo || "").trim(),
     provisionCc: String(db.levFinance.settings.provisionCc || "").trim(),
+    emailTemplate: normalizeLevFinanceEmailTemplate(db.levFinance.settings.emailTemplate),
     paymentSchedule: Array.isArray(db.levFinance.settings.paymentSchedule)
       ? db.levFinance.settings.paymentSchedule
       : DEFAULT_LEV_PAYMENT_SCHEDULE.map((item) => ({ ...item }))
@@ -2085,17 +2131,19 @@ async function sendLevMauadPendingEmail(sql, db, sales = [], options = {}) {
   const scheduledPaymentDateLabel = scheduledPaymentDate
     ? new Date(`${scheduledPaymentDate}T00:00:00`).toLocaleDateString("pt-BR")
     : "";
+  const emailBodyHtml = renderLevFinanceEmailTemplate(settings, {
+    data_pagamento: escapeHtml(scheduledPaymentDateLabel || scheduledPaymentDate || "-"),
+    data_envio: new Date(options.sentAt || new Date()).toLocaleDateString("pt-BR"),
+    total_comissoes: escapeHtml(formatCurrency(totalCommission)),
+    quantidade_vendas: String(sales.length),
+    empreendimentos: escapeHtml([...groups.keys()].join(", ") || "-"),
+    tabela_vendas: projectBlocks,
+    lista_vendas: projectBlocks
+  });
   const html = `
     <div style="font-family:Arial,sans-serif;color:#101828;line-height:1.5">
       <h2>Solicitação de autorização - Comissões Lev</h2>
-      <p>Prezados,</p>
-      <p>Segue o demonstrativo de comissões da Lev referente às vendas confirmadas no período, conforme relação abaixo.</p>
-      <p>Solicitamos, por gentileza, o aprovisionamento dos valores para a data de <strong>${escapeHtml(scheduledPaymentDateLabel || scheduledPaymentDate || "-")}</strong>, conforme calendário financeiro da Mauad.</p>
-      <p>Tão logo confirmado o aprovisionamento, emitiremos a(s) respectiva(s) Nota(s) Fiscal(is).</p>
-      <p>Quaisquer dúvidas, seguimos à disposição.</p>
-      <p><strong>Total geral da NF de comissões:</strong> ${escapeHtml(formatCurrency(totalCommission))}</p>
-      ${projectBlocks}
-      <p style="margin-top:28px">Obrigado.</p>
+      ${emailBodyHtml}
     </div>
   `;
   return sendEmailWithCcFrom(
@@ -5785,6 +5833,7 @@ function normalizeLevFinanceSettingsPayload(settings = {}) {
     commissionPercent: Math.max(0, Number(settings.commissionPercent || 0)),
     provisionTo: String(settings.provisionTo || "").trim(),
     provisionCc: String(settings.provisionCc || "").trim(),
+    emailTemplate: normalizeLevFinanceEmailTemplate(settings.emailTemplate),
     paymentSchedule: (Array.isArray(settings.paymentSchedule) ? settings.paymentSchedule : DEFAULT_LEV_PAYMENT_SCHEDULE)
       .map((item) => ({
         start: String(item.start || "").trim(),
@@ -7345,6 +7394,7 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
         commissionPercent: body.commissionPercent,
         provisionTo: body.provisionTo,
         provisionCc: body.provisionCc,
+        emailTemplate: body.emailTemplate || currentSettings.emailTemplate,
         paymentSchedule: Array.isArray(body.paymentSchedule) ? body.paymentSchedule : currentSettings.paymentSchedule
       });
       stateDb.levFinance.settings = nextSettings;
@@ -11002,6 +11052,7 @@ async function routeApi(req, res, db) {
       commissionPercent: Math.max(0, Number(body.commissionPercent || 0)),
       provisionTo: String(body.provisionTo || "").trim(),
       provisionCc: String(body.provisionCc || "").trim(),
+      emailTemplate: normalizeLevFinanceEmailTemplate(body.emailTemplate || db.levFinance.settings.emailTemplate),
       paymentSchedule
     };
     audit(db, user, "UPDATE_LEV_FINANCE_SETTINGS", { commissionPercent: db.levFinance.settings.commissionPercent });

@@ -171,6 +171,62 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+const DEFAULT_LEV_EMAIL_TEMPLATE_HTML = `
+  <p>Prezados,</p>
+  <p>Segue o demonstrativo de comissões da Lev referente às vendas confirmadas no período, conforme relação abaixo.</p>
+  <p>Solicitamos, por gentileza, o aprovisionamento dos valores para a data de <strong>{{data_pagamento}}</strong>, conforme calendário financeiro da Mauad.</p>
+  <p>Tão logo confirmado o aprovisionamento, emitiremos a(s) respectiva(s) Nota(s) Fiscal(is).</p>
+  <p>Quaisquer dúvidas, seguimos à disposição.</p>
+  <p><strong>Total geral da NF de comissões:</strong> {{total_comissoes}}</p>
+  {{tabela_vendas}}
+  <p>Obrigado.</p>
+`;
+
+const LEV_EMAIL_TEMPLATE_VARIABLES = [
+  { key: "data_pagamento", label: "Data de pagamento" },
+  { key: "data_envio", label: "Data de envio" },
+  { key: "total_comissoes", label: "Total comissões" },
+  { key: "quantidade_vendas", label: "Qtd. vendas" },
+  { key: "empreendimentos", label: "Empreendimentos" },
+  { key: "tabela_vendas", label: "Tabela/lista de vendas" }
+];
+
+function sanitizeRichHtml(value) {
+  return String(value || "")
+    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "")
+    .replace(/\son\w+="[^"]*"/gi, "")
+    .replace(/\son\w+='[^']*'/gi, "")
+    .replace(/javascript:/gi, "");
+}
+
+function normalizeLevEmailTemplateSettings(settings = {}) {
+  const template = settings.emailTemplate || {};
+  return {
+    html: sanitizeRichHtml(template.html || DEFAULT_LEV_EMAIL_TEMPLATE_HTML),
+    fontFamily: template.fontFamily || "Arial",
+    fontSize: template.fontSize || "14px",
+    color: template.color || "#101828"
+  };
+}
+
+function renderLevEmailTemplateHtml(settings = {}, variables = {}) {
+  const template = normalizeLevEmailTemplateSettings(settings);
+  const sourceHtml = template.html || DEFAULT_LEV_EMAIL_TEMPLATE_HTML;
+  const hasSalesTableVariable = /\{\{\s*(tabela_vendas|lista_vendas)\s*\}\}/i.test(sourceHtml);
+  let html = sourceHtml;
+  Object.entries(variables).forEach(([key, value]) => {
+    html = html.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "gi"), String(value ?? ""));
+  });
+  if (!hasSalesTableVariable && variables.tabela_vendas) {
+    html += `<p><strong>Total geral da NF de comissões:</strong> ${variables.total_comissoes || "-"}</p>${variables.tabela_vendas}`;
+  }
+  return `
+    <div style="font-family:${escapeHtml(template.fontFamily)};font-size:${escapeHtml(template.fontSize)};color:${escapeHtml(template.color)};line-height:1.5">
+      ${sanitizeRichHtml(html)}
+    </div>
+  `;
+}
+
 function renderChatText(value) {
   return escapeHtml(value)
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
@@ -6501,7 +6557,27 @@ function levFinanceSearchText(item) {
 
 function renderLevFinanceSettings() {
   const settings = state.levFinance?.settings || {};
+  const emailTemplate = normalizeLevEmailTemplateSettings(settings);
   const paymentSchedule = Array.isArray(settings.paymentSchedule) ? settings.paymentSchedule : [];
+  const variableButtons = LEV_EMAIL_TEMPLATE_VARIABLES.map((variable) => `
+    <button type="button" class="template-variable-button" data-lev-email-variable="${escapeHtml(variable.key)}">${escapeHtml(variable.label)}</button>
+  `).join("");
+  const sampleTable = `
+    <section class="email-preview-project">
+      <h3>Golf Club Resort</h3>
+      <p><strong>Total da NF de comissões:</strong> ${money(2250)}</p>
+      <div class="table-wrap"><table class="email-preview-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Comissão Lev</th><th>Imobiliária</th></tr></thead><tbody><tr><td>GCR060107</td><td>Cliente exemplo</td><td>28/07/26 17:03:51</td><td>${money(450000)}</td><td>${money(2250)}</td><td>Imobiliária exemplo</td></tr></tbody></table></div>
+    </section>
+  `;
+  const samplePreview = renderLevEmailTemplateHtml(settings, {
+    data_pagamento: "21/08/2026",
+    data_envio: new Date().toLocaleDateString("pt-BR"),
+    total_comissoes: money(2250),
+    quantidade_vendas: "1",
+    empreendimentos: "Golf Club Resort",
+    tabela_vendas: sampleTable,
+    lista_vendas: sampleTable
+  });
   const scheduleRows = paymentSchedule.map((item) => `
     <tr data-lev-schedule-row>
       <td><input type="date" data-lev-schedule-start value="${escapeHtml(item.start || "")}" required></td>
@@ -6520,6 +6596,39 @@ function renderLevFinanceSettings() {
         <div class="field"><label>% comissão Lev</label><input name="commissionPercent" type="number" min="0" step="0.01" value="${escapeHtml(settings.commissionPercent || "")}" required></div>
         <div class="field"><label>E-mails Para</label><input name="provisionTo" value="${escapeHtml(settings.provisionTo || "")}" placeholder="financeiro@empresa.com.br" required></div>
         <div class="field full"><label>E-mails Cc</label><input name="provisionCc" value="${escapeHtml(settings.provisionCc || "")}" placeholder="email1@empresa.com.br, email2@empresa.com.br"></div>
+        <div class="field full">
+          <div class="panel-head compact-head">
+            <div>
+              <h3>Mensagem do e-mail Financeiro Lev</h3>
+              <small>Edite o texto visualmente e insira variáveis no ponto do cursor.</small>
+            </div>
+          </div>
+          <div class="email-template-builder">
+            <section class="email-template-editor-pane">
+              <div class="email-template-toolbar" aria-label="Ferramentas de formatação">
+                <select id="levEmailFontFamily" title="Fonte">
+                  ${["Arial", "Georgia", "Times New Roman", "Verdana", "Tahoma", "Courier New"].map((font) => `<option value="${escapeHtml(font)}" ${font === emailTemplate.fontFamily ? "selected" : ""}>${escapeHtml(font)}</option>`).join("")}
+                </select>
+                <select id="levEmailFontSize" title="Tamanho">
+                  ${["12px", "13px", "14px", "15px", "16px", "18px", "20px"].map((size) => `<option value="${escapeHtml(size)}" ${size === emailTemplate.fontSize ? "selected" : ""}>${escapeHtml(size)}</option>`).join("")}
+                </select>
+                <input id="levEmailFontColor" type="color" value="${escapeHtml(emailTemplate.color)}" title="Cor da fonte">
+                <button type="button" data-lev-email-command="bold" title="Negrito"><strong>B</strong></button>
+                <button type="button" data-lev-email-command="italic" title="Itálico"><em>I</em></button>
+                <button type="button" data-lev-email-command="underline" title="Sublinhado"><u>U</u></button>
+              </div>
+              <div class="template-variable-bar">
+                <span>Variáveis</span>
+                ${variableButtons}
+              </div>
+              <div id="levEmailTemplateEditor" class="rich-email-editor" contenteditable="true" style="font-family:${escapeHtml(emailTemplate.fontFamily)};font-size:${escapeHtml(emailTemplate.fontSize)};color:${escapeHtml(emailTemplate.color)}">${emailTemplate.html}</div>
+            </section>
+            <section class="email-template-preview-pane">
+              <div class="preview-title">Prévia</div>
+              <div id="levEmailTemplatePreview" class="email-preview-body template-preview-body">${samplePreview}</div>
+            </section>
+          </div>
+        </div>
         <div class="field full">
           <div class="panel-head compact-head">
             <div>
@@ -6558,6 +6667,54 @@ function renderLevFinanceSettings() {
     if (!button) return;
     button.closest("[data-lev-schedule-row]")?.remove();
   });
+  const templateEditor = document.querySelector("#levEmailTemplateEditor");
+  const templatePreview = document.querySelector("#levEmailTemplatePreview");
+  const templateFontFamily = document.querySelector("#levEmailFontFamily");
+  const templateFontSize = document.querySelector("#levEmailFontSize");
+  const templateFontColor = document.querySelector("#levEmailFontColor");
+  const previewVariables = {
+    data_pagamento: "21/08/2026",
+    data_envio: new Date().toLocaleDateString("pt-BR"),
+    total_comissoes: money(2250),
+    quantidade_vendas: "1",
+    empreendimentos: "Golf Club Resort",
+    tabela_vendas: sampleTable,
+    lista_vendas: sampleTable
+  };
+  const refreshTemplatePreview = () => {
+    if (!templateEditor || !templatePreview) return;
+    const nextSettings = {
+      emailTemplate: {
+        html: sanitizeRichHtml(templateEditor.innerHTML),
+        fontFamily: templateFontFamily?.value || "Arial",
+        fontSize: templateFontSize?.value || "14px",
+        color: templateFontColor?.value || "#101828"
+      }
+    };
+    templateEditor.style.fontFamily = nextSettings.emailTemplate.fontFamily;
+    templateEditor.style.fontSize = nextSettings.emailTemplate.fontSize;
+    templateEditor.style.color = nextSettings.emailTemplate.color;
+    templatePreview.innerHTML = renderLevEmailTemplateHtml(nextSettings, previewVariables);
+  };
+  templateEditor?.addEventListener("input", refreshTemplatePreview);
+  [templateFontFamily, templateFontSize, templateFontColor].forEach((control) => {
+    control?.addEventListener("change", refreshTemplatePreview);
+    control?.addEventListener("input", refreshTemplatePreview);
+  });
+  document.querySelectorAll("[data-lev-email-command]").forEach((button) => {
+    button.addEventListener("click", () => {
+      templateEditor?.focus();
+      document.execCommand(button.dataset.levEmailCommand, false, null);
+      refreshTemplatePreview();
+    });
+  });
+  document.querySelectorAll("[data-lev-email-variable]").forEach((button) => {
+    button.addEventListener("click", () => {
+      templateEditor?.focus();
+      document.execCommand("insertText", false, `{{${button.dataset.levEmailVariable}}}`);
+      refreshTemplatePreview();
+    });
+  });
   document.querySelector("#levFinanceSettingsForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector("button[type='submit']");
@@ -6569,6 +6726,12 @@ function renderLevFinanceSettings() {
     })).filter((item) => item.start && item.end && item.paymentDate);
     const payload = {
       ...Object.fromEntries(form.entries()),
+      emailTemplate: {
+        html: sanitizeRichHtml(document.querySelector("#levEmailTemplateEditor")?.innerHTML || DEFAULT_LEV_EMAIL_TEMPLATE_HTML),
+        fontFamily: document.querySelector("#levEmailFontFamily")?.value || "Arial",
+        fontSize: document.querySelector("#levEmailFontSize")?.value || "14px",
+        color: document.querySelector("#levEmailFontColor")?.value || "#101828"
+      },
       paymentSchedule: paymentSchedulePayload
     };
     try {
@@ -7040,6 +7203,15 @@ function renderLevMauadEmailPreviewModal(pendingSales = []) {
       </section>
     `;
   }).join("");
+  const emailBodyHtml = sales.length ? renderLevEmailTemplateHtml(settings, {
+    data_pagamento: escapeHtml(scheduledPaymentDateLabel),
+    data_envio: new Date().toLocaleDateString("pt-BR"),
+    total_comissoes: money(totalCommission),
+    quantidade_vendas: String(sales.length),
+    empreendimentos: escapeHtml([...groups.keys()].join(", ") || "-"),
+    tabela_vendas: projectBlocks,
+    lista_vendas: projectBlocks
+  }) : "";
   return `
     <div class="modal-backdrop" data-lev-email-preview-backdrop>
       <section class="modal-card wide-modal email-preview-modal" role="dialog" aria-modal="true" aria-labelledby="levEmailPreviewTitle">
@@ -7058,14 +7230,7 @@ function renderLevMauadEmailPreviewModal(pendingSales = []) {
           </div>
           <div class="email-preview-body">
             ${sales.length ? `
-              <p>Prezados,</p>
-              <p>Segue o demonstrativo de comissões da Lev referente às vendas confirmadas no período, conforme relação abaixo.</p>
-              <p>Solicitamos, por gentileza, o aprovisionamento dos valores para a data de <strong>${escapeHtml(scheduledPaymentDateLabel)}</strong>, conforme calendário financeiro da Mauad.</p>
-              <p>Tão logo confirmado o aprovisionamento, emitiremos a(s) respectiva(s) Nota(s) Fiscal(is).</p>
-              <p>Quaisquer dúvidas, seguimos à disposição.</p>
-              <p><strong>Total geral da NF de comissões:</strong> ${money(totalCommission)}</p>
-              ${projectBlocks}
-              <p>Obrigado.</p>
+              ${emailBodyHtml}
             ` : `<p class="empty">Nenhuma venda confirmada para envio. Confirme os registros pendentes antes de enviar para a Mauad.</p>`}
           </div>
           <div class="row-actions modal-actions">
