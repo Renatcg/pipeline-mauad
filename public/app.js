@@ -2026,7 +2026,7 @@ function renderAvailability() {
     : "-";
   renderShell(`
     ${renderViewHead("Disponibilidade", "Quadro de unidades por empreendimento", {
-      actions: canImportLevSalesToAvailability() ? '<button type="button" class="secondary" id="importLevSalesToAvailability">Carregar vendas Lev nas unidades</button>' : ""
+      actions: ""
     })}
     <section class="availability-layout">
       <div class="availability-main">
