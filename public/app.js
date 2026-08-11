@@ -114,6 +114,7 @@ const state = {
   sheetSort: { key: "name", direction: "asc" },
   projectFilters: [],
   brokerFilters: [],
+  tagFilters: [],
   dateFilterStart: "",
   dateFilterEnd: "",
   frequencyFilters: [],
@@ -205,7 +206,8 @@ function normalizeLevEmailTemplateSettings(settings = {}) {
     html: sanitizeRichHtml(template.html || DEFAULT_LEV_EMAIL_TEMPLATE_HTML),
     fontFamily: template.fontFamily || "Arial",
     fontSize: template.fontSize || "14px",
-    color: template.color || "#101828"
+    color: template.color || "#101828",
+    lineHeight: template.lineHeight || "1.5"
   };
 }
 
@@ -221,7 +223,7 @@ function renderLevEmailTemplateHtml(settings = {}, variables = {}) {
     html += `<p><strong>Total geral da NF de comissões:</strong> ${variables.total_comissoes || "-"}</p>${variables.tabela_vendas}`;
   }
   return `
-    <div style="font-family:${escapeHtml(template.fontFamily)};font-size:${escapeHtml(template.fontSize)};color:${escapeHtml(template.color)};line-height:1.5">
+    <div style="font-family:${escapeHtml(template.fontFamily)};font-size:${escapeHtml(template.fontSize)};color:${escapeHtml(template.color)};line-height:${escapeHtml(template.lineHeight)}">
       ${sanitizeRichHtml(html)}
     </div>
   `;
@@ -1021,6 +1023,7 @@ function pipelineLeads() {
     if (state.user?.role === "Corretor" && item.assignedTo !== state.user.id) return false;
     if (state.projectFilters.length && !state.projectFilters.includes(leadProjectValue(item) || "__none__")) return false;
     if (state.brokerFilters.length && !state.brokerFilters.includes(item.assignedTo || "__none__")) return false;
+    if (!leadMatchesTagFilter(item)) return false;
     if (!leadMatchesDateFilter(item)) return false;
     if (!leadMatchesFrequencyFilter(item)) return false;
     return true;
@@ -2087,6 +2090,7 @@ function renderAvailability() {
     <section class="availability-layout">
       <div class="availability-main">
         <section class="availability-projects">${projectCards || '<p class="empty">Cadastre empreendimentos para montar o quadro.</p>'}</section>
+        ${renderAvailabilityMasterplan(selectedProject, projectUnits)}
         ${tables || '<section class="panel empty">Cadastre blocos para montar o quadro deste empreendimento.</section>'}
       </div>
       <aside class="availability-detail">
@@ -2152,12 +2156,48 @@ function renderAvailability() {
   });
 }
 
+function isReservaGuinleProject(projectName) {
+  return normalizeText(projectName).includes("reserva guinle");
+}
+
+function renderAvailabilityMasterplan(projectName, units = []) {
+  if (!isReservaGuinleProject(projectName)) return "";
+  const sortedUnits = [...units].sort((a, b) => String(a.samCode || a.unit || "").localeCompare(String(b.samCode || b.unit || ""), "pt-BR", { numeric: true, sensitivity: "base" }));
+  return `
+    <section class="availability-masterplan-card">
+      <div class="availability-masterplan-head">
+        <div>
+          <h2>Masterplan Reserva Guinle</h2>
+          <small>Visão visual de lotes e casas do empreendimento.</small>
+        </div>
+        <div class="availability-status-summary">${availabilityStatusSummary(units)}</div>
+      </div>
+      <div class="availability-masterplan-image-wrap">
+        <img class="availability-masterplan-image" src="/reserva-guinle-masterplan.jpeg" alt="Masterplan Reserva Guinle">
+      </div>
+      <div class="masterplan-unit-grid" aria-label="Lotes e casas cadastrados">
+        ${sortedUnits.map((unit) => {
+          const label = availabilityStatusLabel(unit);
+          const color = unitStatusStyle(label);
+          return `
+            <button type="button" class="masterplan-unit-chip ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" style="--unit-status-color:${escapeHtml(color)}" data-availability-unit="${escapeHtml(unit.id)}">
+              <strong>${escapeHtml(unit.unit || unit.samCode || "-")}</strong>
+              <span>${escapeHtml(label)}</span>
+            </button>
+          `;
+        }).join("") || '<p class="empty">Cadastre as unidades para ativar os lotes da masterplan.</p>'}
+      </div>
+    </section>
+  `;
+}
+
 function pipelineFilterBaseLeads(skipKey = "") {
   return filteredLeads().flatMap((lead) => pipelineItemsFromLead(lead)).filter((lead) => {
     if (!lead.inPipeline) return false;
     if (state.user?.role === "Corretor" && lead.assignedTo !== state.user.id) return false;
     if (skipKey !== "projectFilters" && state.projectFilters.length && !state.projectFilters.includes(leadProjectValue(lead) || "__none__")) return false;
     if (skipKey !== "brokerFilters" && state.brokerFilters.length && !state.brokerFilters.includes(lead.assignedTo || "__none__")) return false;
+    if (skipKey !== "tagFilters" && !leadMatchesTagFilter(lead)) return false;
     if (skipKey !== "dateFilters" && !leadMatchesDateFilter(lead)) return false;
     if (skipKey !== "frequencyFilters" && !leadMatchesFrequencyFilter(lead)) return false;
     return true;
@@ -2175,6 +2215,10 @@ function countBy(items, getKey) {
 function renderPipelineFilterControls() {
   const projectCounts = countBy(pipelineFilterBaseLeads("projectFilters"), (lead) => leadProjectValue(lead));
   const brokerCounts = countBy(pipelineFilterBaseLeads("brokerFilters"), (lead) => lead.assignedTo);
+  const tagCounts = countBy(pipelineFilterBaseLeads("tagFilters").flatMap((lead) => {
+    const tags = leadTags(lead);
+    return tags.length ? tags : ["__none__"];
+  }), (tag) => tag);
   const frequencyCounts = countBy(pipelineFilterBaseLeads("frequencyFilters"), (lead) => frequencyBucketForLead(lead));
   const projectOptions = state.projects
     .map((project) => ({ value: project, label: project, count: projectCounts[project] || 0 }))
@@ -2183,6 +2227,10 @@ function renderPipelineFilterControls() {
   const brokerOptions = [
     ...activeBrokers().map((broker) => ({ value: broker.id, label: broker.name, count: brokerCounts[broker.id] || 0 })),
     { value: "__none__", label: "Sem vínculo", count: brokerCounts.__none__ || 0 }
+  ];
+  const tagOptions = [
+    ...availableTags().map((tag) => ({ value: tag.name, label: tag.name, count: tagCounts[tag.name] || 0 })),
+    { value: "__none__", label: "Sem etiqueta", count: tagCounts.__none__ || 0 }
   ];
   const frequencyOptions = [
     { value: "1", label: "Com interação há 1 dia", count: frequencyCounts["1"] || 0 },
@@ -2218,6 +2266,7 @@ function renderPipelineFilterControls() {
           </div>
         </div>
       </details>
+      ${renderMultiFilter("tagFilters", "Etiqueta", state.tagFilters, tagOptions)}
       ${renderMultiFilter("frequencyFilters", "Frequência", state.frequencyFilters, frequencyOptions)}
     </div>
   `;
@@ -2330,7 +2379,7 @@ function bindPageFilters() {
   document.querySelectorAll("[data-multi-filter-clear]").forEach((button) => {
     button.addEventListener("click", (event) => {
       const key = event.currentTarget.dataset.multiFilterClear;
-      if (!["projectFilters", "brokerFilters", "frequencyFilters"].includes(key)) return;
+      if (!["projectFilters", "brokerFilters", "tagFilters", "frequencyFilters"].includes(key)) return;
       document.querySelectorAll(`[data-multi-filter-option="${key}"]`).forEach((checkbox) => {
         checkbox.checked = false;
       });
@@ -2341,7 +2390,7 @@ function bindPageFilters() {
   document.querySelectorAll("[data-multi-filter-apply]").forEach((button) => {
     button.addEventListener("click", (event) => {
       const key = event.currentTarget.dataset.multiFilterApply;
-      if (!["projectFilters", "brokerFilters", "frequencyFilters"].includes(key)) return;
+      if (!["projectFilters", "brokerFilters", "tagFilters", "frequencyFilters"].includes(key)) return;
       const options = [...document.querySelectorAll(`[data-multi-filter-option="${key}"]`)];
       const selectedValues = options.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
       state[key] = selectedValues.length === options.length ? [] : selectedValues;
@@ -2596,6 +2645,21 @@ function renderMetrics(leads = filteredLeads()) {
 
 function leadTags(lead) {
   return Array.isArray(lead.tags) ? lead.tags.filter(Boolean) : [];
+}
+
+function leadMatchesTagFilter(lead) {
+  if (!state.tagFilters.length) return true;
+  const tags = leadTags(lead);
+  if (!tags.length && state.tagFilters.includes("__none__")) return true;
+  return tags.some((tag) => state.tagFilters.includes(tag));
+}
+
+function leadTemperatureStage(lead) {
+  const tags = leadTags(lead).map((tag) => normalizeText(tag));
+  if (tags.includes("quente")) return "Quente";
+  if (tags.includes("morno")) return "Morno";
+  if (tags.includes("frio")) return "Frio";
+  return "Sem qualificação";
 }
 
 function tagDefinition(name) {
@@ -3733,6 +3797,7 @@ function renderDashboard() {
       <div class="metric"><span>Em bases</span><strong>${baseLeadCount()}</strong></div>
     </section>
     ${renderMonthlySalesChart(dashboardSales)}
+    ${renderTemperatureFunnel(leads)}
     ${renderFunnelInfographic(leads)}
     <section class="dashboard-grid">
       <div class="panel"><h2>Funil</h2>${funnel}</div>
@@ -3750,6 +3815,39 @@ function renderDashboard() {
     });
   }
   bindDashboardControls(leads);
+}
+
+function renderTemperatureFunnel(leads = []) {
+  const stages = [
+    { name: "Sem qualificação", position: 1, color: "#94a3b8", width: 100 },
+    { name: "Frio", position: 2, color: "#00a8ff", width: 86 },
+    { name: "Morno", position: 3, color: "#f59e0b", width: 72 },
+    { name: "Quente", position: 4, color: "#ef4444", width: 58 }
+  ];
+  const counts = countBy(leads, leadTemperatureStage);
+  const total = leads.length || 1;
+  const rows = stages.map((stage) => {
+    const count = counts[stage.name] || 0;
+    const pct = Math.round((count / total) * 100);
+    return `
+      <div class="temperature-stage" style="--temperature-color:${stage.color};--temperature-width:${stage.width}%">
+        <span>${stage.position}</span>
+        <strong>${escapeHtml(stage.name)}</strong>
+        <em>${count} lead(s) · ${pct}%</em>
+      </div>
+    `;
+  }).join("");
+  return `
+    <section class="panel temperature-funnel-panel">
+      <div class="panel-head compact-head">
+        <div>
+          <h2>Funil por temperatura</h2>
+          <small>Qualificação por etiquetas comerciais.</small>
+        </div>
+      </div>
+      <div class="temperature-funnel">${rows}</div>
+    </section>
+  `;
 }
 
 function renderFunnelInfographic(leads) {
@@ -6612,16 +6710,32 @@ function renderLevFinanceSettings() {
                 <select id="levEmailFontSize" title="Tamanho">
                   ${["12px", "13px", "14px", "15px", "16px", "18px", "20px"].map((size) => `<option value="${escapeHtml(size)}" ${size === emailTemplate.fontSize ? "selected" : ""}>${escapeHtml(size)}</option>`).join("")}
                 </select>
+                <select id="levEmailLineHeight" title="Espaçamento entre linhas">
+                  ${["1", "1.15", "1.3", "1.5", "1.8", "2"].map((lineHeight) => `<option value="${escapeHtml(lineHeight)}" ${lineHeight === emailTemplate.lineHeight ? "selected" : ""}>${escapeHtml(lineHeight)}</option>`).join("")}
+                </select>
                 <input id="levEmailFontColor" type="color" value="${escapeHtml(emailTemplate.color)}" title="Cor da fonte">
+                <span class="toolbar-separator" aria-hidden="true"></span>
                 <button type="button" data-lev-email-command="bold" title="Negrito"><strong>B</strong></button>
                 <button type="button" data-lev-email-command="italic" title="Itálico"><em>I</em></button>
                 <button type="button" data-lev-email-command="underline" title="Sublinhado"><u>U</u></button>
+                <span class="toolbar-separator" aria-hidden="true"></span>
+                <button type="button" data-lev-email-command="insertUnorderedList" title="Marcadores">•</button>
+                <button type="button" data-lev-email-list="decimal" title="Lista numerada">1.</button>
+                <button type="button" data-lev-email-list="lower-alpha" title="Lista com letras">a.</button>
+                <span class="toolbar-separator" aria-hidden="true"></span>
+                <button type="button" data-lev-email-command="outdent" title="Diminuir recuo">&lt;</button>
+                <button type="button" data-lev-email-command="indent" title="Aumentar recuo">&gt;</button>
+                <span class="toolbar-separator" aria-hidden="true"></span>
+                <button type="button" data-lev-email-command="justifyLeft" title="Alinhar à esquerda">Esq</button>
+                <button type="button" data-lev-email-command="justifyCenter" title="Centralizar">C</button>
+                <button type="button" data-lev-email-command="justifyRight" title="Alinhar à direita">Dir</button>
+                <button type="button" data-lev-email-command="justifyFull" title="Justificar">Just</button>
               </div>
               <div class="template-variable-bar">
                 <span>Variáveis</span>
                 ${variableButtons}
               </div>
-              <div id="levEmailTemplateEditor" class="rich-email-editor" contenteditable="true" style="font-family:${escapeHtml(emailTemplate.fontFamily)};font-size:${escapeHtml(emailTemplate.fontSize)};color:${escapeHtml(emailTemplate.color)}">${emailTemplate.html}</div>
+              <div id="levEmailTemplateEditor" class="rich-email-editor" contenteditable="true" style="font-family:${escapeHtml(emailTemplate.fontFamily)};font-size:${escapeHtml(emailTemplate.fontSize)};color:${escapeHtml(emailTemplate.color)};line-height:${escapeHtml(emailTemplate.lineHeight)}">${emailTemplate.html}</div>
             </section>
             <section class="email-template-preview-pane">
               <div class="preview-title">Prévia</div>
@@ -6671,6 +6785,7 @@ function renderLevFinanceSettings() {
   const templatePreview = document.querySelector("#levEmailTemplatePreview");
   const templateFontFamily = document.querySelector("#levEmailFontFamily");
   const templateFontSize = document.querySelector("#levEmailFontSize");
+  const templateLineHeight = document.querySelector("#levEmailLineHeight");
   const templateFontColor = document.querySelector("#levEmailFontColor");
   const previewVariables = {
     data_pagamento: "21/08/2026",
@@ -6688,16 +6803,18 @@ function renderLevFinanceSettings() {
         html: sanitizeRichHtml(templateEditor.innerHTML),
         fontFamily: templateFontFamily?.value || "Arial",
         fontSize: templateFontSize?.value || "14px",
-        color: templateFontColor?.value || "#101828"
+        color: templateFontColor?.value || "#101828",
+        lineHeight: templateLineHeight?.value || "1.5"
       }
     };
     templateEditor.style.fontFamily = nextSettings.emailTemplate.fontFamily;
     templateEditor.style.fontSize = nextSettings.emailTemplate.fontSize;
     templateEditor.style.color = nextSettings.emailTemplate.color;
+    templateEditor.style.lineHeight = nextSettings.emailTemplate.lineHeight;
     templatePreview.innerHTML = renderLevEmailTemplateHtml(nextSettings, previewVariables);
   };
   templateEditor?.addEventListener("input", refreshTemplatePreview);
-  [templateFontFamily, templateFontSize, templateFontColor].forEach((control) => {
+  [templateFontFamily, templateFontSize, templateLineHeight, templateFontColor].forEach((control) => {
     control?.addEventListener("change", refreshTemplatePreview);
     control?.addEventListener("input", refreshTemplatePreview);
   });
@@ -6705,6 +6822,22 @@ function renderLevFinanceSettings() {
     button.addEventListener("click", () => {
       templateEditor?.focus();
       document.execCommand(button.dataset.levEmailCommand, false, null);
+      refreshTemplatePreview();
+    });
+  });
+  document.querySelectorAll("[data-lev-email-list]").forEach((button) => {
+    button.addEventListener("click", () => {
+      templateEditor?.focus();
+      document.execCommand("insertOrderedList", false, null);
+      const selection = window.getSelection();
+      let node = selection?.anchorNode;
+      if (node?.nodeType === Node.TEXT_NODE) node = node.parentElement;
+      const list = node?.closest?.("ol") || templateEditor?.querySelector("ol:last-of-type");
+      if (list) {
+        const listStyle = button.dataset.levEmailList || "decimal";
+        list.style.listStyleType = listStyle;
+        list.setAttribute("type", listStyle === "lower-alpha" ? "a" : "1");
+      }
       refreshTemplatePreview();
     });
   });
@@ -6730,7 +6863,8 @@ function renderLevFinanceSettings() {
         html: sanitizeRichHtml(document.querySelector("#levEmailTemplateEditor")?.innerHTML || DEFAULT_LEV_EMAIL_TEMPLATE_HTML),
         fontFamily: document.querySelector("#levEmailFontFamily")?.value || "Arial",
         fontSize: document.querySelector("#levEmailFontSize")?.value || "14px",
-        color: document.querySelector("#levEmailFontColor")?.value || "#101828"
+        color: document.querySelector("#levEmailFontColor")?.value || "#101828",
+        lineHeight: document.querySelector("#levEmailLineHeight")?.value || "1.5"
       },
       paymentSchedule: paymentSchedulePayload
     };

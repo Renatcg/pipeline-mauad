@@ -919,7 +919,8 @@ function normalizeLevFinanceEmailTemplate(template = {}) {
     html: sanitizeRichHtml(template.html || DEFAULT_LEV_EMAIL_TEMPLATE_HTML),
     fontFamily: String(template.fontFamily || "Arial").trim() || "Arial",
     fontSize: String(template.fontSize || "14px").trim() || "14px",
-    color: String(template.color || "#101828").trim() || "#101828"
+    color: String(template.color || "#101828").trim() || "#101828",
+    lineHeight: String(template.lineHeight || "1.5").trim() || "1.5"
   };
 }
 
@@ -935,7 +936,7 @@ function renderLevFinanceEmailTemplate(settings = {}, variables = {}) {
     html += `<p><strong>Total geral da NF de comissões:</strong> ${variables.total_comissoes || "-"}</p>${variables.tabela_vendas}`;
   }
   return `
-    <div style="font-family:${escapeHtml(template.fontFamily)};font-size:${escapeHtml(template.fontSize)};color:${escapeHtml(template.color)};line-height:1.5">
+    <div style="font-family:${escapeHtml(template.fontFamily)};font-size:${escapeHtml(template.fontSize)};color:${escapeHtml(template.color)};line-height:${escapeHtml(template.lineHeight)}">
       ${sanitizeRichHtml(html)}
     </div>
   `;
