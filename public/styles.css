@@ -293,6 +293,23 @@ textarea {
   padding: 10px 12px;
 }
 
+.state-load-notice {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.state-load-notice button {
+  background: transparent;
+  border: 1px solid #fdba74;
+  border-radius: 8px;
+  color: #9a3412;
+  cursor: pointer;
+  font-weight: 800;
+  padding: 8px 10px;
+}
+
 .integration-help {
   margin-top: 14px;
   padding: 12px;

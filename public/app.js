@@ -129,6 +129,7 @@ const state = {
   brokerMenuBound: false,
   inactivityTimer: null,
   loginMessage: "",
+  stateLoadError: "",
   favoritesOnly: false,
   search: ""
 };
@@ -1334,8 +1335,12 @@ function renderLogin(error = "", message = "") {
       state.leadsLoaded = false;
       state.leadsLoadError = "";
       resetInactivityTimer();
-      await loadState();
+      const stateLoaded = await loadStateResilient(result.user);
       startPresencePolling();
+      if (!stateLoaded) {
+        routeTo(allowedViews().includes("kanban") ? "kanban" : allowedViews()[0] || "kanban");
+        return;
+      }
       const returnTo = new URLSearchParams(window.location.search).get("returnTo");
       if (returnTo?.startsWith("/")) {
         history.replaceState({}, "", returnTo);
@@ -1425,6 +1430,7 @@ function renderPasswordSetup(message = "", error = "") {
 
 async function loadState() {
   const data = await api("/api/state");
+  state.stateLoadError = "";
   state.user = data.user;
   loadTableSortPreference("base");
   loadTableSortPreference("sheet");
@@ -1472,6 +1478,39 @@ async function loadState() {
   state.canManageKnowledge = Boolean(data.canManageKnowledge);
   state.canCreateKnowledge = Boolean(data.canCreateKnowledge);
   if (state.view !== "lead" && !allowedViews().includes(state.view)) state.view = allowedViews()[0];
+}
+
+function applyMinimalSession(user) {
+  state.user = user || state.user;
+  state.roles = state.roles?.length ? state.roles : Object.keys(profileAccess);
+  if (!Array.isArray(state.users) || !state.users.length) state.users = state.user ? [state.user] : [];
+  state.currentPermissions = state.currentPermissions || {};
+  state.permissionResources = state.permissionResources || [];
+  state.baseAccessSources = state.baseAccessSources || [];
+  state.accessibleBaseSources = state.accessibleBaseSources || [];
+  state.actionableBaseSources = state.actionableBaseSources || [];
+  state.dataSources = { ...(state.dataSources || {}), state: "structured-pending" };
+}
+
+async function loadStateResilient(user) {
+  try {
+    await loadState();
+    return true;
+  } catch (error) {
+    applyMinimalSession(user);
+    state.stateLoadError = error.message || "Não foi possível carregar todos os dados do sistema agora.";
+    return false;
+  }
+}
+
+async function retryStateLoad() {
+  try {
+    await loadState();
+    renderApp();
+  } catch (error) {
+    state.stateLoadError = error.message || "Não foi possível carregar todos os dados do sistema agora.";
+    renderApp();
+  }
 }
 
 function viewNeedsLeads(view = state.view) {
@@ -1608,6 +1647,12 @@ function renderShell(content) {
         </header>
         <div class="content">
           ${usesLegacyData ? '<div class="legacy-data-notice">Dados recuperados de base legada.</div>' : ""}
+          ${state.stateLoadError ? `
+            <div class="legacy-data-notice state-load-notice">
+              <span>Alguns dados administrativos não carregaram agora. Você já pode usar as telas principais.</span>
+              <button type="button" data-retry-state>Recarregar dados</button>
+            </div>
+          ` : ""}
           ${content}
         </div>
       </section>
@@ -1626,6 +1671,11 @@ function renderShell(content) {
   document.querySelector("[data-mobile-menu]")?.addEventListener("click", () => {
     state.mobileNavOpen = !state.mobileNavOpen;
     renderApp();
+  });
+  document.querySelector("[data-retry-state]")?.addEventListener("click", (event) => {
+    event.currentTarget.disabled = true;
+    event.currentTarget.textContent = "Recarregando...";
+    retryStateLoad();
   });
   bindPageFilters();
   bindCreateLeadModal();
@@ -9322,7 +9372,19 @@ function renderApp() {
     renderApp();
     startPresencePolling();
     trackAccess();
-  } catch {
+  } catch (error) {
+    try {
+      const session = await api("/api/me");
+      if (session.user) {
+        applyMinimalSession(session.user);
+        state.stateLoadError = error.message || "Não foi possível carregar todos os dados do sistema agora.";
+        const fallbackView = allowedViews().includes("kanban") ? "kanban" : allowedViews()[0] || "kanban";
+        routeTo(fallbackView);
+        startPresencePolling();
+        trackAccess();
+        return;
+      }
+    } catch {}
     renderLogin();
   }
 })();
