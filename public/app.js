@@ -785,6 +785,15 @@ function numberPt(value) {
   return Number(value || 0).toLocaleString("pt-BR");
 }
 
+function normalizeText(value) {
+  return String(value || "")
+    .toLocaleLowerCase("pt-BR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function dateIsInRange(value, start, end) {
   const date = localDateOnly(parseFlexibleDate(value) || value);
   if (!date) return false;
