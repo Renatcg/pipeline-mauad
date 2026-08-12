@@ -7061,7 +7061,13 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (!name) return sendJson(res, 400, { error: "Nome obrigatório" });
       const projectDefinitions = await structuredProjectDefinitions(sql);
       if (projectDefinitions.some((project) => project.name.toLowerCase() === name.toLowerCase())) return sendJson(res, 400, { error: "Empreendimento já existe" });
-      projectDefinitions.push(normalizeProjectDefinition({ name, unitPrefixes: body.unitPrefixes, availabilityEnabled: body.availabilityEnabled !== false, blockDefinitions: body.blockDefinitions || [] }, projectDefinitions.length));
+      projectDefinitions.push(normalizeProjectDefinition({
+        name,
+        unitPrefixes: body.unitPrefixes,
+        availabilityEnabled: body.availabilityEnabled !== false,
+        blockDefinitions: body.blockDefinitions || [],
+        visualMap: body.visualMap || {}
+      }, projectDefinitions.length));
       await replaceStructuredProjects(sql, projectDefinitions);
       await structuredAudit(user, "CREATE_PROJECT", { name });
       return sendJson(res, 201, { projects: projectDefinitions.map((project) => project.name), projectDefinitions, dataSources: { action: "structured" } });
@@ -7086,7 +7092,8 @@ async function fastStructuredSettingsRoutes(req, res, url) {
         name,
         unitPrefixes: body.unitPrefixes,
         availabilityEnabled: body.availabilityEnabled !== false,
-        blockDefinitions: Array.isArray(body.blockDefinitions) ? body.blockDefinitions : projectDefinitions[index].blockDefinitions
+        blockDefinitions: Array.isArray(body.blockDefinitions) ? body.blockDefinitions : projectDefinitions[index].blockDefinitions,
+        visualMap: Object.prototype.hasOwnProperty.call(body, "visualMap") ? body.visualMap : projectDefinitions[index].visualMap
       }, index);
       await replaceStructuredProjects(sql, projectDefinitions);
       const leadRows = await sql`SELECT l.*, false AS favorite, COALESCE(array_agg(t.tag_id) FILTER (WHERE t.tag_id IS NOT NULL), '{}'::text[]) AS tags
@@ -9029,8 +9036,40 @@ function normalizeProjectDefinition(input, position = 0) {
     position,
     unitPrefixes: [...new Set(unitPrefixes.map((prefix) => normalizeUnitForMatch(prefix)).filter(Boolean))],
     availabilityEnabled: input?.availabilityEnabled !== false,
-    blockDefinitions
+    blockDefinitions,
+    visualMap: normalizeProjectVisualMap(input?.visualMap || {})
   };
+}
+
+function normalizeProjectVisualMap(input = {}) {
+  const visualMap = input && typeof input === "object" ? input : {};
+  return {
+    image: String(visualMap.image || "").trim(),
+    hotspots: normalizeProjectVisualMapHotspots(visualMap.hotspots || [])
+  };
+}
+
+function normalizeProjectVisualMapPoint(input = {}) {
+  const rawX = Number(input?.x);
+  const rawY = Number(input?.y);
+  const x = Math.max(0, Math.min(100, Number.isFinite(rawX) ? rawX : 0));
+  const y = Math.max(0, Math.min(100, Number.isFinite(rawY) ? rawY : 0));
+  return {
+    x: Number(x.toFixed(3)),
+    y: Number(y.toFixed(3))
+  };
+}
+
+function normalizeProjectVisualMapHotspots(input = []) {
+  return (Array.isArray(input) ? input : []).map((hotspot, index) => {
+    const unitId = String(hotspot?.unitId || "").trim();
+    const unitSamCode = String(hotspot?.unitSamCode || "").trim();
+    const unit = String(hotspot?.unit || "").trim();
+    const stableKey = unitId || unitSamCode || unit || String(index);
+    const id = String(hotspot?.id || `hotspot-${crypto.createHash("sha1").update(stableKey).digest("hex").slice(0, 10)}`).trim();
+    const points = (Array.isArray(hotspot?.points) ? hotspot.points : []).map(normalizeProjectVisualMapPoint);
+    return { id, unitId, unitSamCode, unit, points };
+  }).filter((hotspot) => hotspot.unitId || hotspot.unitSamCode || hotspot.unit || hotspot.points.length);
 }
 
 function normalizeProjectBlockDefinition(input = {}, position = 0) {

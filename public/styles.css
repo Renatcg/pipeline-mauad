@@ -2893,6 +2893,148 @@ th {
   object-fit: contain;
 }
 
+.visual-map-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.visual-map-hotspot-shape {
+  fill: color-mix(in srgb, var(--unit-status-color) 28%, transparent);
+  stroke: var(--unit-status-color);
+  stroke-width: 0.22;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.84;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.visual-map-hotspot-shape.active {
+  fill: rgba(251, 146, 60, 0.32);
+  stroke: #f97316;
+  stroke-width: 0.36;
+}
+
+.visual-map-hotspot-dot {
+  fill: var(--unit-status-color);
+  stroke: #fff;
+  stroke-width: 0.32;
+  filter: drop-shadow(0 3px 8px rgba(15, 23, 42, 0.24));
+  opacity: 0.78;
+  cursor: pointer;
+  pointer-events: auto;
+  animation: visual-map-pulse 1.8s ease-in-out infinite;
+}
+
+.visual-map-hotspot-dot.active {
+  fill: #f97316;
+  opacity: 0.95;
+}
+
+.visual-map-hotspot-point {
+  fill: #fff;
+  stroke: #111827;
+  stroke-width: 0.22;
+  filter: drop-shadow(0 2px 5px rgba(15, 23, 42, 0.26));
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.visual-map-hotspot-point.active {
+  fill: #fed7aa;
+  stroke: #f97316;
+}
+
+.visual-map-editor-panel {
+  overflow: visible;
+}
+
+.visual-map-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 16px;
+  align-items: start;
+}
+
+.visual-map-editor-main,
+.visual-map-editor-side {
+  min-width: 0;
+}
+
+.visual-map-editor-main {
+  display: grid;
+  gap: 12px;
+}
+
+.visual-map-editor-canvas {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  cursor: crosshair;
+}
+
+.visual-map-editor-layer {
+  z-index: 2;
+}
+
+.visual-map-editor-side {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.visual-map-editor-side h3 {
+  margin: 0;
+}
+
+.visual-map-editor-empty {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 28px;
+}
+
+.compact-grid {
+  gap: 8px;
+}
+
+.compact-table-wrap table th,
+.compact-table-wrap table td {
+  padding: 5px 8px;
+}
+
+.selected-row {
+  background: #fff7ed;
+}
+
+.full-width {
+  width: 100%;
+}
+
+@keyframes visual-map-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+
+  50% {
+    opacity: 0.95;
+  }
+}
+
+@media (max-width: 1100px) {
+  .visual-map-editor-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 .masterplan-unit-pins {
   position: absolute;
   inset: 0;

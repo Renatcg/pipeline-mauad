@@ -89,6 +89,8 @@ const state = {
   selectedAvailabilityProject: "",
   selectedAvailabilityUnitId: "",
   masterplanZoom: 1,
+  visualMapEditingHotspotId: "",
+  visualMapNewUnitId: "",
   editUnitId: "",
   editBlockId: "",
   levFinanceSearch: "",
@@ -2037,6 +2039,55 @@ function selectedAvailabilityUnit() {
   return virtualUnitsForProject(selectedProject).find((unit) => unit.id === state.selectedAvailabilityUnitId) || null;
 }
 
+function visualMapForProject(project = {}) {
+  const visualMap = project?.visualMap && typeof project.visualMap === "object" ? project.visualMap : {};
+  return {
+    image: String(visualMap.image || "").trim(),
+    hotspots: normalizeVisualMapHotspots(visualMap.hotspots || [])
+  };
+}
+
+function normalizeVisualMapPoint(point = {}) {
+  const rawX = Number(point.x);
+  const rawY = Number(point.y);
+  const x = clamp(Number.isFinite(rawX) ? rawX : 0, 0, 100);
+  const y = clamp(Number.isFinite(rawY) ? rawY : 0, 0, 100);
+  return { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) };
+}
+
+function normalizeVisualMapHotspots(hotspots = []) {
+  return (Array.isArray(hotspots) ? hotspots : []).map((hotspot, index) => ({
+    id: String(hotspot.id || `hotspot-${Date.now()}-${index}`),
+    unitId: String(hotspot.unitId || ""),
+    unitSamCode: String(hotspot.unitSamCode || ""),
+    unit: String(hotspot.unit || ""),
+    points: (Array.isArray(hotspot.points) ? hotspot.points : []).map(normalizeVisualMapPoint)
+  })).filter((hotspot) => hotspot.unitId || hotspot.unitSamCode || hotspot.unit || hotspot.points.length);
+}
+
+function normalizeVisualUnitCode(value) {
+  return normalizeText(value).replace(/[^A-Z0-9]/g, "");
+}
+
+function unitForVisualHotspot(hotspot = {}, units = []) {
+  return units.find((unit) => (
+    (hotspot.unitId && unit.id === hotspot.unitId) ||
+    (hotspot.unitSamCode && normalizeVisualUnitCode(unit.samCode || "") === normalizeVisualUnitCode(hotspot.unitSamCode)) ||
+    (hotspot.unit && normalizeVisualUnitCode(unit.unit || "") === normalizeVisualUnitCode(hotspot.unit))
+  )) || null;
+}
+
+function visualMapHotspotCentroid(points = []) {
+  const validPoints = (points || []).map(normalizeVisualMapPoint);
+  if (!validPoints.length) return { x: 50, y: 50 };
+  const total = validPoints.reduce((acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }), { x: 0, y: 0 });
+  return { x: total.x / validPoints.length, y: total.y / validPoints.length };
+}
+
+function visualMapSvgPoints(points = []) {
+  return (points || []).map(normalizeVisualMapPoint).map((point) => `${point.x},${point.y}`).join(" ");
+}
+
 function renderAvailability() {
   const projects = availabilityProjects();
   const selectedProject = state.selectedAvailabilityProject || projects[0]?.name || "";
@@ -2238,15 +2289,22 @@ function enableMasterplanPan(viewport) {
 }
 
 function renderAvailabilityMasterplan(projectName, units = []) {
-  if (!isReservaGuinleProject(projectName)) return "";
+  const project = projectDefinitionByName(projectName);
+  const visualMap = visualMapForProject(project);
+  const image = visualMap.image || (isReservaGuinleProject(projectName) ? "/reserva-guinle-masterplan.jpeg" : "");
+  if (!image) return "";
   const sortedUnits = [...units].sort((a, b) => String(a.samCode || a.unit || "").localeCompare(String(b.samCode || b.unit || ""), "pt-BR", { numeric: true, sensitivity: "base" }));
   const zoom = clamp(Number(state.masterplanZoom || 1), 1, 3);
   const zoomPercent = Math.round(zoom * 100);
+  const hotspots = visualMap.hotspots.map((hotspot) => {
+    const unit = unitForVisualHotspot(hotspot, sortedUnits);
+    return unit ? { hotspot, unit } : null;
+  }).filter(Boolean);
   return `
     <section class="availability-masterplan-card">
       <div class="availability-masterplan-head">
         <div>
-          <h2>Masterplan Reserva Guinle</h2>
+          <h2>Mapa visual ${escapeHtml(projectName)}</h2>
           <small>Visão visual de lotes e casas do empreendimento.</small>
         </div>
         <div class="availability-masterplan-actions">
@@ -2261,18 +2319,19 @@ function renderAvailabilityMasterplan(projectName, units = []) {
       </div>
       <div class="availability-masterplan-viewport" data-masterplan-viewport>
         <div class="availability-masterplan-canvas" style="width:${zoomPercent}%">
-          <img class="availability-masterplan-image" src="/reserva-guinle-masterplan.jpeg" alt="Masterplan Reserva Guinle">
-          <div class="masterplan-unit-pins" aria-label="Unidades na masterplan">
-            ${sortedUnits.map((unit, index) => {
+          <img class="availability-masterplan-image" src="${escapeHtml(image)}" alt="Mapa visual ${escapeHtml(projectName)}">
+          <svg class="visual-map-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Hotspots do mapa visual">
+            ${hotspots.map(({ hotspot, unit }) => {
               const label = availabilityStatusLabel(unit);
               const color = unitStatusStyle(label);
+              const centroid = visualMapHotspotCentroid(hotspot.points);
+              const points = visualMapSvgPoints(hotspot.points);
               return `
-                <button type="button" class="masterplan-unit-pin ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" style="--unit-status-color:${escapeHtml(color)};${masterplanPinPosition(unit, index, sortedUnits.length)}" data-availability-unit="${escapeHtml(unit.id)}" title="${escapeHtml(`${unit.unit || unit.samCode || "-"} · ${label}`)}">
-                  ${escapeHtml(unit.unit || unit.samCode || "-")}
-                </button>
+                ${points ? `<polygon class="visual-map-hotspot-shape ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" points="${escapeHtml(points)}" style="--unit-status-color:${escapeHtml(color)}" data-availability-unit="${escapeHtml(unit.id)}"></polygon>` : ""}
+                <circle class="visual-map-hotspot-dot ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" cx="${centroid.x}" cy="${centroid.y}" r="1.4" style="--unit-status-color:${escapeHtml(color)}" data-availability-unit="${escapeHtml(unit.id)}"></circle>
               `;
             }).join("")}
-          </div>
+          </svg>
         </div>
       </div>
       <div class="masterplan-unit-grid" aria-label="Lotes e casas cadastrados">
@@ -8281,12 +8340,233 @@ function renderProjectBlockSettingsModal(project) {
   `;
 }
 
+function renderProjectVisualMapEditor(projectName = "") {
+  const project = projectDefinitionByName(projectName);
+  const visualMap = visualMapForProject(project);
+  const image = visualMap.image || (isReservaGuinleProject(projectName) ? "/reserva-guinle-masterplan.jpeg" : "");
+  const units = virtualUnitsForProject(projectName).sort((a, b) => String(a.samCode || a.unit || "").localeCompare(String(b.samCode || b.unit || ""), "pt-BR", { numeric: true, sensitivity: "base" }));
+  const editingHotspot = visualMap.hotspots.find((hotspot) => hotspot.id === state.visualMapEditingHotspotId) || null;
+  const unitOptions = units.map((unit) => `
+    <option value="${escapeHtml(unit.id)}" ${state.visualMapNewUnitId === unit.id ? "selected" : ""}>
+      ${escapeHtml(unit.unit || unit.samCode || "-")} · ${escapeHtml(unit.samCode || "-")}
+    </option>
+  `).join("");
+  const hotspotRows = visualMap.hotspots.map((hotspot) => {
+    const unit = unitForVisualHotspot(hotspot, units);
+    const isEditing = state.visualMapEditingHotspotId === hotspot.id;
+    return `
+      <tr class="${isEditing ? "selected-row" : ""}">
+        <td>${escapeHtml(unit?.unit || hotspot.unit || "-")}</td>
+        <td>${escapeHtml(unit?.samCode || hotspot.unitSamCode || "-")}</td>
+        <td>${hotspot.points.length}</td>
+        <td>${renderSettingsActionMenu(`visual-hotspot-${hotspot.id}`, [
+          `<button type="button" data-edit-visual-hotspot="${escapeHtml(hotspot.id)}">Editar polígono</button>`,
+          `<button type="button" data-clear-visual-hotspot="${escapeHtml(hotspot.id)}">Limpar polígono</button>`,
+          `<button type="button" class="danger-menu-item" data-delete-visual-hotspot="${escapeHtml(hotspot.id)}">Excluir</button>`
+        ])}</td>
+      </tr>
+    `;
+  }).join("");
+  const overlayHotspots = visualMap.hotspots.map((hotspot) => {
+    const unit = unitForVisualHotspot(hotspot, units);
+    const label = availabilityStatusLabel(unit || {});
+    const color = unitStatusStyle(label);
+    const centroid = visualMapHotspotCentroid(hotspot.points);
+    const points = visualMapSvgPoints(hotspot.points);
+    const isEditing = state.visualMapEditingHotspotId === hotspot.id;
+    return `
+      ${points ? `<polygon class="visual-map-hotspot-shape editor-shape ${isEditing ? "active" : ""}" points="${escapeHtml(points)}" style="--unit-status-color:${escapeHtml(color)}" data-edit-visual-hotspot="${escapeHtml(hotspot.id)}"></polygon>` : ""}
+      <circle class="visual-map-hotspot-dot editor-dot ${isEditing ? "active" : ""}" cx="${centroid.x}" cy="${centroid.y}" r="${isEditing ? "1.9" : "1.35"}" style="--unit-status-color:${escapeHtml(color)}" data-edit-visual-hotspot="${escapeHtml(hotspot.id)}"></circle>
+      ${(hotspot.points || []).map((point, index) => `<circle class="visual-map-hotspot-point ${isEditing ? "active" : ""}" cx="${point.x}" cy="${point.y}" r="0.75" data-remove-visual-point="${escapeHtml(hotspot.id)}:${index}"></circle>`).join("")}
+    `;
+  }).join("");
+  return `
+    <section class="panel visual-map-editor-panel">
+      <div class="panel-head">
+        <div>
+          <h2>Mapa visual</h2>
+          <p class="muted-copy">${escapeHtml(projectName)}</p>
+        </div>
+        <div class="row-actions">
+          <button type="button" data-back-projects>Voltar</button>
+          <button type="button" class="primary" data-save-project-map>Salvar mapa</button>
+        </div>
+      </div>
+      <div class="visual-map-editor-layout">
+        <div class="visual-map-editor-main">
+          <div class="field">
+            <label>Imagem do mapa</label>
+            <input id="visualMapImageInput" type="file" accept="image/png,image/jpeg,image/webp">
+          </div>
+          ${image ? `
+            <div class="visual-map-editor-canvas" data-visual-map-canvas>
+              <img class="availability-masterplan-image" src="${escapeHtml(image)}" alt="Mapa visual ${escapeHtml(projectName)}">
+              <svg class="visual-map-overlay visual-map-editor-layer" viewBox="0 0 100 100" preserveAspectRatio="none">
+                ${overlayHotspots}
+              </svg>
+            </div>
+          ` : '<div class="empty visual-map-editor-empty">Suba uma imagem para começar a cadastrar os hotspots.</div>'}
+          <p class="muted-copy">Selecione um hotspot e clique na imagem para montar o polígono. Clique nos pontos pequenos para removê-los.</p>
+        </div>
+        <aside class="visual-map-editor-side">
+          <h3>Gestão de hotspots</h3>
+          <div class="form-grid compact-grid">
+            <div class="field full">
+              <label>Unidade</label>
+              <select id="visualMapUnitSelect">
+                <option value="">Selecione</option>
+                ${unitOptions}
+              </select>
+            </div>
+            <div class="field full">
+              <button type="button" class="primary full-width" data-add-visual-hotspot>Adicionar hotspot</button>
+            </div>
+          </div>
+          ${editingHotspot ? `<p class="chip chip-warning">Editando ${escapeHtml(unitForVisualHotspot(editingHotspot, units)?.unit || editingHotspot.unitSamCode || "hotspot")}</p>` : ""}
+          <div class="table-wrap compact-table-wrap">
+            <table><thead><tr><th>Unidade</th><th>Código SAM</th><th>Pontos</th><th>Ações</th></tr></thead><tbody>${hotspotRows || '<tr><td colspan="4" class="empty">Nenhum hotspot cadastrado</td></tr>'}</tbody></table>
+          </div>
+        </aside>
+      </div>
+    </section>
+  `;
+}
+
+function updateLocalProjectVisualMap(projectName, updater) {
+  const index = (state.projectDefinitions || []).findIndex((project) => project.name === projectName);
+  if (index < 0) return null;
+  const current = state.projectDefinitions[index];
+  const currentMap = visualMapForProject(current);
+  const nextMap = updater(currentMap) || currentMap;
+  state.projectDefinitions[index] = { ...current, visualMap: visualMapForProject(nextMap) };
+  return state.projectDefinitions[index];
+}
+
+function bindProjectVisualMapEditor(projectName = "") {
+  document.querySelector("[data-back-projects]")?.addEventListener("click", () => {
+    state.settingsEditing = null;
+    state.visualMapEditingHotspotId = "";
+    state.visualMapNewUnitId = "";
+    renderSettings();
+  });
+  document.querySelector("#visualMapUnitSelect")?.addEventListener("change", (event) => {
+    state.visualMapNewUnitId = event.currentTarget.value;
+  });
+  document.querySelector("#visualMapImageInput")?.addEventListener("change", async (event) => {
+    const file = event.currentTarget.files?.[0];
+    if (!file) return;
+    const image = await readFileAsDataUrl(file);
+    updateLocalProjectVisualMap(projectName, (visualMap) => ({ ...visualMap, image }));
+    renderSettings();
+  });
+  document.querySelector("[data-add-visual-hotspot]")?.addEventListener("click", () => {
+    const unitId = state.visualMapNewUnitId || document.querySelector("#visualMapUnitSelect")?.value || "";
+    const unit = virtualUnitsForProject(projectName).find((item) => item.id === unitId);
+    if (!unit) {
+      alert("Selecione uma unidade para criar o hotspot.");
+      return;
+    }
+    const hotspot = {
+      id: `hotspot-${Date.now()}`,
+      unitId: unit.id,
+      unitSamCode: unit.samCode || "",
+      unit: unit.unit || "",
+      points: []
+    };
+    updateLocalProjectVisualMap(projectName, (visualMap) => ({ ...visualMap, hotspots: [...visualMap.hotspots, hotspot] }));
+    state.visualMapEditingHotspotId = hotspot.id;
+    renderSettings();
+  });
+  document.querySelector("[data-save-project-map]")?.addEventListener("click", async () => {
+    const index = (state.projectDefinitions || []).findIndex((project) => project.name === projectName);
+    if (index < 0) return;
+    const project = state.projectDefinitions[index];
+    const data = await api(`/api/projects/${index}`, { method: "PATCH", body: JSON.stringify(project) });
+    state.projects = data.projects;
+    state.projectDefinitions = data.projectDefinitions || [];
+    state.settingsEditing = null;
+    state.visualMapEditingHotspotId = "";
+    state.visualMapNewUnitId = "";
+    await loadState();
+    alert("Mapa visual salvo.");
+    renderSettings();
+  });
+  document.querySelectorAll("[data-edit-visual-hotspot]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      event.stopPropagation();
+      state.visualMapEditingHotspotId = element.dataset.editVisualHotspot;
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-clear-visual-hotspot]").forEach((button) => {
+    button.addEventListener("click", () => {
+      updateLocalProjectVisualMap(projectName, (visualMap) => ({
+        ...visualMap,
+        hotspots: visualMap.hotspots.map((hotspot) => hotspot.id === button.dataset.clearVisualHotspot ? { ...hotspot, points: [] } : hotspot)
+      }));
+      state.visualMapEditingHotspotId = button.dataset.clearVisualHotspot;
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-delete-visual-hotspot]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!confirm("Excluir este hotspot?")) return;
+      updateLocalProjectVisualMap(projectName, (visualMap) => ({
+        ...visualMap,
+        hotspots: visualMap.hotspots.filter((hotspot) => hotspot.id !== button.dataset.deleteVisualHotspot)
+      }));
+      if (state.visualMapEditingHotspotId === button.dataset.deleteVisualHotspot) state.visualMapEditingHotspotId = "";
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-remove-visual-point]").forEach((point) => {
+    point.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const [hotspotId, indexText] = point.dataset.removeVisualPoint.split(":");
+      const pointIndex = Number(indexText);
+      updateLocalProjectVisualMap(projectName, (visualMap) => ({
+        ...visualMap,
+        hotspots: visualMap.hotspots.map((hotspot) => {
+          if (hotspot.id !== hotspotId) return hotspot;
+          return { ...hotspot, points: hotspot.points.filter((_, index) => index !== pointIndex) };
+        })
+      }));
+      state.visualMapEditingHotspotId = hotspotId;
+      renderSettings();
+    });
+  });
+  document.querySelector("[data-visual-map-canvas]")?.addEventListener("click", (event) => {
+    if (!state.visualMapEditingHotspotId) {
+      alert("Selecione ou crie um hotspot antes de marcar o polígono.");
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 100;
+    const y = ((event.clientY - rect.top) / rect.height) * 100;
+    updateLocalProjectVisualMap(projectName, (visualMap) => ({
+      ...visualMap,
+      hotspots: visualMap.hotspots.map((hotspot) => hotspot.id === state.visualMapEditingHotspotId
+        ? { ...hotspot, points: [...hotspot.points, normalizeVisualMapPoint({ x, y })] }
+        : hotspot)
+    }));
+    renderSettings();
+  });
+}
+
 function renderProjectSettings() {
   const isCreating = state.settingsEditing === "new-project";
   const editIndex = state.settingsEditing?.startsWith("project:") ? Number(state.settingsEditing.replace("project:", "")) : null;
   const editProject = editIndex != null ? (state.projectDefinitions || [])[editIndex] || { name: state.projects[editIndex] || "", unitPrefixes: [] } : null;
   const unitModalProject = state.settingsEditing?.startsWith("units:") ? state.settingsEditing.replace("units:", "") : "";
   const blockModalProject = state.settingsEditing?.startsWith("blocks:") ? state.settingsEditing.replace("blocks:", "") : "";
+  const visualMapProject = state.settingsEditing?.startsWith("visual-map:") ? state.settingsEditing.replace("visual-map:", "") : "";
+  if (visualMapProject) {
+    settingsLayout(renderProjectVisualMapEditor(visualMapProject));
+    bindSettingsCommon();
+    bindSettingsActionMenus();
+    bindProjectVisualMapEditor(visualMapProject);
+    return;
+  }
   const isCreatingUnit = state.editUnitId === "__new__";
   const editUnit = state.editUnitId && !isCreatingUnit ? (state.unitDefinitions || []).find((unit) => unit.id === state.editUnitId) : null;
   const formValue = editProject?.name || "";
@@ -8338,6 +8618,7 @@ function renderProjectSettings() {
         <td>${renderSettingsActionMenu(`project-${index}`, [
           `<button type="button" data-open-project-blocks="${escapeHtml(project)}">Blocos/quadras</button>`,
           `<button type="button" data-open-project-units="${escapeHtml(project)}">Unidades</button>`,
+          `<button type="button" data-open-project-map="${escapeHtml(project)}">Mapa Visual</button>`,
           `<button type="button" data-edit-project="${index}">Editar</button>`,
           `<button type="button" class="danger-menu-item" data-delete-project="${index}">Excluir</button>`
         ])}</td>
@@ -8416,6 +8697,14 @@ function renderProjectSettings() {
     button.addEventListener("click", () => {
       state.settingsEditing = `blocks:${button.dataset.openProjectBlocks}`;
       state.editBlockId = "";
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-open-project-map]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsEditing = `visual-map:${button.dataset.openProjectMap}`;
+      state.visualMapEditingHotspotId = "";
+      state.visualMapNewUnitId = "";
       renderSettings();
     });
   });
