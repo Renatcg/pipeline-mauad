@@ -16,6 +16,10 @@ function canReorderKanbanColumns() {
   return ["Admin TI", "Head Comercial", "Coordenador de Marketing"].includes(state.user?.role);
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
+}
+
 const state = {
   user: null,
   roles: [],
@@ -84,6 +88,7 @@ const state = {
   metaFormsTab: "active",
   selectedAvailabilityProject: "",
   selectedAvailabilityUnitId: "",
+  masterplanZoom: 1,
   editUnitId: "",
   editBlockId: "",
   levFinanceSearch: "",
@@ -2143,6 +2148,23 @@ function renderAvailability() {
       renderAvailability();
     });
   });
+  document.querySelectorAll("[data-masterplan-zoom]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.masterplanZoom;
+      const currentZoom = Number(state.masterplanZoom || 1);
+      if (action === "reset") {
+        state.masterplanZoom = 1;
+      } else {
+        state.masterplanZoom = clamp(currentZoom + (action === "in" ? 0.2 : -0.2), 1, 3);
+      }
+      renderAvailability();
+    });
+  });
+  document.querySelector("#masterplanZoomRange")?.addEventListener("input", (event) => {
+    state.masterplanZoom = clamp(Number(event.target.value || 100) / 100, 1, 3);
+    renderAvailability();
+  });
+  enableMasterplanPan(document.querySelector("[data-masterplan-viewport]"));
   document.querySelector("[data-open-linked-lead]")?.addEventListener("click", (event) => {
     routeTo("lead", event.currentTarget.dataset.openLinkedLead);
   });
@@ -2169,9 +2191,57 @@ function isReservaGuinleProject(projectName) {
   return normalizeText(projectName).includes("reserva guinle");
 }
 
+function masterplanPinPosition(unit, index, total) {
+  const source = String(unit.unit || unit.samCode || "");
+  const digits = source.match(/\d+/g)?.join("") || String(index + 1);
+  const number = Number(digits.slice(-4)) || index + 1;
+  const row = Math.floor(index / 12);
+  const col = index % 12;
+  const rows = Math.max(1, Math.ceil(Math.max(total, 1) / 12));
+  const leftByCol = 9 + (col / 11) * 82;
+  const topByRow = 45 + (row / Math.max(1, rows - 1)) * 42;
+  const left = clamp(leftByCol + ((number % 5) - 2) * 0.8, 7, 93);
+  const top = clamp(topByRow + ((number % 7) - 3) * 0.7, 42, 90);
+  return `left:${left.toFixed(2)}%;top:${top.toFixed(2)}%;`;
+}
+
+function enableMasterplanPan(viewport) {
+  if (!viewport) return;
+  let isDragging = false;
+  let startX = 0;
+  let startY = 0;
+  let startLeft = 0;
+  let startTop = 0;
+  viewport.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("button, input, a")) return;
+    isDragging = true;
+    viewport.classList.add("dragging");
+    startX = event.clientX;
+    startY = event.clientY;
+    startLeft = viewport.scrollLeft;
+    startTop = viewport.scrollTop;
+    viewport.setPointerCapture?.(event.pointerId);
+  });
+  viewport.addEventListener("pointermove", (event) => {
+    if (!isDragging) return;
+    viewport.scrollLeft = startLeft - (event.clientX - startX);
+    viewport.scrollTop = startTop - (event.clientY - startY);
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach((type) => {
+    viewport.addEventListener(type, (event) => {
+      if (!isDragging) return;
+      isDragging = false;
+      viewport.classList.remove("dragging");
+      viewport.releasePointerCapture?.(event.pointerId);
+    });
+  });
+}
+
 function renderAvailabilityMasterplan(projectName, units = []) {
   if (!isReservaGuinleProject(projectName)) return "";
   const sortedUnits = [...units].sort((a, b) => String(a.samCode || a.unit || "").localeCompare(String(b.samCode || b.unit || ""), "pt-BR", { numeric: true, sensitivity: "base" }));
+  const zoom = clamp(Number(state.masterplanZoom || 1), 1, 3);
+  const zoomPercent = Math.round(zoom * 100);
   return `
     <section class="availability-masterplan-card">
       <div class="availability-masterplan-head">
@@ -2179,10 +2249,31 @@ function renderAvailabilityMasterplan(projectName, units = []) {
           <h2>Masterplan Reserva Guinle</h2>
           <small>Visão visual de lotes e casas do empreendimento.</small>
         </div>
-        <div class="availability-status-summary">${availabilityStatusSummary(units)}</div>
+        <div class="availability-masterplan-actions">
+          <div class="availability-status-summary">${availabilityStatusSummary(units)}</div>
+          <div class="masterplan-zoom-controls" aria-label="Zoom da masterplan">
+            <button type="button" class="masterplan-zoom-button" data-masterplan-zoom="out">-</button>
+            <input id="masterplanZoomRange" class="masterplan-zoom-range" type="range" min="100" max="300" step="20" value="${zoomPercent}">
+            <button type="button" class="masterplan-zoom-button" data-masterplan-zoom="in">+</button>
+            <button type="button" class="masterplan-zoom-reset" data-masterplan-zoom="reset">${zoomPercent}%</button>
+          </div>
+        </div>
       </div>
-      <div class="availability-masterplan-image-wrap">
-        <img class="availability-masterplan-image" src="/reserva-guinle-masterplan.jpeg" alt="Masterplan Reserva Guinle">
+      <div class="availability-masterplan-viewport" data-masterplan-viewport>
+        <div class="availability-masterplan-canvas" style="width:${zoomPercent}%">
+          <img class="availability-masterplan-image" src="/reserva-guinle-masterplan.jpeg" alt="Masterplan Reserva Guinle">
+          <div class="masterplan-unit-pins" aria-label="Unidades na masterplan">
+            ${sortedUnits.map((unit, index) => {
+              const label = availabilityStatusLabel(unit);
+              const color = unitStatusStyle(label);
+              return `
+                <button type="button" class="masterplan-unit-pin ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" style="--unit-status-color:${escapeHtml(color)};${masterplanPinPosition(unit, index, sortedUnits.length)}" data-availability-unit="${escapeHtml(unit.id)}" title="${escapeHtml(`${unit.unit || unit.samCode || "-"} · ${label}`)}">
+                  ${escapeHtml(unit.unit || unit.samCode || "-")}
+                </button>
+              `;
+            }).join("")}
+          </div>
+        </div>
       </div>
       <div class="masterplan-unit-grid" aria-label="Lotes e casas cadastrados">
         ${sortedUnits.map((unit) => {
