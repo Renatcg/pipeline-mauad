@@ -1931,10 +1931,40 @@ function generatedUnitCodes(projectName, block, floor, column) {
   };
 }
 
+function blockLayoutType(block = {}) {
+  return normalizeText(block.layoutType || block.unitLayout || block.blockLayout || "").includes("horizontal")
+    ? "Horizontal"
+    : "Vertical";
+}
+
+function horizontalUnitNumber(value, size = 2) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits ? digits.padStart(size, "0") : "";
+}
+
+function horizontalUnitCodes(projectName, block = {}, number) {
+  const start = String(block.numberStart || "").replace(/\D/g, "");
+  const end = String(block.numberEnd || "").replace(/\D/g, "");
+  const width = Math.max(2, start.length, end.length, String(number || "").replace(/\D/g, "").length);
+  const numberCode = horizontalUnitNumber(number, width);
+  const unitPrefix = String(block.unitPrefix || "").trim().replace(/\s+/g, "");
+  const suffix = `${unitPrefix}${numberCode}`.toUpperCase();
+  return {
+    unit: suffix,
+    samCode: `${primaryProjectPrefix(projectName)}${suffix}`.replace(/[^a-z0-9]/gi, "").toUpperCase()
+  };
+}
+
 function availabilityUnitSamCandidates(unit = {}, projectName = unit.project || "") {
   const candidates = [unit.samCode, unit.unitSamCode];
   const generated = generatedUnitCodes(projectName, unit.block, unit.floor, unit.column);
   candidates.push(generated.samCode);
+  const blockDefinition = blockDefinitionsForProject(projectName).find((item) => blockKey(item.block) === blockKey(unit.block)) || {};
+  if (blockLayoutType(unit) === "Horizontal" || blockLayoutType(blockDefinition) === "Horizontal") {
+    const horizontalNumber = unit.number || unit.unitNumber || unit.column || unit.unit || unit.samCode;
+    const horizontalGenerated = horizontalUnitCodes(projectName, { ...blockDefinition, ...unit }, horizontalNumber);
+    candidates.push(horizontalGenerated.samCode, horizontalGenerated.unit);
+  }
   const visualMatch = String(unit.unit || "").match(/(\d+)\D+(\d+)/);
   if (visualMatch) {
     const [, block, unitNumber] = visualMatch;
@@ -1985,8 +2015,26 @@ function availabilityStatusSummary(units = []) {
 }
 
 function availabilityBlockLabel(projectName, blockCode) {
-  const block = blockDefinitionsForProject(projectName).find((item) => padUnitPart(item.block, 2) === padUnitPart(blockCode, 2));
+  const block = blockDefinitionsForProject(projectName).find((item) => blockKey(item.block) === blockKey(blockCode));
   return block?.structureType || "Bloco";
+}
+
+function blockKey(value) {
+  return String(value || "").trim().replace(/^0+(\d+)$/, "$1").toUpperCase();
+}
+
+function blockDisplayName(block = {}) {
+  return String(block.block || block.name || block.code || "").trim();
+}
+
+function expectedUnitsForBlock(block = {}) {
+  if (blockLayoutType(block) === "Horizontal") {
+    const start = Number.parseInt(block.numberStart || 0, 10) || 0;
+    const end = Number.parseInt(block.numberEnd || 0, 10) || 0;
+    return start && end && end >= start ? end - start + 1 : 0;
+  }
+  const totalFloors = Number(block.floorCount || 0) + (block.hasPenthouse ? 1 : 0);
+  return totalFloors * Number(block.columnCount || 0);
 }
 
 function blockDefinitionsForProject(projectName) {
@@ -2033,20 +2081,50 @@ function mergeAvailabilityUnitSnapshot(unit, snapshot) {
 }
 
 function virtualUnitsForProject(projectName) {
-  const existingByKey = new Map(unitsForAvailabilityProject(projectName).map((unit) => [`${padUnitPart(unit.block, 2)}:${String(unit.floor || "")}:${padUnitPart(unit.column, 2)}`, unit]));
+  const existingByKey = new Map();
+  unitsForAvailabilityProject(projectName).forEach((unit) => {
+    existingByKey.set(`${blockKey(unit.block)}:${String(unit.floor || "")}:${String(unit.column || "").trim().toUpperCase()}`, unit);
+    const horizontalToken = String(unit.unit || unit.samCode || unit.column || "").trim().toUpperCase();
+    if (horizontalToken) existingByKey.set(`${blockKey(unit.block)}::${horizontalToken}`, unit);
+  });
   const unitStatusBySamCode = availabilityLeadUnitSnapshots(projectName);
   const snapshotForUnit = (unit) => availabilityUnitSamCandidates(unit, projectName)
     .map((candidate) => unitStatusBySamCode.get(candidate))
     .find(Boolean);
   const virtualUnits = [];
   blockDefinitionsForProject(projectName).forEach((block) => {
+    if (blockLayoutType(block) === "Horizontal") {
+      const start = Number.parseInt(block.numberStart || 0, 10) || 0;
+      const end = Number.parseInt(block.numberEnd || 0, 10) || 0;
+      for (let number = start; number && number <= end; number += 1) {
+        const generated = horizontalUnitCodes(projectName, block, number);
+        const key = `${blockKey(block.block)}::${String(generated.unit || "").toUpperCase()}`;
+        const existing = existingByKey.get(key) || {};
+        const unit = existing.id ? existing : {
+          id: `virtual:${projectName}:${key}`,
+          project: projectName,
+          unit: generated.unit,
+          samCode: generated.samCode,
+          block: blockDisplayName(block),
+          floor: "",
+          column: generated.unit,
+          status: "",
+          virtual: true,
+          floorKind: "",
+          structureType: block.structureType || "Quadra",
+          layoutType: "Horizontal"
+        };
+        virtualUnits.push(mergeAvailabilityUnitSnapshot(unit, snapshotForUnit(unit)));
+      }
+      return;
+    }
     const floorCount = Number(block.floorCount || 0);
     const totalFloors = floorCount + (block.hasPenthouse ? 1 : 0);
     const columnCount = Number(block.columnCount || 0);
     for (let floor = 1; floor <= totalFloors; floor += 1) {
       for (let column = 1; column <= columnCount; column += 1) {
         const columnCode = padUnitPart(column, 2);
-        const blockCode = padUnitPart(block.block, 2);
+        const blockCode = blockKey(block.block);
         const key = `${blockCode}:${floor}:${columnCode}`;
         const generated = generatedUnitCodes(projectName, block.block, floor, column);
         const existing = existingByKey.get(key) || {};
@@ -2055,13 +2133,14 @@ function virtualUnitsForProject(projectName) {
           project: projectName,
           unit: generated.unit,
           samCode: generated.samCode,
-          block: blockCode,
+          block: blockDisplayName(block) || blockCode,
           floor: String(floor),
           column: columnCode,
           status: "",
           virtual: true,
           floorKind: block.hasPenthouse && floor === totalFloors ? "Cobertura" : "Tipo",
-          structureType: block.structureType || "Bloco"
+          structureType: block.structureType || "Bloco",
+          layoutType: "Vertical"
         };
         virtualUnits.push(mergeAvailabilityUnitSnapshot(unit, snapshotForUnit(unit)));
       }
@@ -2151,9 +2230,33 @@ function renderAvailability() {
   }).join("");
   const tables = blocks.map((block) => {
     const units = projectUnits.filter((unit) => (unit.block || "1") === block);
+    const blockDefinition = blockDefinitionsForProject(selectedProject).find((item) => blockKey(item.block) === blockKey(block)) || {};
     const floors = [...new Set(units.map((unit) => unit.floor || ""))].sort(sortAlphaNumeric);
     const columns = [...new Set(units.map((unit) => unit.column || ""))].sort(sortAlphaNumeric);
     const structureLabel = availabilityBlockLabel(selectedProject, block);
+    const isHorizontalBlock = blockLayoutType(blockDefinition) === "Horizontal" || units.some((unit) => blockLayoutType(unit) === "Horizontal");
+    if (isHorizontalBlock) {
+      const cells = [...units].sort((a, b) => sortAlphaNumeric(a.unit || a.samCode || a.column, b.unit || b.samCode || b.column)).map((unit) => {
+        const label = availabilityStatusLabel(unit);
+        const color = unitStatusStyle(label);
+        return `
+          <button type="button" class="availability-unit-cell ${unit.virtual ? "virtual" : ""} ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" style="--unit-status-color:${escapeHtml(color)}" data-availability-unit="${escapeHtml(unit.id)}">
+            <span>${escapeHtml(unit.unit || unit.samCode || "-")}</span>
+          </button>
+        `;
+      }).join("");
+      return `
+        <section class="availability-block">
+          <div class="availability-block-head">
+            <h2>${escapeHtml(structureLabel)} ${escapeHtml(block)}</h2>
+            <div class="availability-status-summary">${availabilityStatusSummary(units)}</div>
+          </div>
+          <div class="availability-horizontal-grid">
+            ${cells || '<p class="empty">Nenhuma unidade prevista para esta estrutura.</p>'}
+          </div>
+        </section>
+      `;
+    }
     return `
       <section class="availability-block">
         <div class="availability-block-head">
@@ -2194,7 +2297,6 @@ function renderAvailability() {
     <section class="availability-layout">
       <div class="availability-main">
         <section class="availability-projects">${projectCards || '<p class="empty">Cadastre empreendimentos para montar o quadro.</p>'}</section>
-        ${renderAvailabilityMasterplan(selectedProject, projectUnits)}
         ${tables || '<section class="panel empty">Cadastre blocos para montar o quadro deste empreendimento.</section>'}
       </div>
       <aside class="availability-detail">
@@ -2204,7 +2306,9 @@ function renderAvailability() {
           <p class="muted-copy">${escapeHtml(selectedUnit.project)} · ${escapeHtml(availabilityBlockLabel(selectedUnit.project, selectedUnit.block))} ${escapeHtml(selectedUnit.block || "-")}</p>
           <dl class="unit-detail-list">
             <div><dt>Status</dt><dd>${escapeHtml(availabilityStatusLabel(selectedUnit))}</dd></div>
-            <div><dt>Andar</dt><dd>${escapeHtml(unitFloorLabel(selectedUnit.floor))} · ${escapeHtml(selectedUnit.floorKind || "Tipo")}</dd></div>
+            ${blockLayoutType(selectedUnit) === "Horizontal"
+              ? '<div><dt>Modelo</dt><dd>Horizontal</dd></div>'
+              : `<div><dt>Andar</dt><dd>${escapeHtml(unitFloorLabel(selectedUnit.floor))} · ${escapeHtml(selectedUnit.floorKind || "Tipo")}</dd></div>`}
             <div><dt>Cliente/lead</dt><dd>${escapeHtml(selectedUnit.buyerName || linkedLead?.name || "-")}</dd></div>
             <div><dt>Comprador</dt><dd>${escapeHtml(selectedUnit.purchaseBuyerName || selectedUnit.buyerName || "-")}</dd></div>
             <div><dt>Data da compra</dt><dd>${escapeHtml(dateTimeLabel(selectedUnit.purchaseSignedAt) || "-")}</dd></div>
@@ -2238,42 +2342,8 @@ function renderAvailability() {
       renderAvailability();
     });
   });
-  document.querySelectorAll("[data-masterplan-zoom]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const action = button.dataset.masterplanZoom;
-      const currentZoom = Number(state.masterplanZoom || 1);
-      if (action === "reset") {
-        state.masterplanZoom = 1;
-      } else {
-        state.masterplanZoom = clamp(currentZoom + (action === "in" ? 0.2 : -0.2), 1, 3);
-      }
-      renderAvailability();
-    });
-  });
-  document.querySelector("#masterplanZoomRange")?.addEventListener("input", (event) => {
-    state.masterplanZoom = clamp(Number(event.target.value || 100) / 100, 1, 3);
-    renderAvailability();
-  });
-  enableMasterplanPan(document.querySelector("[data-masterplan-viewport]"));
   document.querySelector("[data-open-linked-lead]")?.addEventListener("click", (event) => {
     routeTo("lead", event.currentTarget.dataset.openLinkedLead);
-  });
-  document.querySelector("#importLevSalesToAvailability")?.addEventListener("click", async (event) => {
-    if (!confirm("Carregar vendas históricas do Financeiro Lev nas unidades cadastradas? Essa carga deve ser usada apenas agora, para popular o histórico inicial.")) return;
-    const button = event.currentTarget;
-    try {
-      setButtonBusy(button, true, "Carregando...");
-      const data = await api("/api/units/import-lev-sales", { method: "POST", body: JSON.stringify({}) });
-      state.unitDefinitions = data.unitDefinitions || state.unitDefinitions;
-      const sourceSummary = data.sources
-        ? ` Fonte: ${data.sources.levFinance || 0} registro(s) do Financeiro Lev.`
-        : "";
-      alert(`Carga concluída: ${data.imported || 0} unidade(s) atualizada(s), ${data.skipped || 0} ignorada(s).${sourceSummary}`);
-      renderAvailability();
-    } catch (error) {
-      setButtonBusy(button, false);
-      alert(error.message);
-    }
   });
 }
 
@@ -8314,17 +8384,20 @@ function renderProjectBlockSettingsModal(project) {
   const blockDefinitions = projectDefinition.blockDefinitions || [];
   const isCreatingBlock = state.editBlockId === "__new__";
   const editBlock = state.editBlockId && !isCreatingBlock ? blockDefinitions.find((block) => block.id === state.editBlockId) : null;
-  const blockForm = editBlock || { block: "", structureType: "Bloco", floorCount: "", columnCount: "", hasPenthouse: false };
+  const blockForm = editBlock || { block: "", structureType: "Bloco", layoutType: "Vertical", floorCount: "", columnCount: "", hasPenthouse: false, unitPrefix: "", numberStart: "", numberEnd: "" };
   const rows = blockDefinitions.map((block) => {
-    const totalFloors = Number(block.floorCount || 0) + (block.hasPenthouse ? 1 : 0);
-    const generatedCount = totalFloors * Number(block.columnCount || 0);
+    const layoutType = blockLayoutType(block);
+    const generatedCount = expectedUnitsForBlock(block);
+    const detail = layoutType === "Horizontal"
+      ? `Prefixo ${block.unitPrefix || "-"} · ${block.numberStart || "-"} a ${block.numberEnd || "-"}`
+      : `${Number(block.floorCount || 0)} pav. · ${Number(block.columnCount || 0)} col.`;
     return `
       <tr>
         <td>${escapeHtml(block.structureType || "Bloco")}</td>
-        <td>${escapeHtml(padUnitPart(block.block, 2))}</td>
-        <td>${Number(block.floorCount || 0)}</td>
-        <td>${Number(block.columnCount || 0)}</td>
-        <td>${block.hasPenthouse ? "Sim" : "Não"}</td>
+        <td>${escapeHtml(layoutType)}</td>
+        <td>${escapeHtml(blockDisplayName(block) || "-")}</td>
+        <td>${escapeHtml(detail)}</td>
+        <td>${layoutType === "Vertical" ? (block.hasPenthouse ? "Sim" : "Não") : "-"}</td>
         <td>${generatedCount}</td>
         <td>${renderSettingsActionMenu(`block-modal-${block.id}`, [
           `<button type="button" data-edit-project-block="${escapeHtml(block.id)}">Editar</button>`,
@@ -8354,20 +8427,43 @@ function renderProjectBlockSettingsModal(project) {
               <option value="Bloco" ${blockForm.structureType !== "Quadra" ? "selected" : ""}>Bloco</option>
               <option value="Quadra" ${blockForm.structureType === "Quadra" ? "selected" : ""}>Quadra</option>
             </select></div>
-            <div class="field"><label>Número/código</label><input name="block" value="${escapeHtml(blockForm.block)}" placeholder="Ex.: 1" required></div>
-            <div class="field"><label>Qtde de Pavimentos-Tipo</label><input name="floorCount" type="number" min="1" value="${escapeHtml(blockForm.floorCount)}" required></div>
-            <div class="field"><label>Colunas por pavimento</label><input name="columnCount" type="number" min="1" value="${escapeHtml(blockForm.columnCount)}" required></div>
-            <label class="checkline field full"><input type="checkbox" name="hasPenthouse" value="true" ${blockForm.hasPenthouse ? "checked" : ""}> Existe Pavimento Cobertura</label>
+            <div class="field"><label>Modelo</label><select name="layoutType" data-block-layout-select required>
+              <option value="Vertical" ${blockLayoutType(blockForm) !== "Horizontal" ? "selected" : ""}>Vertical</option>
+              <option value="Horizontal" ${blockLayoutType(blockForm) === "Horizontal" ? "selected" : ""}>Horizontal</option>
+            </select></div>
+            <div class="field full"><label>Nome do bloco/quadra</label><input name="block" value="${escapeHtml(blockForm.block)}" placeholder="Ex.: Bloco 1, Quadra A, Vila 3" required></div>
+            <div class="field" data-block-vertical-field><label>Qtde de Pavimentos-Tipo</label><input name="floorCount" type="number" min="1" value="${escapeHtml(blockForm.floorCount)}"></div>
+            <div class="field" data-block-vertical-field><label>Colunas por pavimento</label><input name="columnCount" type="number" min="1" value="${escapeHtml(blockForm.columnCount)}"></div>
+            <label class="checkline field full" data-block-vertical-field><input type="checkbox" name="hasPenthouse" value="true" ${blockForm.hasPenthouse ? "checked" : ""}> Existe Pavimento Cobertura</label>
+            <div class="field" data-block-horizontal-field><label>Prefixo das unidades</label><input name="unitPrefix" value="${escapeHtml(blockForm.unitPrefix || "")}" placeholder="Ex.: LOTE, CASA, Q1"></div>
+            <div class="field" data-block-horizontal-field><label>Início da numeração</label><input name="numberStart" type="number" min="1" value="${escapeHtml(blockForm.numberStart || "")}" placeholder="Ex.: 1"></div>
+            <div class="field" data-block-horizontal-field><label>Fim da numeração</label><input name="numberEnd" type="number" min="1" value="${escapeHtml(blockForm.numberEnd || "")}" placeholder="Ex.: 40"></div>
             <label class="checkline field full"><input type="checkbox" name="generateUnits" value="true"> Gerar unidades automaticamente ao salvar</label>
             <div class="field full"><div class="row-actions modal-actions"><button class="secondary" type="button" data-cancel-project-block>Cancelar</button><button class="primary" type="submit">Salvar bloco</button></div></div>
           </form>
         ` : ""}
         <div class="table-wrap">
-          <table><thead><tr><th>Tipo</th><th>Código</th><th>Pavimentos-tipo</th><th>Colunas</th><th>Cobertura</th><th>Unidades previstas</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhum bloco ou quadra cadastrado</td></tr>'}</tbody></table>
+          <table><thead><tr><th>Tipo</th><th>Modelo</th><th>Nome</th><th>Detalhe</th><th>Cobertura</th><th>Unidades previstas</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhum bloco ou quadra cadastrado</td></tr>'}</tbody></table>
         </div>
       </section>
     </div>
   `;
+}
+
+function bindProjectBlockLayoutToggle() {
+  const selector = document.querySelector("[data-block-layout-select]");
+  if (!selector) return;
+  const sync = () => {
+    const isHorizontal = selector.value === "Horizontal";
+    document.querySelectorAll("[data-block-vertical-field]").forEach((field) => {
+      field.hidden = isHorizontal;
+    });
+    document.querySelectorAll("[data-block-horizontal-field]").forEach((field) => {
+      field.hidden = !isHorizontal;
+    });
+  };
+  selector.addEventListener("change", sync);
+  sync();
 }
 
 function renderProjectVisualMapEditor(projectName = "") {
@@ -8661,7 +8757,6 @@ function renderProjectSettings() {
         <td>${renderSettingsActionMenu(`project-${index}`, [
           `<button type="button" data-open-project-blocks="${escapeHtml(project)}">Blocos/quadras</button>`,
           `<button type="button" data-open-project-units="${escapeHtml(project)}">Unidades</button>`,
-          `<button type="button" data-open-project-map="${escapeHtml(project)}">Mapa Visual</button>`,
           `<button type="button" data-edit-project="${index}">Editar</button>`,
           `<button type="button" class="danger-menu-item" data-delete-project="${index}">Excluir</button>`
         ])}</td>
@@ -8743,14 +8838,6 @@ function renderProjectSettings() {
       renderSettings();
     });
   });
-  document.querySelectorAll("[data-open-project-map]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.settingsEditing = `visual-map:${button.dataset.openProjectMap}`;
-      state.visualMapEditingHotspotId = "";
-      state.visualMapNewUnitId = "";
-      renderSettings();
-    });
-  });
   document.querySelector("#projectForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -8813,6 +8900,7 @@ function renderProjectSettings() {
       renderSettings();
     });
   });
+  bindProjectBlockLayoutToggle();
   document.querySelector("#projectBlockModalForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const projectName = state.settingsEditing?.startsWith("blocks:") ? state.settingsEditing.replace("blocks:", "") : "";
@@ -8823,14 +8911,36 @@ function renderProjectSettings() {
     const isCreatingBlock = state.editBlockId === "__new__";
     const editBlock = state.editBlockId && !isCreatingBlock ? blockDefinitions.find((block) => block.id === state.editBlockId) : null;
     const form = new FormData(event.currentTarget);
+    const layoutType = form.get("layoutType") === "Horizontal" ? "Horizontal" : "Vertical";
+    const blockName = String(form.get("block") || "").trim();
+    const floorCount = Math.max(0, Number.parseInt(form.get("floorCount") || "0", 10) || 0);
+    const columnCount = Math.max(0, Number.parseInt(form.get("columnCount") || "0", 10) || 0);
+    const numberStart = Math.max(0, Number.parseInt(form.get("numberStart") || "0", 10) || 0);
+    const numberEnd = Math.max(0, Number.parseInt(form.get("numberEnd") || "0", 10) || 0);
+    if (!blockName) {
+      alert("Informe o nome do bloco/quadra.");
+      return;
+    }
+    if (layoutType === "Vertical" && (!floorCount || !columnCount)) {
+      alert("Informe pavimentos e colunas para blocos verticais.");
+      return;
+    }
+    if (layoutType === "Horizontal" && (!numberStart || !numberEnd || numberEnd < numberStart)) {
+      alert("Informe início e fim da numeração para estruturas horizontais.");
+      return;
+    }
     const blockPayload = {
       id: editBlock?.id || `block-${Date.now()}`,
-      structureType: form.get("structureType"),
-      block: form.get("block"),
-      floorCount: form.get("floorCount"),
-      columnCount: form.get("columnCount"),
-      hasPenthouse: form.get("hasPenthouse") === "true",
-      penthouseFloors: []
+      structureType: form.get("structureType") || (layoutType === "Horizontal" ? "Quadra" : "Bloco"),
+      layoutType,
+      block: blockName,
+      floorCount: layoutType === "Vertical" ? floorCount : 0,
+      columnCount: layoutType === "Vertical" ? columnCount : 0,
+      hasPenthouse: layoutType === "Vertical" && form.get("hasPenthouse") === "true",
+      penthouseFloors: layoutType === "Vertical" ? (editBlock?.penthouseFloors || []) : [],
+      unitPrefix: layoutType === "Horizontal" ? String(form.get("unitPrefix") || "").trim() : "",
+      numberStart: layoutType === "Horizontal" ? numberStart : 0,
+      numberEnd: layoutType === "Horizontal" ? numberEnd : 0
     };
     const nextBlocks = editBlock
       ? blockDefinitions.map((block) => block.id === editBlock.id ? blockPayload : block)

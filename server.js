@@ -9072,26 +9072,39 @@ function normalizeProjectVisualMapHotspots(input = []) {
   }).filter((hotspot) => hotspot.unitId || hotspot.unitSamCode || hotspot.unit || hotspot.points.length);
 }
 
+function normalizeProjectBlockLayoutType(input = {}) {
+  return normalizeText(input.layoutType || input.unitLayout || input.blockLayout || "").includes("horizontal")
+    ? "Horizontal"
+    : "Vertical";
+}
+
 function normalizeProjectBlockDefinition(input = {}, position = 0) {
-  const block = String(input.block || input.name || input.code || "").trim().replace(/^0+(\d+)$/, "$1");
+  const layoutType = normalizeProjectBlockLayoutType(input);
+  const block = String(input.block || input.name || input.code || "").trim() || String(position + 1);
   const floorCount = Math.max(0, Number.parseInt(input.floorCount ?? input.floors ?? input.totalFloors ?? 0, 10) || 0);
   const columnCount = Math.max(0, Number.parseInt(input.columnCount ?? input.columnsPerFloor ?? input.columns ?? 0, 10) || 0);
+  const numberStart = Math.max(0, Number.parseInt(input.numberStart ?? input.startNumber ?? input.unitStart ?? 0, 10) || 0);
+  const numberEnd = Math.max(0, Number.parseInt(input.numberEnd ?? input.endNumber ?? input.unitEnd ?? 0, 10) || 0);
   const penthouseFloors = Array.isArray(input.penthouseFloors)
     ? input.penthouseFloors
     : normalizeListFromText(input.penthouseFloors);
   const structureType = String(input.structureType || input.type || "").toLocaleLowerCase("pt-BR").includes("quadra") ? "Quadra" : "Bloco";
-  const hasPenthouse = input.hasPenthouse !== undefined
+  const hasPenthouse = layoutType === "Vertical" && (input.hasPenthouse !== undefined
     ? Boolean(input.hasPenthouse)
-    : penthouseFloors.length > 0;
+    : penthouseFloors.length > 0);
   return {
     id: String(input.id || `block-${crypto.createHash("sha1").update(`${block}:${position}`).digest("hex").slice(0, 10)}`).trim(),
     block,
     structureType,
+    layoutType,
     position: Number(input.position ?? position) || position,
-    floorCount,
-    columnCount,
+    floorCount: layoutType === "Vertical" ? floorCount : 0,
+    columnCount: layoutType === "Vertical" ? columnCount : 0,
     hasPenthouse,
-    penthouseFloors: [...new Set(penthouseFloors.map((floor) => String(floor || "").trim()).filter(Boolean))]
+    penthouseFloors: layoutType === "Vertical" ? [...new Set(penthouseFloors.map((floor) => String(floor || "").trim()).filter(Boolean))] : [],
+    unitPrefix: layoutType === "Horizontal" ? String(input.unitPrefix || input.prefix || "").trim() : "",
+    numberStart: layoutType === "Horizontal" ? numberStart : 0,
+    numberEnd: layoutType === "Horizontal" ? numberEnd : 0
   };
 }
 
@@ -9175,6 +9188,26 @@ function generatedUnitCodes(projectDefinition = {}, input = {}) {
   };
 }
 
+function horizontalUnitNumber(value, size = 2) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits ? digits.padStart(size, "0") : "";
+}
+
+function generatedHorizontalUnitCodes(projectDefinition = {}, blockDefinition = {}, number) {
+  const projectName = String(projectDefinition.name || blockDefinition.project || "").trim();
+  const start = String(blockDefinition.numberStart || "").replace(/\D/g, "");
+  const end = String(blockDefinition.numberEnd || "").replace(/\D/g, "");
+  const width = Math.max(2, start.length, end.length, String(number || "").replace(/\D/g, "").length);
+  const numberCode = horizontalUnitNumber(number, width);
+  if (!projectName || !numberCode) return { unit: "", samCode: "" };
+  const unitPrefix = String(blockDefinition.unitPrefix || "").trim().replace(/\s+/g, "");
+  const suffix = `${unitPrefix}${numberCode}`.toUpperCase();
+  return {
+    unit: suffix,
+    samCode: `${primaryProjectPrefix(projectDefinition, projectName)}${suffix}`.replace(/[^a-z0-9]/gi, "").toUpperCase()
+  };
+}
+
 function normalizeUnitDefinition(input = {}) {
   const generated = generatedUnitCodes(input.projectDefinition || {}, input);
   const unit = String(input.unit || input.name || generated.unit || "").trim().toUpperCase();
@@ -9200,6 +9233,7 @@ function normalizeUnitDefinition(input = {}) {
     floorPlanDataUrl: String(input.floorPlanDataUrl || "").trim(),
     floorKind: String(input.floorKind || "").trim(),
     structureType: String(input.structureType || "").trim(),
+    layoutType: String(input.layoutType || "").trim(),
     status: String(input.status || "").trim(),
     leadId: String(input.leadId || input.lead_id || "").trim(),
     buyerName: String(input.buyerName || input.buyer_name || "").trim(),
@@ -9291,6 +9325,27 @@ async function saveStructuredUnit(sql, unitInput, projectDefinitions = []) {
 
 function generatedUnitsForBlock(projectDefinition = {}, blockDefinition = {}) {
   const units = [];
+  if (normalizeProjectBlockLayoutType(blockDefinition) === "Horizontal") {
+    const start = Math.max(0, Number.parseInt(blockDefinition.numberStart || "0", 10) || 0);
+    const end = Math.max(0, Number.parseInt(blockDefinition.numberEnd || "0", 10) || 0);
+    if (!start || !end || end < start) return units;
+    for (let number = start; number <= end; number += 1) {
+      const codes = generatedHorizontalUnitCodes(projectDefinition, blockDefinition, number);
+      if (!codes.unit || !codes.samCode) continue;
+      units.push({
+        project: projectDefinition.name,
+        unit: codes.unit,
+        block: String(blockDefinition.block || "").trim(),
+        floor: "",
+        column: codes.unit,
+        samCode: codes.samCode,
+        floorKind: "",
+        structureType: blockDefinition.structureType || "Quadra",
+        layoutType: "Horizontal"
+      });
+    }
+    return units;
+  }
   const floorCount = Number(blockDefinition.floorCount || 0);
   const totalFloors = floorCount + (blockDefinition.hasPenthouse ? 1 : 0);
   const columnCount = Number(blockDefinition.columnCount || 0);
@@ -9306,12 +9361,13 @@ function generatedUnitsForBlock(projectDefinition = {}, blockDefinition = {}) {
       units.push({
         project: projectDefinition.name,
         unit: codes.unit,
-        block: padUnitNumber(blockDefinition.block, 2),
+        block: String(blockDefinition.block || "").trim(),
         floor: String(floor),
         column: padUnitNumber(column, 2),
         samCode: codes.samCode,
         floorKind: blockDefinition.hasPenthouse && floor === totalFloors ? "Cobertura" : (blockDefinition.penthouseFloors || []).includes(String(floor)) ? "Cobertura" : "Tipo",
-        structureType: blockDefinition.structureType || "Bloco"
+        structureType: blockDefinition.structureType || "Bloco",
+        layoutType: "Vertical"
       });
     }
   }
