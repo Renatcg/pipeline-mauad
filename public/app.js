@@ -275,6 +275,45 @@ function readFileAsDataUrl(file) {
   });
 }
 
+async function readOptimizedVisualMapImage(file) {
+  if (!file?.type?.startsWith("image/")) throw new Error("Envie uma imagem válida para o mapa.");
+  const lowerName = String(file.name || "").toLowerCase();
+  if (file.type.includes("heic") || file.type.includes("heif") || /\.(heic|heif)$/i.test(lowerName)) {
+    throw new Error("Esse formato não é compatível com o navegador. Envie o mapa em JPG, PNG ou WebP.");
+  }
+
+  const sourceUrl = window.URL?.createObjectURL ? URL.createObjectURL(file) : await readFileAsDataUrl(file);
+  try {
+    const image = await loadImageFromSource(sourceUrl);
+    const sourceWidth = image.width || image.naturalWidth;
+    const sourceHeight = image.height || image.naturalHeight;
+    if (!sourceWidth || !sourceHeight) throw new Error("Imagem sem dimensão válida.");
+
+    const maxWidth = 2200;
+    const maxHeight = 1600;
+    const scale = Math.min(1, maxWidth / sourceWidth, maxHeight / sourceHeight);
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(image, 0, 0, width, height);
+
+    const qualities = [0.86, 0.76, 0.66, 0.56];
+    let best = "";
+    for (const quality of qualities) {
+      best = canvas.toDataURL("image/jpeg", quality);
+      if (best.length <= 1800000) break;
+    }
+    return best;
+  } finally {
+    if (window.URL?.revokeObjectURL && sourceUrl.startsWith("blob:")) URL.revokeObjectURL(sourceUrl);
+  }
+}
+
 function loadImageFromSource(source) {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -7730,15 +7769,6 @@ function renderLevFinanceView() {
   bindLevFinanceControls();
 }
 
-function readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("Não foi possível ler a imagem"));
-    reader.readAsDataURL(file);
-  });
-}
-
 function bindLevFinanceControls() {
   bindSettingsActionMenus();
   document.querySelectorAll("[data-lev-finance-tab]").forEach((button) => {
@@ -8455,9 +8485,15 @@ function bindProjectVisualMapEditor(projectName = "") {
   document.querySelector("#visualMapImageInput")?.addEventListener("change", async (event) => {
     const file = event.currentTarget.files?.[0];
     if (!file) return;
-    const image = await readFileAsDataUrl(file);
-    updateLocalProjectVisualMap(projectName, (visualMap) => ({ ...visualMap, image }));
-    renderSettings();
+    try {
+      const image = await readOptimizedVisualMapImage(file);
+      updateLocalProjectVisualMap(projectName, (visualMap) => ({ ...visualMap, image }));
+      renderSettings();
+    } catch (error) {
+      alert(error.message || "Não foi possível carregar o mapa.");
+    } finally {
+      event.currentTarget.value = "";
+    }
   });
   document.querySelector("[data-add-visual-hotspot]")?.addEventListener("click", () => {
     const unitId = state.visualMapNewUnitId || document.querySelector("#visualMapUnitSelect")?.value || "";
@@ -8481,15 +8517,22 @@ function bindProjectVisualMapEditor(projectName = "") {
     const index = (state.projectDefinitions || []).findIndex((project) => project.name === projectName);
     if (index < 0) return;
     const project = state.projectDefinitions[index];
-    const data = await api(`/api/projects/${index}`, { method: "PATCH", body: JSON.stringify(project) });
-    state.projects = data.projects;
-    state.projectDefinitions = data.projectDefinitions || [];
-    state.settingsEditing = null;
-    state.visualMapEditingHotspotId = "";
-    state.visualMapNewUnitId = "";
-    await loadState();
-    alert("Mapa visual salvo.");
-    renderSettings();
+    const button = document.querySelector("[data-save-project-map]");
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const data = await api(`/api/projects/${index}`, { method: "PATCH", body: JSON.stringify(project) });
+      state.projects = data.projects;
+      state.projectDefinitions = data.projectDefinitions || [];
+      state.settingsEditing = null;
+      state.visualMapEditingHotspotId = "";
+      state.visualMapNewUnitId = "";
+      await loadState();
+      alert("Mapa visual salvo.");
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message || "Não foi possível salvar o mapa visual.");
+    }
   });
   document.querySelectorAll("[data-edit-visual-hotspot]").forEach((element) => {
     element.addEventListener("click", (event) => {
