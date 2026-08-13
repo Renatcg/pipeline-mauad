@@ -2284,7 +2284,6 @@ function renderAvailability() {
     <section class="availability-layout">
       <div class="availability-main">
         <section class="availability-projects">${projectCards || '<p class="empty">Cadastre empreendimentos para montar o quadro.</p>'}</section>
-        ${renderAvailabilityMasterplan(selectedProject, projectUnits)}
         ${tables || '<section class="panel empty">Cadastre blocos para montar o quadro deste empreendimento.</section>'}
       </div>
       <aside class="availability-detail">
@@ -8701,14 +8700,6 @@ function renderProjectSettings() {
   const editProject = editIndex != null ? (state.projectDefinitions || [])[editIndex] || { name: state.projects[editIndex] || "", unitPrefixes: [] } : null;
   const unitModalProject = state.settingsEditing?.startsWith("units:") ? state.settingsEditing.replace("units:", "") : "";
   const blockModalProject = state.settingsEditing?.startsWith("blocks:") ? state.settingsEditing.replace("blocks:", "") : "";
-  const visualMapProject = state.settingsEditing?.startsWith("visual-map:") ? state.settingsEditing.replace("visual-map:", "") : "";
-  if (visualMapProject) {
-    settingsLayout(renderProjectVisualMapEditor(visualMapProject));
-    bindSettingsCommon();
-    bindSettingsActionMenus();
-    bindProjectVisualMapEditor(visualMapProject);
-    return;
-  }
   const isCreatingUnit = state.editUnitId === "__new__";
   const editUnit = state.editUnitId && !isCreatingUnit ? (state.unitDefinitions || []).find((unit) => unit.id === state.editUnitId) : null;
   const formValue = editProject?.name || "";
@@ -8760,7 +8751,6 @@ function renderProjectSettings() {
         <td>${renderSettingsActionMenu(`project-${index}`, [
           `<button type="button" data-open-project-blocks="${escapeHtml(project)}">Blocos/quadras</button>`,
           `<button type="button" data-open-project-units="${escapeHtml(project)}">Unidades</button>`,
-          `<button type="button" data-open-project-map="${escapeHtml(project)}">Mapa Visual</button>`,
           `<button type="button" data-edit-project="${index}">Editar</button>`,
           `<button type="button" class="danger-menu-item" data-delete-project="${index}">Excluir</button>`
         ])}</td>
@@ -8839,14 +8829,6 @@ function renderProjectSettings() {
     button.addEventListener("click", () => {
       state.settingsEditing = `blocks:${button.dataset.openProjectBlocks}`;
       state.editBlockId = "";
-      renderSettings();
-    });
-  });
-  document.querySelectorAll("[data-open-project-map]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.settingsEditing = `visual-map:${button.dataset.openProjectMap}`;
-      state.visualMapEditingHotspotId = "";
-      state.visualMapNewUnitId = "";
       renderSettings();
     });
   });
