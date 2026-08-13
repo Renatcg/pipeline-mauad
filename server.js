@@ -7948,13 +7948,29 @@ async function fastStructuredMetaRoutes(req, res, url) {
 }
 
 async function fastStructuredStateResponse(req, res, url) {
-  if (!DATABASE_URL || req.method !== "GET" || url.pathname !== "/api/state") return false;
+  const isStateRequest = url.pathname === "/api/state";
+  const isAvailabilityRequest = url.pathname === "/api/availability-state";
+  if (!DATABASE_URL || req.method !== "GET" || (!isStateRequest && !isAvailabilityRequest)) return false;
   try {
     const sql = await getSql();
     if (!sql) return false;
     await ensureStructuredSchemaOnce(sql);
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
+    if (isAvailabilityRequest) {
+      const configBundle = await cachedStructuredConfigState(sql);
+      return sendJson(res, 200, {
+        user: publicUser(user),
+        projects: configBundle.projects?.length ? configBundle.projects : DEFAULT_PROJECTS,
+        projectDefinitions: configBundle.projectDefinitions || [],
+        unitDefinitions: configBundle.unitDefinitions || [],
+        availabilitySettings: configBundle.availabilitySettings || normalizeAvailabilitySettings({}),
+        dataSources: {
+          availability: "structured",
+          config: configBundle.source || "structured"
+        }
+      });
+    }
     const [
       configBundle,
       integrationRows,

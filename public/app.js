@@ -29,6 +29,9 @@ const state = {
   projectDefinitions: [],
   unitDefinitions: [],
   availabilitySettings: { architectureOptions: [], typologyOptions: [], statusMappings: [] },
+  availabilityLoaded: false,
+  availabilityLoading: false,
+  availabilityLoadError: "",
   tagDefinitions: [],
   users: [],
   userPresence: [],
@@ -66,7 +69,7 @@ const state = {
   metaDiagnostics: null,
   metaCapiDiagnostics: null,
   metaCapiResponseEventId: "",
-  view: "kanban",
+  view: "home",
   leadId: null,
   selectedOpportunityId: "",
   previousView: "kanban",
@@ -147,6 +150,7 @@ const profileAccess = {
 };
 
 const routeByView = {
+  home: "/mural",
   kanban: "/kanban",
   availability: "/disponibilidade",
   sheet: "/planilha",
@@ -159,7 +163,8 @@ const routeByView = {
 };
 
 const viewByRoute = {
-  "/": "kanban",
+  "/": "home",
+  "/mural": "home",
   "/kanban": "kanban",
   "/disponibilidade": "availability",
   "/planilha": "sheet",
@@ -409,9 +414,9 @@ function allowedViews() {
     ? state.currentPermissions
     : state.permissions?.users?.[state.user?.id];
   const views = userRules
-    ? Object.entries(screenByView).filter(([, resourceId]) => userRules[resourceId]?.access).map(([view]) => view)
-    : roleViews;
-  return views.filter((view) => {
+    ? ["home", ...Object.entries(screenByView).filter(([, resourceId]) => userRules[resourceId]?.access).map(([view]) => view)]
+    : ["home", ...roleViews];
+  return [...new Set(views)].filter((view) => {
     if (view === "salesReport") return canAccessCommercialSalesReport();
     if (view === "finance") return canAccessLevFinance();
     if (view === "odysseia") return canAccessBases();
@@ -694,7 +699,7 @@ function syncRouteFromLocation() {
     state.selectedOpportunityId = new URLSearchParams(window.location.search).get("opportunity") || "";
     return;
   }
-  state.view = viewByRoute[path] || "kanban";
+  state.view = viewByRoute[path] || "home";
   state.leadId = null;
   state.selectedOpportunityId = "";
 }
@@ -705,7 +710,7 @@ function routeTo(view, leadId = null, options = {}) {
   state.selectedOpportunityId = view === "lead" ? options.opportunityId || "" : "";
   const path = view === "lead"
     ? `/leads/${encodeURIComponent(leadId)}${state.selectedOpportunityId ? `?opportunity=${encodeURIComponent(state.selectedOpportunityId)}` : ""}`
-    : routeByView[view] || "/kanban";
+    : routeByView[view] || "/mural";
   if (`${window.location.pathname}${window.location.search || ""}` !== path) history.pushState({}, "", path);
   renderApp();
   trackAccess();
@@ -1338,7 +1343,7 @@ function renderLogin(error = "", message = "") {
       const stateLoaded = await loadStateResilient(result.user);
       startPresencePolling();
       if (!stateLoaded) {
-        routeTo(allowedViews().includes("kanban") ? "kanban" : allowedViews()[0] || "kanban");
+        routeTo("home");
         return;
       }
       const returnTo = new URLSearchParams(window.location.search).get("returnTo");
@@ -1350,7 +1355,7 @@ function renderLogin(error = "", message = "") {
         routeTo("lead", state.leadId);
         return;
       }
-      const nextView = state.view !== "lead" && allowedViews().includes(state.view) ? state.view : allowedViews()[0] || "kanban";
+      const nextView = state.view !== "lead" && allowedViews().includes(state.view) ? state.view : "home";
       routeTo(nextView);
     } catch (error) {
       renderLogin(error.message);
@@ -1440,6 +1445,9 @@ async function loadState() {
   state.projectDefinitions = data.projectDefinitions || state.projects.map((name, position) => ({ name, position, unitPrefixes: [] }));
   state.unitDefinitions = Array.isArray(data.unitDefinitions) ? data.unitDefinitions : [];
   state.availabilitySettings = normalizeAvailabilitySettingsClient(data.availabilitySettings || {});
+  state.availabilityLoaded = Boolean(state.projectDefinitions.length || state.unitDefinitions.length);
+  state.availabilityLoading = false;
+  state.availabilityLoadError = "";
   const firstAvailabilityProject = availabilityProjects()[0]?.name;
   if ((!state.selectedAvailabilityProject || !availabilityProjects().some((project) => project.name === state.selectedAvailabilityProject)) && firstAvailabilityProject) {
     state.selectedAvailabilityProject = firstAvailabilityProject;
@@ -1477,7 +1485,7 @@ async function loadState() {
   state.knowledgeChatSessions = data.knowledgeChatSessions || [];
   state.canManageKnowledge = Boolean(data.canManageKnowledge);
   state.canCreateKnowledge = Boolean(data.canCreateKnowledge);
-  if (state.view !== "lead" && !allowedViews().includes(state.view)) state.view = allowedViews()[0];
+  if (state.view !== "lead" && !allowedViews().includes(state.view)) state.view = allowedViews()[0] || "home";
 }
 
 function applyMinimalSession(user) {
@@ -1489,7 +1497,35 @@ function applyMinimalSession(user) {
   state.baseAccessSources = state.baseAccessSources || [];
   state.accessibleBaseSources = state.accessibleBaseSources || [];
   state.actionableBaseSources = state.actionableBaseSources || [];
+  state.availabilityLoaded = false;
+  state.availabilityLoading = false;
+  state.availabilityLoadError = "";
   state.dataSources = { ...(state.dataSources || {}), state: "structured-pending" };
+}
+
+async function ensureAvailabilityState(force = false) {
+  if (state.availabilityLoading || (!force && state.availabilityLoaded)) return;
+  state.availabilityLoading = true;
+  state.availabilityLoadError = "";
+  try {
+    const data = await api("/api/availability-state");
+    state.projects = data.projects || state.projects || [];
+    state.projectDefinitions = Array.isArray(data.projectDefinitions) ? data.projectDefinitions : state.projectDefinitions || [];
+    state.unitDefinitions = Array.isArray(data.unitDefinitions) ? data.unitDefinitions : state.unitDefinitions || [];
+    state.availabilitySettings = normalizeAvailabilitySettingsClient(data.availabilitySettings || state.availabilitySettings || {});
+    state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
+    state.availabilityLoaded = true;
+    const projects = availabilityProjects();
+    const firstAvailabilityProject = projects[0]?.name;
+    if ((!state.selectedAvailabilityProject || !projects.some((project) => project.name === state.selectedAvailabilityProject)) && firstAvailabilityProject) {
+      state.selectedAvailabilityProject = firstAvailabilityProject;
+    }
+  } catch (error) {
+    state.availabilityLoadError = error.message || "Erro ao carregar disponibilidade.";
+  } finally {
+    state.availabilityLoading = false;
+    if (state.view === "availability") renderApp();
+  }
 }
 
 async function loadStateResilient(user) {
@@ -1621,6 +1657,7 @@ function renderShell(content) {
         </div>
         <nav class="nav ${state.mobileNavOpen ? "open" : ""}">
           <div class="nav-main">
+            ${navButton("home", "▧", "Mural")}
             ${navButton("kanban", "▦", "Kanban")}
             ${navButton("availability", "▩", "Disponibilidade")}
             ${navButton("sheet", "▤", "Planilha")}
@@ -2257,6 +2294,27 @@ function visualMapSvgPoints(points = []) {
 }
 
 function renderAvailability() {
+  if (!state.availabilityLoaded && !state.availabilityLoading) ensureAvailabilityState();
+  if (state.availabilityLoading && !availabilityProjects().length) {
+    renderShell(`
+      <section class="panel">
+        <h2>Disponibilidade</h2>
+        <p class="muted-copy">Carregando disponibilidade...</p>
+      </section>
+    `);
+    return;
+  }
+  if (state.availabilityLoadError && !availabilityProjects().length) {
+    renderShell(`
+      <section class="panel">
+        <h2>Disponibilidade</h2>
+        <p class="muted-copy">${escapeHtml(state.availabilityLoadError)}</p>
+        <button class="primary" data-retry-availability>Recarregar disponibilidade</button>
+      </section>
+    `);
+    document.querySelector("[data-retry-availability]")?.addEventListener("click", () => ensureAvailabilityState(true));
+    return;
+  }
   const projects = availabilityProjects();
   const selectedProject = state.selectedAvailabilityProject || projects[0]?.name || "";
   if (selectedProject && !projects.some((project) => project.name === selectedProject)) {
@@ -9326,6 +9384,10 @@ function bindSettingsCommon() {
   });
 }
 
+function renderHome() {
+  renderShell(`<h1>Mural</h1>`);
+}
+
 function renderApp() {
   if (state.view === "password-setup") return renderPasswordSetup();
   if (viewNeedsLeads() && !hasLoadedLeadsForView()) {
@@ -9349,6 +9411,7 @@ function renderApp() {
     }
     return;
   }
+  if (state.view === "home") return renderHome();
   if (state.view === "lead") return renderLeadDetail();
   if (state.view === "kanban") return renderKanban();
   if (state.view === "availability") return renderAvailability();
