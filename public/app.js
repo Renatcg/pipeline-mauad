@@ -2036,7 +2036,13 @@ function availabilityStatusSummary(units = []) {
 
 function availabilityBlockLabel(projectName, blockCode) {
   const block = blockDefinitionsForProject(projectName).find((item) => padUnitPart(item.block, 2) === padUnitPart(blockCode, 2));
-  return block?.structureType || "Bloco";
+  return block?.displayName || `${block?.structureType || "Bloco"} ${blockCode}`;
+}
+
+function availabilityBlockDefinition(projectName, blockCode) {
+  return blockDefinitionsForProject(projectName).find((item) => (
+    String(item.block || "") === String(blockCode || "") || padUnitPart(item.block, 2) === padUnitPart(blockCode, 2)
+  ));
 }
 
 function blockDefinitionsForProject(projectName) {
@@ -2090,6 +2096,32 @@ function virtualUnitsForProject(projectName) {
     .find(Boolean);
   const virtualUnits = [];
   blockDefinitionsForProject(projectName).forEach((block) => {
+    if (block.layoutType === "Horizontal") {
+      const start = Number(block.houseStart || 0);
+      const end = Number(block.houseEnd || 0);
+      const prefix = String(block.housePrefix || "").trim().toUpperCase();
+      const numberSize = Math.max(2, String(end).length);
+      for (let number = start; number <= end; number += 1) {
+        const houseNumber = String(number).padStart(numberSize, "0");
+        const unitCode = `${prefix}${houseNumber}`;
+        const existing = unitsForAvailabilityProject(projectName).find((unit) => unit.block === block.block && unit.unit === unitCode) || {};
+        const unit = existing.id ? existing : {
+          id: `virtual:${projectName}:${block.id}:${houseNumber}`,
+          project: projectName,
+          unit: unitCode,
+          samCode: `${primaryProjectPrefix(projectName)}${unitCode}`,
+          block: block.block,
+          floor: "",
+          column: houseNumber,
+          status: "",
+          virtual: true,
+          floorKind: "Casa",
+          structureType: block.structureType || "Quadra"
+        };
+        virtualUnits.push(mergeAvailabilityUnitSnapshot(unit, snapshotForUnit(unit)));
+      }
+      return;
+    }
     const floorCount = Number(block.floorCount || 0);
     const totalFloors = floorCount + (block.hasPenthouse ? 1 : 0);
     const columnCount = Number(block.columnCount || 0);
@@ -2201,16 +2233,23 @@ function renderAvailability() {
   }).join("");
   const tables = blocks.map((block) => {
     const units = projectUnits.filter((unit) => (unit.block || "1") === block);
-    const floors = [...new Set(units.map((unit) => unit.floor || ""))].sort(sortAlphaNumeric);
+    const blockDefinition = availabilityBlockDefinition(selectedProject, block);
+    const isHorizontal = blockDefinition?.layoutType === "Horizontal";
+    const floors = [...new Set(units.map((unit) => unit.floor || ""))].sort(sortAlphaNumeric).reverse();
     const columns = [...new Set(units.map((unit) => unit.column || ""))].sort(sortAlphaNumeric);
     const structureLabel = availabilityBlockLabel(selectedProject, block);
     return `
       <section class="availability-block">
         <div class="availability-block-head">
-          <h2>${escapeHtml(structureLabel)} ${escapeHtml(block)}</h2>
+          <h2>${escapeHtml(structureLabel)}</h2>
           <div class="availability-status-summary">${availabilityStatusSummary(units)}</div>
         </div>
-        <div class="availability-grid-wrap">
+        <div class="availability-grid-wrap ${isHorizontal ? "horizontal" : ""}">
+          ${isHorizontal ? `<div class="availability-house-grid">${units.sort((a, b) => sortAlphaNumeric(a.column, b.column)).map((unit) => {
+            const label = availabilityStatusLabel(unit);
+            const color = unitStatusStyle(label);
+            return `<button type="button" class="availability-unit-cell ${unit.virtual ? "virtual" : ""} ${state.selectedAvailabilityUnitId === unit.id ? "active" : ""}" style="--unit-status-color:${escapeHtml(color)}" data-availability-unit="${escapeHtml(unit.id)}">${escapeHtml(unit.unit)}</button>`;
+          }).join("")}</div>` : `
           <table class="availability-grid">
             <thead><tr><th>Andar</th>${columns.map((column) => `<th>${escapeHtml(unitColumnLabel(column))}</th>`).join("")}</tr></thead>
             <tbody>
@@ -2228,6 +2267,7 @@ function renderAvailability() {
               `).join("")}
             </tbody>
           </table>
+          `}
         </div>
       </section>
     `;
@@ -2251,7 +2291,7 @@ function renderAvailability() {
         ${selectedUnit ? `
           <h2>${escapeHtml(selectedUnit.unit)}</h2>
           ${selectedUnit.virtual ? '<p class="chip chip-warning">Unidade prevista pelo bloco</p>' : ""}
-          <p class="muted-copy">${escapeHtml(selectedUnit.project)} · ${escapeHtml(availabilityBlockLabel(selectedUnit.project, selectedUnit.block))} ${escapeHtml(selectedUnit.block || "-")}</p>
+          <p class="muted-copy">${escapeHtml(selectedUnit.project)} · ${escapeHtml(availabilityBlockLabel(selectedUnit.project, selectedUnit.block))}</p>
           <dl class="unit-detail-list">
             <div><dt>Status</dt><dd>${escapeHtml(availabilityStatusLabel(selectedUnit))}</dd></div>
             <div><dt>Andar</dt><dd>${escapeHtml(unitFloorLabel(selectedUnit.floor))} · ${escapeHtml(selectedUnit.floorKind || "Tipo")}</dd></div>
@@ -8364,17 +8404,18 @@ function renderProjectBlockSettingsModal(project) {
   const blockDefinitions = projectDefinition.blockDefinitions || [];
   const isCreatingBlock = state.editBlockId === "__new__";
   const editBlock = state.editBlockId && !isCreatingBlock ? blockDefinitions.find((block) => block.id === state.editBlockId) : null;
-  const blockForm = editBlock || { block: "", structureType: "Bloco", floorCount: "", columnCount: "", hasPenthouse: false };
+  const blockForm = editBlock || { block: "", displayName: "", structureType: "Bloco", layoutType: "Vertical", floorCount: "", columnCount: "", hasPenthouse: false, housePrefix: "", houseStart: "", houseEnd: "" };
   const rows = blockDefinitions.map((block) => {
+    const isHorizontal = block.layoutType === "Horizontal";
     const totalFloors = Number(block.floorCount || 0) + (block.hasPenthouse ? 1 : 0);
-    const generatedCount = totalFloors * Number(block.columnCount || 0);
+    const generatedCount = isHorizontal
+      ? Math.max(0, Number(block.houseEnd || 0) - Number(block.houseStart || 0) + 1)
+      : totalFloors * Number(block.columnCount || 0);
     return `
       <tr>
-        <td>${escapeHtml(block.structureType || "Bloco")}</td>
-        <td>${escapeHtml(padUnitPart(block.block, 2))}</td>
-        <td>${Number(block.floorCount || 0)}</td>
-        <td>${Number(block.columnCount || 0)}</td>
-        <td>${block.hasPenthouse ? "Sim" : "Não"}</td>
+        <td>${escapeHtml(block.displayName || `${block.structureType || "Bloco"} ${block.block}`)}</td>
+        <td>${escapeHtml(block.layoutType || "Vertical")}</td>
+        <td>${isHorizontal ? escapeHtml(`${block.housePrefix || ""}${block.houseStart || "-"} a ${block.housePrefix || ""}${block.houseEnd || "-"}`) : escapeHtml(`${Number(block.floorCount || 0)} pav. × ${Number(block.columnCount || 0)} col.`)}</td>
         <td>${generatedCount}</td>
         <td>${renderSettingsActionMenu(`block-modal-${block.id}`, [
           `<button type="button" data-edit-project-block="${escapeHtml(block.id)}">Editar</button>`,
@@ -8400,20 +8441,28 @@ function renderProjectBlockSettingsModal(project) {
         </div>
         ${formOpen ? `
           <form id="projectBlockModalForm" class="form-grid editor unit-editor">
-            <div class="field"><label>Tipo da estrutura</label><select name="structureType" required>
+            <div class="field"><label>Tipo do empreendimento</label><select name="layoutType" required>
+              <option value="Vertical" ${blockForm.layoutType !== "Horizontal" ? "selected" : ""}>Vertical</option>
+              <option value="Horizontal" ${blockForm.layoutType === "Horizontal" ? "selected" : ""}>Horizontal (casas)</option>
+            </select></div>
+            <div class="field"><label>Bloco ou quadra</label><select name="structureType" required>
               <option value="Bloco" ${blockForm.structureType !== "Quadra" ? "selected" : ""}>Bloco</option>
               <option value="Quadra" ${blockForm.structureType === "Quadra" ? "selected" : ""}>Quadra</option>
             </select></div>
-            <div class="field"><label>Número/código</label><input name="block" value="${escapeHtml(blockForm.block)}" placeholder="Ex.: 1" required></div>
-            <div class="field"><label>Qtde de Pavimentos-Tipo</label><input name="floorCount" type="number" min="1" value="${escapeHtml(blockForm.floorCount)}" required></div>
-            <div class="field"><label>Colunas por pavimento</label><input name="columnCount" type="number" min="1" value="${escapeHtml(blockForm.columnCount)}" required></div>
-            <label class="checkline field full"><input type="checkbox" name="hasPenthouse" value="true" ${blockForm.hasPenthouse ? "checked" : ""}> Existe Pavimento Cobertura</label>
+            <div class="field"><label>Nome do bloco/quadra</label><input name="displayName" value="${escapeHtml(blockForm.displayName || "")}" placeholder="Ex.: Quadra das Acácias" required></div>
+            <div class="field"><label>Número/código interno</label><input name="block" value="${escapeHtml(blockForm.block)}" placeholder="Ex.: 1" required></div>
+            <div class="field" data-vertical-block-field><label>Qtde de Pavimentos-Tipo</label><input name="floorCount" type="number" min="1" value="${escapeHtml(blockForm.floorCount)}"></div>
+            <div class="field" data-vertical-block-field><label>Colunas por pavimento</label><input name="columnCount" type="number" min="1" value="${escapeHtml(blockForm.columnCount)}"></div>
+            <label class="checkline field full" data-vertical-block-field><input type="checkbox" name="hasPenthouse" value="true" ${blockForm.hasPenthouse ? "checked" : ""}> Existe Pavimento Cobertura</label>
+            <div class="field" data-horizontal-block-field><label>Prefixo das casas (opcional)</label><input name="housePrefix" value="${escapeHtml(blockForm.housePrefix || "")}" placeholder="Ex.: C"></div>
+            <div class="field" data-horizontal-block-field><label>Numeração inicial</label><input name="houseStart" type="number" min="0" value="${escapeHtml(blockForm.houseStart)}"></div>
+            <div class="field" data-horizontal-block-field><label>Numeração final</label><input name="houseEnd" type="number" min="0" value="${escapeHtml(blockForm.houseEnd)}"></div>
             <label class="checkline field full"><input type="checkbox" name="generateUnits" value="true"> Gerar unidades automaticamente ao salvar</label>
             <div class="field full"><div class="row-actions modal-actions"><button class="secondary" type="button" data-cancel-project-block>Cancelar</button><button class="primary" type="submit">Salvar bloco</button></div></div>
           </form>
         ` : ""}
         <div class="table-wrap">
-          <table><thead><tr><th>Tipo</th><th>Código</th><th>Pavimentos-tipo</th><th>Colunas</th><th>Cobertura</th><th>Unidades previstas</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhum bloco ou quadra cadastrado</td></tr>'}</tbody></table>
+          <table><thead><tr><th>Nome</th><th>Tipo</th><th>Configuração</th><th>Unidades previstas</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty">Nenhum bloco ou quadra cadastrado</td></tr>'}</tbody></table>
         </div>
       </section>
     </div>
@@ -8863,6 +8912,19 @@ function renderProjectSettings() {
       renderSettings();
     });
   });
+  const blockModalForm = document.querySelector("#projectBlockModalForm");
+  const updateBlockFields = () => {
+    if (!blockModalForm) return;
+    const isHorizontal = blockModalForm.elements.layoutType.value === "Horizontal";
+    blockModalForm.querySelectorAll("[data-vertical-block-field]").forEach((field) => { field.hidden = isHorizontal; });
+    blockModalForm.querySelectorAll("[data-horizontal-block-field]").forEach((field) => { field.hidden = !isHorizontal; });
+    blockModalForm.elements.floorCount.required = !isHorizontal;
+    blockModalForm.elements.columnCount.required = !isHorizontal;
+    blockModalForm.elements.houseStart.required = isHorizontal;
+    blockModalForm.elements.houseEnd.required = isHorizontal;
+  };
+  blockModalForm?.elements.layoutType?.addEventListener("change", updateBlockFields);
+  updateBlockFields();
   document.querySelector("#projectBlockModalForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const projectName = state.settingsEditing?.startsWith("blocks:") ? state.settingsEditing.replace("blocks:", "") : "";
@@ -8873,13 +8935,23 @@ function renderProjectSettings() {
     const isCreatingBlock = state.editBlockId === "__new__";
     const editBlock = state.editBlockId && !isCreatingBlock ? blockDefinitions.find((block) => block.id === state.editBlockId) : null;
     const form = new FormData(event.currentTarget);
+    const layoutType = form.get("layoutType") === "Horizontal" ? "Horizontal" : "Vertical";
+    if (layoutType === "Horizontal" && Number(form.get("houseEnd")) < Number(form.get("houseStart"))) {
+      alert("A numeração final das casas deve ser maior ou igual à inicial.");
+      return;
+    }
     const blockPayload = {
       id: editBlock?.id || `block-${Date.now()}`,
       structureType: form.get("structureType"),
+      layoutType,
+      displayName: form.get("displayName"),
       block: form.get("block"),
-      floorCount: form.get("floorCount"),
-      columnCount: form.get("columnCount"),
-      hasPenthouse: form.get("hasPenthouse") === "true",
+      floorCount: layoutType === "Vertical" ? form.get("floorCount") : 0,
+      columnCount: layoutType === "Vertical" ? form.get("columnCount") : 0,
+      hasPenthouse: layoutType === "Vertical" && form.get("hasPenthouse") === "true",
+      housePrefix: layoutType === "Horizontal" ? form.get("housePrefix") : "",
+      houseStart: layoutType === "Horizontal" ? form.get("houseStart") : 0,
+      houseEnd: layoutType === "Horizontal" ? form.get("houseEnd") : 0,
       penthouseFloors: []
     };
     const nextBlocks = editBlock

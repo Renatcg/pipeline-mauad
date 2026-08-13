@@ -9080,6 +9080,9 @@ function normalizeProjectBlockDefinition(input = {}, position = 0) {
     ? input.penthouseFloors
     : normalizeListFromText(input.penthouseFloors);
   const structureType = String(input.structureType || input.type || "").toLocaleLowerCase("pt-BR").includes("quadra") ? "Quadra" : "Bloco";
+  const layoutType = String(input.layoutType || input.developmentType || "").toLocaleLowerCase("pt-BR") === "horizontal" ? "Horizontal" : "Vertical";
+  const houseStart = Math.max(0, Number.parseInt(input.houseStart ?? input.startNumber ?? 0, 10) || 0);
+  const houseEnd = Math.max(0, Number.parseInt(input.houseEnd ?? input.endNumber ?? 0, 10) || 0);
   const hasPenthouse = input.hasPenthouse !== undefined
     ? Boolean(input.hasPenthouse)
     : penthouseFloors.length > 0;
@@ -9087,6 +9090,11 @@ function normalizeProjectBlockDefinition(input = {}, position = 0) {
     id: String(input.id || `block-${crypto.createHash("sha1").update(`${block}:${position}`).digest("hex").slice(0, 10)}`).trim(),
     block,
     structureType,
+    layoutType,
+    displayName: String(input.displayName || input.label || "").trim(),
+    housePrefix: String(input.housePrefix || "").trim().toUpperCase(),
+    houseStart,
+    houseEnd,
     position: Number(input.position ?? position) || position,
     floorCount,
     columnCount,
@@ -9291,6 +9299,28 @@ async function saveStructuredUnit(sql, unitInput, projectDefinitions = []) {
 
 function generatedUnitsForBlock(projectDefinition = {}, blockDefinition = {}) {
   const units = [];
+  if (blockDefinition.layoutType === "Horizontal") {
+    const start = Number(blockDefinition.houseStart || 0);
+    const end = Number(blockDefinition.houseEnd || 0);
+    const housePrefix = String(blockDefinition.housePrefix || "").trim().toUpperCase();
+    const numberSize = Math.max(2, String(end).length);
+    for (let number = start; number <= end; number += 1) {
+      const houseNumber = String(number).padStart(numberSize, "0");
+      const unit = `${housePrefix}${houseNumber}`;
+      if (!unit) continue;
+      units.push({
+        project: projectDefinition.name,
+        unit,
+        block: String(blockDefinition.block || "").trim(),
+        floor: "",
+        column: houseNumber,
+        samCode: `${primaryProjectPrefix(projectDefinition, projectDefinition.name)}${unit}`.toUpperCase(),
+        floorKind: "Casa",
+        structureType: blockDefinition.structureType || "Quadra"
+      });
+    }
+    return units;
+  }
   const floorCount = Number(blockDefinition.floorCount || 0);
   const totalFloors = floorCount + (blockDefinition.hasPenthouse ? 1 : 0);
   const columnCount = Number(blockDefinition.columnCount || 0);

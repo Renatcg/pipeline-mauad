@@ -4500,7 +4500,19 @@ th {
 }
 
 .availability-grid-wrap {
+  width: 100%;
+  max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.availability-house-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(68px, 1fr));
+  gap: 8px;
+  min-width: 904px;
+  padding: 12px;
 }
 
 .availability-grid {
@@ -4620,5 +4632,15 @@ th {
 @media (max-width: 680px) {
   .availability-projects {
     grid-template-columns: 1fr;
+  }
+
+  .availability-grid {
+    width: max-content;
+    min-width: 720px;
+  }
+
+  .availability-block {
+    min-width: 0;
+    overflow: hidden;
   }
 }
