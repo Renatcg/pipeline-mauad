@@ -4549,36 +4549,6 @@ th {
   text-shadow: none;
 }
 
-.availability-horizontal-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
-  gap: 10px;
-  padding: 12px;
-}
-
-.availability-horizontal-grid .availability-unit-cell {
-  min-height: 54px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.availability-horizontal-grid .availability-unit-cell span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.availability-horizontal-grid .empty {
-  grid-column: 1 / -1;
-}
-
-[data-block-vertical-field][hidden],
-[data-block-horizontal-field][hidden] {
-  display: none !important;
-}
-
 .availability-detail {
   position: sticky;
   top: 96px;
