@@ -160,6 +160,10 @@ textarea {
   box-shadow: 0 34px 80px rgba(0, 0, 0, 0.48);
 }
 
+.login-splash {
+  display: none;
+}
+
 .login-intro {
   display: flex;
   flex-direction: column;
@@ -4111,8 +4115,25 @@ th {
   .login-intro img {
     width: min(210px, 62vw);
     margin: 0;
-    animation: mobile-login-logo-in .78s cubic-bezier(.2, .8, .2, 1) both;
     filter: drop-shadow(0 12px 26px rgba(255, 255, 255, 0.08));
+  }
+
+  .login-splash {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    background: radial-gradient(circle at 50% 44%, rgba(255, 255, 255, .09), transparent 32%), #070707;
+    pointer-events: none;
+    animation: mobile-login-splash-out 1.55s ease both;
+  }
+
+  .login-splash img {
+    width: min(230px, 64vw);
+    height: auto;
+    animation: mobile-login-splash-logo 1.12s cubic-bezier(.2, .8, .2, 1) both;
+    filter: drop-shadow(0 0 22px rgba(255, 255, 255, .13));
   }
 
   .login-intro span {
@@ -4134,7 +4155,10 @@ th {
     border-radius: 28px 28px 0 0;
     background: #fff;
     box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.22);
-    animation: mobile-login-panel-in .62s .16s cubic-bezier(.2, .8, .2, 1) both;
+  }
+
+  .login-page:has(.login-splash) .login-panel {
+    animation: mobile-login-panel-in .58s 1.15s cubic-bezier(.2, .8, .2, 1) both;
   }
 
   .login-box {
@@ -4174,20 +4198,31 @@ th {
     font-size: 16px;
   }
 
-  @keyframes mobile-login-logo-in {
+  @keyframes mobile-login-splash-logo {
     from {
       opacity: 0;
-      transform: translateY(10px) scale(.88);
+      transform: scale(.82);
       filter: drop-shadow(0 0 0 rgba(255, 255, 255, 0));
     }
-    65% {
+    45% {
       opacity: 1;
-      transform: translateY(0) scale(1.035);
+      transform: scale(1.035);
       filter: drop-shadow(0 0 20px rgba(255, 255, 255, .18));
     }
     to {
       opacity: 1;
-      transform: translateY(0) scale(1);
+      transform: scale(1);
+    }
+  }
+
+  @keyframes mobile-login-splash-out {
+    0%, 72% {
+      opacity: 1;
+      visibility: visible;
+    }
+    100% {
+      opacity: 0;
+      visibility: hidden;
     }
   }
 
@@ -4203,7 +4238,10 @@ th {
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .login-intro img,
+    .login-splash {
+      display: none;
+    }
+
     .login-panel {
       animation: none;
     }

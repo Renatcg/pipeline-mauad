@@ -4,6 +4,7 @@ let pageSearchRenderTimer = null;
 let pageSearchRequestSeq = 0;
 let presencePollTimer = null;
 let presencePollInFlight = false;
+let loginSplashShown = false;
 const MANUAL_BASE_SOURCES = ["Stand", "Lista RMeirelles"];
 const PRESENCE_POLL_INTERVAL_MS = 30000;
 const META_HEALTH_NOTIFICATION_ROLES = ["Admin TI", "Gestor de Tráfego", "Coordenador de Marketing"];
@@ -1296,9 +1297,12 @@ function setButtonBusy(button, busy, label = "Aguarde...") {
 
 function renderLogin(error = "", message = "") {
   const loginMessage = message || state.loginMessage || "";
+  const showLoginSplash = !loginSplashShown;
+  loginSplashShown = true;
   if (window.location.pathname !== "/login") history.replaceState({}, "", loginPathWithReturnTo());
   app.innerHTML = `
     <section class="login-page">
+      ${showLoginSplash ? '<div class="login-splash" aria-hidden="true"><img src="/logo-mauad-branco.png" alt=""></div>' : ""}
       <div class="login-frame">
         <section class="login-intro">
           <img src="/logo-mauad-branco.png" alt="Construtora Mauad">
