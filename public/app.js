@@ -1877,7 +1877,15 @@ function renderViewHead(title, subtitle = "", options = {}) {
       </div>
     </div>
   ` : "";
-  const actions = options.actions ? `<div class="view-head-actions">${options.actions}</div>` : "";
+  const actionFilterCount = Math.max(0, Number(options.mobileFilterCount || 0));
+  const collapsibleActions = Boolean(options.actions && options.mobileCollapsibleActions);
+  const actions = options.actions ? collapsibleActions ? `
+    <button type="button" class="mobile-filter-toggle" data-mobile-filters-open aria-label="Abrir filtros" title="Filtros"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4 2v-8L3 5Z"></path></svg>${actionFilterCount ? `<strong>(${actionFilterCount})</strong>` : ""}</button>
+    <div class="mobile-filter-popover ${mobileCollapsed ? "mobile-collapsed" : "mobile-expanded"} ${state.mobileFiltersOpen ? "open" : ""}" data-mobile-filter-popover>
+      <div class="mobile-filter-panel-head"><strong>Filtros${actionFilterCount ? ` (${actionFilterCount})` : ""}</strong><button type="button" data-mobile-filters-close aria-label="Fechar filtros">×</button></div>
+      <div class="view-head-actions mobile-filter-action-content">${options.actions}</div>
+    </div>
+  ` : `<div class="view-head-actions">${options.actions}</div>` : "";
   const className = options.className ? ` ${escapeHtml(options.className)}` : "";
   return `
     <div class="view-head${className}">
@@ -2101,9 +2109,9 @@ function availabilityStatusSummary(units = []) {
     counts[label] = (counts[label] || 0) + 1;
   });
   return labels.map((label) => `
-    <span class="availability-status-chip" style="--chip-color:${escapeHtml(unitStatusStyle(label))}">
-      <i></i>${escapeHtml(label)} <strong>${counts[label] || 0}</strong>
-    </span>
+    <button type="button" class="availability-status-chip" style="--chip-color:${escapeHtml(unitStatusStyle(label))}" data-availability-status-chip aria-label="${escapeHtml(label)}: ${counts[label] || 0}">
+      <i></i><span class="availability-status-label">${escapeHtml(label)}</span><strong>${counts[label] || 0}</strong>
+    </button>
   `).join("");
 }
 
@@ -2399,6 +2407,9 @@ function renderAvailability() {
       state.selectedAvailabilityUnitId = button.dataset.availabilityUnit;
       renderAvailability();
     });
+  });
+  document.querySelectorAll("[data-availability-status-chip]").forEach((button) => {
+    button.addEventListener("click", () => button.classList.toggle("expanded"));
   });
   document.querySelectorAll("[data-masterplan-zoom]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -3007,7 +3018,7 @@ function bindCreateLeadModal() {
 function renderMetrics(leads = filteredLeads()) {
   const data = metrics(leads);
   return `
-    <section class="metrics">
+    <section class="metrics compact-mobile-metrics">
       <div class="metric"><span>Leads</span><strong>${data.total}</strong></div>
       <div class="metric"><span>Ativos no funil</span><strong>${data.active}</strong></div>
       <div class="metric"><span>Favoritos</span><strong>${data.favorites}</strong></div>
@@ -4162,8 +4173,12 @@ function renderDashboard() {
     </tr>
   `).join("");
   renderShell(`
-    ${renderViewHead("Dashboard", "Indicadores de volume de lead, vendas e funil", { actions: renderDashboardControls() })}
-    <section class="metrics">
+    ${renderViewHead("Dashboard", "Indicadores de volume de lead, vendas e funil", {
+      actions: renderDashboardControls(),
+      mobileCollapsibleActions: true,
+      mobileFilterCount: Number(Boolean(state.dashboardStart || state.dashboardEnd)) + Number(state.dashboardProject !== "TODOS")
+    })}
+    <section class="metrics compact-mobile-metrics">
       <div class="metric"><span>Volume total</span><strong>${data.total}</strong></div>
       <div class="metric"><span>Ativos</span><strong>${data.active}</strong></div>
       <div class="metric"><span>Favoritos</span><strong>${data.favorites}</strong></div>
@@ -4508,7 +4523,9 @@ function renderSalesReportView() {
           <label class="compact-select"><span>Mês</span><input id="salesReportMonth" type="month" value="${escapeHtml(period.month)}"></label>
           <label class="compact-select"><span>Empreendimento</span><select id="salesReportProject"><option value="TODOS" ${state.salesReportProject === "TODOS" ? "selected" : ""}>Todos</option>${(state.projects || []).map((project) => `<option value="${escapeHtml(project)}" ${state.salesReportProject === project ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}</select></label>
         </div>
-      `
+      `,
+      mobileCollapsibleActions: true,
+      mobileFilterCount: 1 + Number(state.salesReportProject !== "TODOS")
     })}
     <section class="panel commercial-report" id="commercialReportPrintable">
       <div class="panel-title-row">
