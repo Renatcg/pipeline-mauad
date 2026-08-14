@@ -5026,33 +5026,36 @@ th {
   }
 
   .availability-block-head {
-    align-items: flex-start;
-    flex-wrap: wrap;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 4px;
   }
 
   .availability-status-summary {
-    width: 100%;
+    width: auto;
     max-width: none;
+    min-width: 0;
+    flex: 1;
     flex-wrap: nowrap;
-    justify-content: center;
-    gap: 3px;
+    justify-content: flex-end;
+    gap: 0;
   }
 
   .availability-status-chip {
     min-width: 0;
-    flex: 0 1 46px;
-    min-height: 32px;
+    flex: 0 1 38px;
+    min-height: 28px;
     justify-content: center;
-    gap: 5px;
-    padding: 3px 6px;
+    gap: 3px;
+    padding: 2px 3px;
     border-color: transparent;
     background: transparent;
     box-shadow: none;
   }
 
   .availability-status-chip i {
-    width: 14px;
-    height: 14px;
+    width: 11px;
+    height: 11px;
   }
 
   .availability-status-chip .availability-status-label {
