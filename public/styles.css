@@ -4976,15 +4976,20 @@ th {
 
   .availability-block-head {
     align-items: flex-start;
+    flex-wrap: wrap;
   }
 
   .availability-status-summary {
-    max-width: 190px;
+    width: 100%;
+    max-width: none;
+    flex-wrap: nowrap;
+    justify-content: center;
     gap: 3px;
   }
 
   .availability-status-chip {
-    min-width: 42px;
+    min-width: 0;
+    flex: 0 1 46px;
     min-height: 32px;
     justify-content: center;
     gap: 5px;
