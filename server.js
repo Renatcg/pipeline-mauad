@@ -5739,6 +5739,7 @@ async function structuredConfigStateBundle(sql) {
   const forms = formRows.map((row) => row.payload || {}).filter((item) => item.id);
   const permissions = structuredPermissionsFromRows(permissionRows);
   const commercialSettings = normalizeCommercialSettingsPayload(settings.commercialSettings || {});
+  const pipelineFrontSettings = normalizePipelineFrontSettings(settings.pipelineFrontSettings || {});
   const availabilitySettings = normalizeAvailabilitySettings(settings.availabilitySettings || {});
   const unitDefinitions = unitRows.map((row) => normalizeUnitDefinition({
     ...(row.payload || {}),
@@ -5780,7 +5781,8 @@ async function structuredConfigStateBundle(sql) {
     integrations,
     knowledgeArticles: articleRows.map((row) => row.payload || {}).filter((item) => item.id),
     knowledgeChatSessions: Array.isArray(settings.knowledgeChatSessions) ? settings.knowledgeChatSessions : [],
-    commercialSettings
+    commercialSettings,
+    pipelineFrontSettings
   };
 }
 
@@ -5853,6 +5855,12 @@ function normalizeCommercialSettingsPayload(settings = {}) {
     sessionTimeoutMinutes: Number.isFinite(sessionTimeoutMinutes)
       ? Math.min(240, Math.max(1, sessionTimeoutMinutes))
       : 15
+  };
+}
+
+function normalizePipelineFrontSettings(settings = {}) {
+  return {
+    mobileFiltersCollapsed: settings.mobileFiltersCollapsed !== false
   };
 }
 
@@ -6815,6 +6823,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
     url.pathname.startsWith("/api/integrations/meta/") ||
     url.pathname.startsWith("/api/integrations/email/") ||
     url.pathname === "/api/commercial-settings" ||
+    url.pathname === "/api/pipeline-front-settings" ||
     url.pathname === "/api/knowledge" ||
     url.pathname.startsWith("/api/knowledge/") ||
     url.pathname === "/api/projects" ||
@@ -6852,6 +6861,15 @@ async function fastStructuredSettingsRoutes(req, res, url) {
         sessionTimeoutMinutes: commercialSettings.sessionTimeoutMinutes
       });
       return sendJson(res, 200, { commercialSettings, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/pipeline-front-settings" && method === "PUT") {
+      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const body = await readBody(req);
+      const pipelineFrontSettings = normalizePipelineFrontSettings(body);
+      await saveStructuredSetting(sql, "pipelineFrontSettings", pipelineFrontSettings);
+      await structuredAudit(user, "UPDATE_PIPELINE_FRONT_SETTINGS", pipelineFrontSettings);
+      return sendJson(res, 200, { pipelineFrontSettings, dataSources: { action: "structured" } });
     }
 
     if (url.pathname === "/api/integrations/meta/import-lead" && method === "POST") {
@@ -7991,6 +8009,7 @@ async function fastStructuredStateResponse(req, res, url) {
       baseSources,
       permissions,
       commercialSettings,
+      pipelineFrontSettings,
       integrations,
       knowledgeArticles,
       knowledgeChatSessions,
@@ -8013,6 +8032,7 @@ async function fastStructuredStateResponse(req, res, url) {
       knowledgeArticles,
       knowledgeChatSessions,
       commercialSettings,
+      pipelineFrontSettings,
       levFinance: {
         settings: settings.levFinanceSettings || {},
         sales: saleRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit),
@@ -8061,6 +8081,7 @@ async function fastStructuredStateResponse(req, res, url) {
         presence: redisEnabled() ? "redis" : "structured"
       },
       commercialSettings: stateDb.commercialSettings,
+      pipelineFrontSettings: stateDb.pipelineFrontSettings,
       backupSettings: canManageSettings(user) ? normalizeBackupSettings(settings.backupSettings || {}) : null,
       levFinance: (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? publicLevFinance(stateDb) : null
     });

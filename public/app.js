@@ -55,6 +55,7 @@ const state = {
   samEvents: [],
   levFinance: null,
   commercialSettings: {},
+  pipelineFrontSettings: { mobileFiltersCollapsed: true },
   levMauadEmailPreview: false,
   structuredDbDiagnostics: null,
   dataSources: {},
@@ -106,6 +107,7 @@ const state = {
   salesReportProject: "TODOS",
   salesReportMode: "chart",
   mobileNavOpen: false,
+  mobileFiltersOpen: false,
   lastAccessLogKey: "",
   creatingLead: false,
   editingOwnProfile: false,
@@ -700,6 +702,7 @@ function syncRouteFromLocation() {
 }
 
 function routeTo(view, leadId = null, options = {}) {
+  state.mobileFiltersOpen = false;
   state.view = view;
   state.leadId = leadId;
   state.selectedOpportunityId = view === "lead" ? options.opportunityId || "" : "";
@@ -1469,6 +1472,7 @@ async function loadState() {
   state.fupLeadLog = data.fupLeadLog || [];
   state.levFinance = data.levFinance || null;
   state.commercialSettings = data.commercialSettings || {};
+  state.pipelineFrontSettings = data.pipelineFrontSettings || { mobileFiltersCollapsed: true };
   resetInactivityTimer();
   state.backupSettings = data.backupSettings || state.backupSettings || null;
   state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
@@ -1604,6 +1608,25 @@ function navButton(view, icon, label) {
   return `<button class="${state.view === view ? "active" : ""}" data-view="${view}" title="${label}"><span>${icon}</span>${label}</button>`;
 }
 
+function mobileQuickButton(view, icon, label, targetView = view) {
+  if (!allowedViews().includes(targetView)) return "";
+  const active = view !== "home" && state.view === targetView;
+  return `<button type="button" class="${active ? "active" : ""}" data-mobile-quick-view="${escapeHtml(targetView)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><span aria-hidden="true">${icon}</span></button>`;
+}
+
+function renderMobileQuickNav() {
+  return `
+    <nav class="mobile-quick-nav" aria-label="Acesso rápido">
+      ${mobileQuickButton("home", "⌂", "Início", "kanban")}
+      ${mobileQuickButton("kanban", "▦", "Kanban")}
+      ${mobileQuickButton("availability", "▩", "Disponibilidade")}
+      ${mobileQuickButton("dashboard", "◫", "Dashboard")}
+      ${mobileQuickButton("knowledge", "?", "Ajuda")}
+      <button type="button" data-mobile-profile title="Meu perfil" aria-label="Meu perfil">${userAvatarHtml(state.user, "mobile-quick-avatar")}</button>
+    </nav>
+  `;
+}
+
 function renderShell(content) {
   const usesLegacyData = Object.values(state.dataSources || {}).includes("legacy");
   app.innerHTML = `
@@ -1657,6 +1680,7 @@ function renderShell(content) {
         </div>
       </section>
     </section>
+    ${renderMobileQuickNav()}
     ${state.creatingLead ? renderCreateLeadModal() : ""}
     ${state.creatingOpportunityForLeadId ? renderOpportunityModal() : ""}
     ${state.editingOwnProfile ? renderOwnProfileModal() : ""}
@@ -1666,6 +1690,13 @@ function renderShell(content) {
     button.addEventListener("click", () => {
       state.mobileNavOpen = false;
       routeTo(button.dataset.view);
+    });
+  });
+  document.querySelectorAll("[data-mobile-quick-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.mobileNavOpen = false;
+      state.mobileFiltersOpen = false;
+      routeTo(button.dataset.mobileQuickView);
     });
   });
   document.querySelector("[data-mobile-menu]")?.addEventListener("click", () => {
@@ -1686,9 +1717,15 @@ function renderShell(content) {
     state.editingOwnProfile = true;
     renderApp();
   });
+  document.querySelector("[data-mobile-profile]")?.addEventListener("click", () => {
+    state.profilePhotoDraft = null;
+    state.editingOwnProfile = true;
+    renderApp();
+  });
   document.querySelector("#logout").addEventListener("click", async () => {
     clearInactivityTimer();
     stopPresencePolling();
+    resetSessionFilters();
     state.user = null;
     await api("/api/logout", { method: "POST" });
     history.pushState({}, "", "/login");
@@ -1732,6 +1769,34 @@ function renderOwnProfileModal() {
       </section>
     </div>
   `;
+}
+
+function resetSessionFilters() {
+  state.search = "";
+  state.favoritesOnly = false;
+  state.projectFilters = [];
+  state.brokerFilters = [];
+  state.tagFilters = [];
+  state.frequencyFilters = [];
+  state.dateFilterStart = "";
+  state.dateFilterEnd = "";
+  state.baseSource = "TODOS";
+  state.dashboardStart = "";
+  state.dashboardEnd = "";
+  state.dashboardProject = "TODOS";
+  state.mobileFiltersOpen = false;
+}
+
+function appliedPageFilterCount() {
+  return [
+    state.search,
+    state.favoritesOnly,
+    state.projectFilters.length,
+    state.brokerFilters.length,
+    state.tagFilters.length,
+    state.frequencyFilters.length,
+    state.dateFilterStart || state.dateFilterEnd
+  ].filter(Boolean).length;
 }
 
 function bindOwnProfileModal() {
@@ -1796,12 +1861,18 @@ function bindOwnProfileModal() {
 function renderViewHead(title, subtitle = "", options = {}) {
   const showAddLead = Boolean(options.addLead && canCreateLeads());
   const pipelineFilters = options.pipelineFilters ? renderPipelineFilterControls() : "";
+  const appliedFilters = appliedPageFilterCount();
+  const mobileCollapsed = state.pipelineFrontSettings?.mobileFiltersCollapsed !== false;
   const filters = options.filters ? `
-    <div class="page-filters ${showAddLead ? "with-add-lead" : ""}">
-      ${pipelineFilters}
-      <input id="pageSearch" value="${escapeHtml(state.search)}" placeholder="Buscar lead, telefone, fase ou corretor">
-      <button id="pageFavoriteToggle" class="${state.favoritesOnly ? "primary" : ""}" title="Filtrar favoritos">★</button>
-      ${showAddLead ? '<button id="addLeadButton" class="primary add-lead-button">Adicionar Lead</button>' : ""}
+    <button type="button" class="mobile-filter-toggle" data-mobile-filters-open aria-label="Abrir filtros" title="Filtros"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4 2v-8L3 5Z"></path></svg>${appliedFilters ? `<strong>(${appliedFilters})</strong>` : ""}</button>
+    <div class="mobile-filter-popover ${mobileCollapsed ? "mobile-collapsed" : "mobile-expanded"} ${state.mobileFiltersOpen ? "open" : ""}" data-mobile-filter-popover>
+      <div class="mobile-filter-panel-head"><strong>Filtros${appliedFilters ? ` (${appliedFilters})` : ""}</strong><button type="button" data-mobile-filters-close aria-label="Fechar filtros">×</button></div>
+      <div class="page-filters ${showAddLead ? "with-add-lead" : ""}">
+        ${pipelineFilters}
+        <input id="pageSearch" value="${escapeHtml(state.search)}" placeholder="Buscar lead, telefone, fase ou corretor">
+        <button id="pageFavoriteToggle" class="${state.favoritesOnly ? "primary" : ""}" title="Filtrar favoritos">★</button>
+        ${showAddLead ? '<button id="addLeadButton" class="primary add-lead-button">Adicionar Lead</button>' : ""}
+      </div>
     </div>
   ` : "";
   const actions = options.actions ? `<div class="view-head-actions">${options.actions}</div>` : "";
@@ -2599,6 +2670,19 @@ async function refreshSearchView(view, sequence, snapshot) {
 }
 
 function bindPageFilters() {
+  document.querySelector("[data-mobile-filters-open]")?.addEventListener("click", () => {
+    state.mobileFiltersOpen = true;
+    document.querySelector("[data-mobile-filter-popover]")?.classList.add("open");
+  });
+  document.querySelector("[data-mobile-filters-close]")?.addEventListener("click", () => {
+    state.mobileFiltersOpen = false;
+    document.querySelector("[data-mobile-filter-popover]")?.classList.remove("open");
+  });
+  document.querySelector("[data-mobile-filter-popover]")?.addEventListener("click", (event) => {
+    if (event.target !== event.currentTarget) return;
+    state.mobileFiltersOpen = false;
+    event.currentTarget.classList.remove("open");
+  });
   const search = document.querySelector("#pageSearch");
   const favoriteToggle = document.querySelector("#pageFavoriteToggle");
   const addLeadButton = document.querySelector("#addLeadButton");
@@ -4622,6 +4706,7 @@ function availableSettingsGroups() {
         ...(canManagePipelineSettings() ? [{ id: "availabilityStatuses", label: "Status disponibilidade" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "architectureOptions", label: "Arquitetura" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "typologyOptions", label: "Tipologia" }] : []),
+        ...(canManagePipelineSettings() ? [{ id: "pipelineFront", label: "Front" }] : []),
         ...(canManageCommercialSettings() ? [{ id: "commercial", label: "Configurações comerciais" }] : [])
       ]
     },
@@ -4701,7 +4786,7 @@ function settingsLayout(content) {
 
 function renderSettings() {
   if (["integrations", "logs", "knowledge", "backup", "structuredDb"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
-  if (["statuses", "tags", "projects", "availabilityStatuses", "architectureOptions", "typologyOptions", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
+  if (["statuses", "tags", "projects", "availabilityStatuses", "architectureOptions", "typologyOptions", "pipelineFront", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
   if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "commercial" && !canManageCommercialSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) {
@@ -4717,6 +4802,7 @@ function renderSettings() {
   if (state.settingsTab === "availabilityStatuses") return renderAvailabilityStatusSettings();
   if (state.settingsTab === "architectureOptions") return renderAvailabilityOptionSettings("architecture");
   if (state.settingsTab === "typologyOptions") return renderAvailabilityOptionSettings("typology");
+  if (state.settingsTab === "pipelineFront") return renderPipelineFrontSettings();
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
   if (state.settingsTab === "commercial") return renderCommercialSettings();
   if (state.settingsTab === "backup") return renderBackupSettings();
@@ -8212,6 +8298,42 @@ function renderAvailabilityOptionSettings(kind) {
     });
     state.availabilitySettings = data.availabilitySettings || state.availabilitySettings;
     await loadState();
+    renderSettings();
+  });
+}
+
+function renderPipelineFrontSettings() {
+  const collapsed = state.pipelineFrontSettings?.mobileFiltersCollapsed !== false;
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Front mobile</h2>
+          <p class="muted-copy">Define como os filtros das telas do pipeline aparecem em celulares.</p>
+        </div>
+      </div>
+      <form id="pipelineFrontSettingsForm" class="form-grid editor compact-editor">
+        ${state.settingsNotice ? `<div class="success settings-notice field full">${escapeHtml(state.settingsNotice)}</div>` : ""}
+        <div class="field full">
+          <label>Exibição dos filtros no mobile</label>
+          <select name="mobileFilterMode">
+            <option value="collapsed" ${collapsed ? "selected" : ""}>Filtro colapsado (ícone e popup)</option>
+            <option value="open" ${!collapsed ? "selected" : ""}>Filtro aberto</option>
+          </select>
+        </div>
+        <div class="field full"><button class="primary" type="submit">Salvar</button></div>
+      </form>
+    </section>
+  `);
+  document.querySelector("#pipelineFrontSettingsForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const data = await api("/api/pipeline-front-settings", {
+      method: "PUT",
+      body: JSON.stringify({ mobileFiltersCollapsed: form.get("mobileFilterMode") === "collapsed" })
+    });
+    state.pipelineFrontSettings = data.pipelineFrontSettings || state.pipelineFrontSettings;
+    state.settingsNotice = "Configuração do front mobile salva.";
     renderSettings();
   });
 }
