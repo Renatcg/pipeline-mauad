@@ -106,6 +106,11 @@ const state = {
   salesReportMonth: "",
   salesReportProject: "TODOS",
   salesReportMode: "chart",
+  marketingTab: "actions",
+  marketingSelectedActionId: "action-1",
+  marketingQuoteSelections: { "action-1": "quote-2" },
+  marketingApprovedActions: [],
+  marketingEmailPreview: "",
   mobileNavOpen: false,
   mobileFiltersOpen: false,
   lastAccessLogKey: "",
@@ -137,15 +142,15 @@ const state = {
 };
 
 const profileAccess = {
-  "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
-  "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
+  "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "finance", "settings", "knowledge"],
+  "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "settings", "knowledge"],
   "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
-  Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "kanban", "knowledge"],
+  Diretoria: ["dashboard", "salesReport", "marketing", "sheet", "odysseia", "kanban", "knowledge"],
   Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
-  "Gerente Financeiro": ["finance", "settings", "knowledge"],
+  "Gerente Financeiro": ["marketing", "finance", "settings", "knowledge"],
   "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
-  "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
-  "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"]
+  "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"],
+  "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"]
 };
 
 const routeByView = {
@@ -155,6 +160,7 @@ const routeByView = {
   odysseia: "/bases",
   dashboard: "/dashboard",
   salesReport: "/relatorio-comercial",
+  marketing: "/marketing",
   finance: "/financeiro-lev",
   settings: "/configuracoes",
   knowledge: "/ajuda"
@@ -168,6 +174,7 @@ const viewByRoute = {
   "/bases": "odysseia",
   "/dashboard": "dashboard",
   "/relatorio-comercial": "salesReport",
+  "/marketing": "marketing",
   "/financeiro-lev": "finance",
   "/configuracoes": "settings",
   "/ajuda": "knowledge"
@@ -402,6 +409,7 @@ function allowedViews() {
     odysseia: "screen:bases",
     dashboard: "screen:dashboard",
     salesReport: "screen:salesReport",
+    marketing: "screen:marketing",
     finance: "screen:finance",
     settings: "screen:settings",
     knowledge: "screen:knowledge"
@@ -728,6 +736,7 @@ function currentViewLabel() {
     odysseia: "Bases",
     dashboard: "Dashboard",
     salesReport: "Relatório Comercial",
+    marketing: "Marketing",
     finance: "Financeiro Lev",
     settings: "Configurações",
     knowledge: "Ajuda",
@@ -1652,6 +1661,7 @@ function renderShell(content) {
             ${navButton("odysseia", "◎", "Bases")}
             ${navButton("dashboard", "◫", "Dashboard")}
             ${navButton("salesReport", "▥", "Relatório Comercial")}
+            ${navButton("marketing", "◎", "Marketing")}
             ${navButton("finance", "▣", "Financeiro Lev")}
             ${navButton("settings", "⚙", "Configurações")}
             ${navButton("knowledge", "?", "Ajuda")}
@@ -4674,6 +4684,139 @@ function bindSalesReportControls() {
   document.querySelector("[data-print-report]")?.addEventListener("click", (event) => downloadSalesReportPdf(event.currentTarget));
 }
 
+function marketingMockActions() {
+  const firstProject = state.projects?.[0] || "Reserva Guinle";
+  const secondProject = state.projects?.[1] || "Golf Club Resort";
+  return [
+    {
+      id: "action-1",
+      name: "Evento de relacionamento com corretores",
+      project: firstProject,
+      period: "18/09/2026",
+      purpose: "Apresentação de produto e relacionamento com imobiliárias parceiras.",
+      quotes: [
+        { id: "quote-1", supplier: "Experiência Eventos", scope: "Espaço, buffet e equipe", value: 28600, terms: "50% na contratação" },
+        { id: "quote-2", supplier: "Casa Sete Produções", scope: "Produção completa do evento", value: 25300, terms: "30% + saldo após evento" },
+        { id: "quote-3", supplier: "Vértice Live", scope: "Espaço, audiovisual e buffet", value: 27150, terms: "Pagamento em 30 dias" }
+      ]
+    },
+    {
+      id: "action-2",
+      name: "Ação de lançamento regional",
+      project: secondProject,
+      period: "10/10/2026 a 11/10/2026",
+      purpose: "Ativação regional para geração de visitas ao empreendimento.",
+      quotes: [
+        { id: "quote-4", supplier: "Ponto Promo", scope: "Promotores, estrutura e materiais", value: 18400, terms: "Pagamento em 21 dias" },
+        { id: "quote-5", supplier: "Movimento MKT", scope: "Operação completa e relatório", value: 19750, terms: "Pagamento em 30 dias" }
+      ]
+    }
+  ];
+}
+
+function marketingPaymentDate() {
+  const today = localDateOnly(new Date());
+  const schedule = state.levFinance?.settings?.paymentSchedule || [];
+  const match = schedule.find((item) => today >= item.start && today <= item.end);
+  return match?.paymentDate || "2026-09-04";
+}
+
+function marketingMonthlyMock() {
+  const months = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  const budget = [42000, 38000, 51000, 46000, 53500, 49000, 58000, 62500, 72000, 68000, 61000, 56000];
+  const actual = [39800, 41200, 48600, 45150, 52000, 47700, 60100, 57800, 0, 0, 0, 0];
+  return { months, budget, actual };
+}
+
+function renderMarketingBudgetMock() {
+  const data = marketingMonthlyMock();
+  return `
+    <section class="panel marketing-panel">
+      <div class="panel-head"><div><h2>Fluxo mensal — 2026</h2><p class="muted-copy">Visão inicial de Orçado × Realizado, sem detalhamento dos lançamentos.</p></div></div>
+      <div class="table-wrap marketing-cashflow"><table>
+        <thead><tr><th>Movimento</th>${data.months.map((month) => `<th>${month}</th>`).join("")}<th>Total</th></tr></thead>
+        <tbody>
+          <tr><th>Orçado</th>${data.budget.map((value) => `<td>${escapeHtml(brl(value))}</td>`).join("")}<td><strong>${escapeHtml(brl(data.budget.reduce((sum, value) => sum + value, 0)))}</strong></td></tr>
+          <tr><th>Realizado</th>${data.actual.map((value) => `<td>${value ? escapeHtml(brl(value)) : "-"}</td>`).join("")}<td><strong>${escapeHtml(brl(data.actual.reduce((sum, value) => sum + value, 0)))}</strong></td></tr>
+        </tbody>
+      </table></div>
+    </section>
+  `;
+}
+
+function renderMarketingActionsMock() {
+  const actions = marketingMockActions();
+  const selected = actions.find((item) => item.id === state.marketingSelectedActionId) || actions[0];
+  const selectedQuoteId = state.marketingQuoteSelections[selected.id] || "";
+  const approved = state.marketingApprovedActions.includes(selected.id);
+  return `
+    <section class="marketing-action-layout">
+      <div class="marketing-action-list">
+        <div class="panel-head"><div><h2>Ações e eventos</h2><p class="muted-copy">Orçamentos preparados para análise e aprovação.</p></div><button class="primary" type="button" data-marketing-mock-notice>Nova ação</button></div>
+        ${actions.map((action) => `<button type="button" class="marketing-action-card ${selected.id === action.id ? "active" : ""}" data-marketing-action="${action.id}"><strong>${escapeHtml(action.name)}</strong><span>${escapeHtml(action.project)} · ${escapeHtml(action.period)}</span><em>${state.marketingApprovedActions.includes(action.id) ? "Aprovada" : "Em cotação"}</em></button>`).join("")}
+      </div>
+      <section class="panel marketing-action-detail">
+        <div class="panel-head"><div><span class="mock-chip">Mockup</span><h2>${escapeHtml(selected.name)}</h2><p class="muted-copy">${escapeHtml(selected.project)} · ${escapeHtml(selected.period)}</p></div></div>
+        <p>${escapeHtml(selected.purpose)}</p>
+        <h3>Quadro de cotações</h3>
+        <div class="table-wrap"><table><thead><tr><th>Escolha</th><th>Fornecedor</th><th>Escopo</th><th>Valor</th><th>Condição</th></tr></thead><tbody>
+          ${selected.quotes.map((quote) => `<tr class="${selectedQuoteId === quote.id ? "selected-row" : ""}"><td><input type="radio" name="marketingWinner" value="${quote.id}" ${selectedQuoteId === quote.id ? "checked" : ""}></td><td><strong>${escapeHtml(quote.supplier)}</strong></td><td>${escapeHtml(quote.scope)}</td><td>${escapeHtml(brl(quote.value))}</td><td>${escapeHtml(quote.terms)}</td></tr>`).join("")}
+        </tbody></table></div>
+        <div class="marketing-approval-bar"><div><span>Fornecedor selecionado</span><strong>${escapeHtml(selected.quotes.find((quote) => quote.id === selectedQuoteId)?.supplier || "Nenhum")}</strong></div><button class="primary" type="button" data-marketing-approve ${!selectedQuoteId || approved ? "disabled" : ""}>${approved ? "Ação aprovada" : "Aprovar fornecedor"}</button></div>
+      </section>
+    </section>
+  `;
+}
+
+function renderMarketingProvisionMock() {
+  const actions = marketingMockActions().filter((action) => state.marketingQuoteSelections[action.id]);
+  const paymentDate = marketingPaymentDate();
+  return `
+    <section class="panel marketing-panel">
+      <div class="panel-head"><div><h2>Aprovisionamento</h2><p class="muted-copy">Prévia do fluxo entre Marketing, Financeiro Mauad e fornecedor. Nenhum e-mail será enviado nesta versão.</p></div></div>
+      <div class="marketing-provision-list">
+        ${actions.map((action) => {
+          const quote = action.quotes.find((item) => item.id === state.marketingQuoteSelections[action.id]);
+          return `<article class="marketing-provision-card"><div><span>${escapeHtml(action.project)}</span><h3>${escapeHtml(action.name)}</h3><p>${escapeHtml(quote?.supplier || "Fornecedor não selecionado")} · ${escapeHtml(brl(quote?.value || 0))}</p></div><dl><div><dt>Solicitação</dt><dd>${escapeHtml(new Date().toLocaleDateString("pt-BR"))}</dd></div><div><dt>Pagamento previsto</dt><dd>${escapeHtml(dateLabel(paymentDate))}</dd></div></dl><div class="row-actions"><button type="button" data-marketing-email="finance:${action.id}">Prévia Financeiro</button><button type="button" data-marketing-email="supplier:${action.id}">Prévia Fornecedor</button></div></article>`;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderMarketingEmailMock() {
+  if (!state.marketingEmailPreview) return "";
+  const [audience, actionId] = state.marketingEmailPreview.split(":");
+  const action = marketingMockActions().find((item) => item.id === actionId);
+  const quote = action?.quotes.find((item) => item.id === state.marketingQuoteSelections[actionId]);
+  if (!action || !quote) return "";
+  const paymentDate = dateLabel(marketingPaymentDate());
+  const finance = audience === "finance";
+  return `<div class="modal-backdrop" data-close-marketing-email><section class="modal-card marketing-email-modal"><div class="panel-head"><div><span class="mock-chip">Prévia — não será enviada</span><h2>${finance ? "Aprovisionamento Financeiro Mauad" : "Orientações ao fornecedor"}</h2></div><button class="icon" type="button" data-close-marketing-email>×</button></div><div class="email-preview-fields"><div><span>Assunto</span><strong>${finance ? "Solicitação de aprovisionamento" : "Contratação e orientações para pagamento"} — ${escapeHtml(action.name)}</strong></div><div><span>Pagamento previsto</span><strong>${escapeHtml(paymentDate)}</strong></div></div><div class="email-preview-body"><p>Prezados,</p>${finance ? `<p>Solicitamos o aprovisionamento de <strong>${escapeHtml(brl(quote.value))}</strong> para a ação ${escapeHtml(action.name)}, do empreendimento ${escapeHtml(action.project)}, com pagamento previsto em ${escapeHtml(paymentDate)}.</p><p>Fornecedor selecionado: ${escapeHtml(quote.supplier)}.</p>` : `<p>Confirmamos a seleção da ${escapeHtml(quote.supplier)} para a ação ${escapeHtml(action.name)}, no valor de ${escapeHtml(brl(quote.value))}.</p><p>Para recebimento, encaminhe a documentação cadastral e a Nota Fiscal conforme as orientações da Mauad. A previsão de pagamento é ${escapeHtml(paymentDate)}, condicionada ao envio correto dos documentos.</p>`}<p>Atenciosamente,<br>Marketing Mauad</p></div><button class="primary full-width" type="button" data-close-marketing-email>Fechar prévia</button></section></div>`;
+}
+
+function renderMarketingView() {
+  const tabs = [
+    ["budget", "Orçado × Realizado"],
+    ["actions", "Ações e eventos"],
+    ["provision", "Aprovisionamento"]
+  ];
+  renderShell(`
+    ${renderViewHead("Marketing", "Gerenciador de orçamento, ações e aprovisionamento")}
+    <div class="mock-banner"><strong>Protótipo navegável</strong><span>Os dados são demonstrativos e nenhuma alteração ou e-mail é gravado.</span></div>
+    <div class="tabs marketing-tabs">${tabs.map(([id, label]) => `<button type="button" class="${state.marketingTab === id ? "active" : ""}" data-marketing-tab="${id}">${label}</button>`).join("")}</div>
+    ${state.marketingTab === "budget" ? renderMarketingBudgetMock() : state.marketingTab === "provision" ? renderMarketingProvisionMock() : renderMarketingActionsMock()}
+    ${renderMarketingEmailMock()}
+  `);
+  document.querySelectorAll("[data-marketing-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingTab = button.dataset.marketingTab; renderMarketingView(); }));
+  document.querySelectorAll("[data-marketing-action]").forEach((button) => button.addEventListener("click", () => { state.marketingSelectedActionId = button.dataset.marketingAction; renderMarketingView(); }));
+  document.querySelectorAll('input[name="marketingWinner"]').forEach((radio) => radio.addEventListener("change", () => { state.marketingQuoteSelections[state.marketingSelectedActionId] = radio.value; renderMarketingView(); }));
+  document.querySelector("[data-marketing-approve]")?.addEventListener("click", () => { if (!state.marketingApprovedActions.includes(state.marketingSelectedActionId)) state.marketingApprovedActions.push(state.marketingSelectedActionId); renderMarketingView(); });
+  document.querySelectorAll("[data-marketing-email]").forEach((button) => button.addEventListener("click", () => { state.marketingEmailPreview = button.dataset.marketingEmail; renderMarketingView(); }));
+  document.querySelectorAll("[data-close-marketing-email]").forEach((element) => element.addEventListener("click", (event) => { if (event.target !== element && element.classList.contains("modal-backdrop")) return; state.marketingEmailPreview = ""; renderMarketingView(); }));
+  document.querySelector("[data-marketing-mock-notice]")?.addEventListener("click", () => alert("No produto final, este botão abrirá o cadastro de uma nova ação ou evento."));
+}
+
 async function downloadSalesReportPdf(button) {
   const report = salesReportPayload();
   try {
@@ -4897,6 +5040,7 @@ function permissionResources() {
     { id: "screen:bases", label: "Bases", type: "screen" },
     { id: "screen:dashboard", label: "Dashboard", type: "screen" },
     { id: "screen:salesReport", label: "Relatório Comercial", type: "screen" },
+    { id: "screen:marketing", label: "Marketing", type: "screen" },
     { id: "screen:finance", label: "Financeiro Lev", type: "screen" },
     { id: "screen:settings", label: "Configurações", type: "screen" },
     { id: "screen:knowledge", label: "Ajuda", type: "screen" },
@@ -9468,6 +9612,7 @@ function renderApp() {
   if (state.view === "odysseia") return renderLeadBases();
   if (state.view === "dashboard") return renderDashboard();
   if (state.view === "salesReport") return renderSalesReportView();
+  if (state.view === "marketing") return renderMarketingView();
   if (state.view === "finance") return renderLevFinanceView();
   if (state.view === "settings") return renderSettings();
   if (state.view === "knowledge") return renderKnowledgeView();

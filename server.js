@@ -30,6 +30,7 @@ const PERMISSION_SCREENS = [
   { id: "screen:bases", label: "Bases", view: "odysseia" },
   { id: "screen:dashboard", label: "Dashboard", view: "dashboard" },
   { id: "screen:salesReport", label: "Relatório Comercial", view: "salesReport" },
+  { id: "screen:marketing", label: "Marketing", view: "marketing" },
   { id: "screen:finance", label: "Financeiro Lev", view: "finance" },
   { id: "screen:settings", label: "Configurações", view: "settings" },
   { id: "screen:knowledge", label: "Ajuda", view: "knowledge" }
@@ -61,25 +62,25 @@ function basePermissionId(source) {
 
 function defaultScreenPermission(role, screen) {
   const viewAccess = {
-    "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
-    "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "settings", "knowledge"],
+    "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "finance", "settings", "knowledge"],
+    "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "settings", "knowledge"],
     "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
-    Diretoria: ["dashboard", "salesReport", "sheet", "odysseia", "kanban", "knowledge"],
+    Diretoria: ["dashboard", "salesReport", "marketing", "sheet", "odysseia", "kanban", "knowledge"],
     Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
-    "Gerente Financeiro": ["finance", "settings", "knowledge"],
+    "Gerente Financeiro": ["marketing", "finance", "settings", "knowledge"],
     "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
-    "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
-    "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"]
+    "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"],
+    "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"]
   };
   const actionAccess = {
-    "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "finance", "settings", "knowledge"],
-    "Head Comercial": ["kanban", "sheet", "odysseia", "settings", "knowledge"],
+    "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "finance", "settings", "knowledge"],
+    "Head Comercial": ["kanban", "sheet", "odysseia", "marketing", "settings", "knowledge"],
     "Supervisor Comercial": ["kanban", "sheet", "odysseia", "knowledge"],
     Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
-    "Gerente Financeiro": ["finance", "settings", "knowledge"],
+    "Gerente Financeiro": ["marketing", "finance", "settings", "knowledge"],
     "Auxiliar Financeiro": ["finance", "knowledge"],
     "Gestor de Tráfego": ["knowledge"],
-    "Coordenador de Marketing": ["knowledge"]
+    "Coordenador de Marketing": ["marketing", "knowledge"]
   };
   const canAccess = (viewAccess[role] || []).includes(screen.view);
   return permissionCell(canAccess, canAccess && (actionAccess[role] || []).includes(screen.view));

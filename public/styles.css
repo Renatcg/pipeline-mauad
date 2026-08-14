@@ -4951,6 +4951,208 @@ th {
   font-size: 11px;
 }
 
+.mock-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid #f5cf7a;
+  border-radius: 9px;
+  background: #fff8e7;
+  color: #7a4b00;
+}
+
+.mock-banner span {
+  color: #8a6119;
+}
+
+.mock-chip {
+  display: inline-flex;
+  margin-bottom: 5px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #fff1cc;
+  color: #855200;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.marketing-tabs {
+  margin-bottom: 14px;
+}
+
+.marketing-panel,
+.marketing-action-detail {
+  padding: 16px;
+}
+
+.marketing-cashflow table {
+  min-width: 1360px;
+}
+
+.marketing-cashflow th,
+.marketing-cashflow td {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.marketing-cashflow th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  text-align: left;
+  background: #fff;
+}
+
+.marketing-action-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, .72fr) minmax(0, 1.8fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.marketing-action-list {
+  display: grid;
+  gap: 8px;
+}
+
+.marketing-action-card {
+  min-height: 104px;
+  display: grid;
+  justify-items: start;
+  align-content: center;
+  gap: 5px;
+  padding: 13px;
+  text-align: left;
+}
+
+.marketing-action-card.active {
+  border-color: var(--brand);
+  background: #edf8f4;
+  box-shadow: 0 0 0 1px var(--brand);
+}
+
+.marketing-action-card span,
+.marketing-action-card em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.marketing-action-card em {
+  color: var(--brand);
+  font-weight: 850;
+}
+
+.marketing-action-detail h3 {
+  margin: 18px 0 8px;
+}
+
+.marketing-approval-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 9px;
+  background: #f6f8fa;
+}
+
+.marketing-approval-bar div {
+  display: grid;
+  gap: 2px;
+}
+
+.marketing-approval-bar span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.marketing-provision-list {
+  display: grid;
+  gap: 10px;
+}
+
+.marketing-provision-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(230px, .8fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.marketing-provision-card h3,
+.marketing-provision-card p {
+  margin: 3px 0;
+}
+
+.marketing-provision-card > div > span {
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.marketing-provision-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin: 0;
+}
+
+.marketing-provision-card dl div {
+  display: grid;
+}
+
+.marketing-provision-card dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.marketing-provision-card dd {
+  margin: 0;
+  font-weight: 850;
+}
+
+.marketing-email-modal {
+  width: min(820px, 100%);
+}
+
+@media (max-width: 920px) {
+  .mock-banner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .marketing-action-layout,
+  .marketing-provision-card {
+    grid-template-columns: 1fr;
+  }
+
+  .marketing-action-list .panel-head,
+  .marketing-approval-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .marketing-tabs {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .marketing-tabs button {
+    flex: 0 0 auto;
+  }
+}
+
 .unit-editor small {
   display: block;
   margin-top: 6px;
