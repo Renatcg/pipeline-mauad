@@ -2367,9 +2367,10 @@ function renderAvailability() {
         <section class="availability-projects">${projectCards || '<p class="empty">Cadastre empreendimentos para montar o quadro.</p>'}</section>
         ${tables || '<section class="panel empty">Cadastre blocos para montar o quadro deste empreendimento.</section>'}
       </div>
-      <aside class="availability-detail">
+      ${selectedUnit ? '<div class="availability-mobile-backdrop" data-close-availability-detail></div>' : ""}
+      <aside class="availability-detail ${selectedUnit ? "has-unit" : ""}">
         ${selectedUnit ? `
-          <h2>${escapeHtml(selectedUnit.unit)}</h2>
+          <div class="availability-detail-title"><h2>${escapeHtml(selectedUnit.unit)}</h2><button type="button" data-close-availability-detail aria-label="Fechar detalhes">×</button></div>
           ${selectedUnit.virtual ? '<p class="chip chip-warning">Unidade prevista pelo bloco</p>' : ""}
           <p class="muted-copy">${escapeHtml(selectedUnit.project)} · ${escapeHtml(availabilityBlockLabel(selectedUnit.project, selectedUnit.block))}</p>
           <dl class="unit-detail-list">
@@ -2410,6 +2411,12 @@ function renderAvailability() {
   });
   document.querySelectorAll("[data-availability-status-chip]").forEach((button) => {
     button.addEventListener("click", () => button.classList.toggle("expanded"));
+  });
+  document.querySelectorAll("[data-close-availability-detail]").forEach((element) => {
+    element.addEventListener("click", () => {
+      state.selectedAvailabilityUnitId = "";
+      renderAvailability();
+    });
   });
   document.querySelectorAll("[data-masterplan-zoom]").forEach((button) => {
     button.addEventListener("click", () => {
