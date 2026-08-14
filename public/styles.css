@@ -4111,6 +4111,8 @@ th {
   .login-intro img {
     width: min(210px, 62vw);
     margin: 0;
+    animation: mobile-login-logo-in .78s cubic-bezier(.2, .8, .2, 1) both;
+    filter: drop-shadow(0 12px 26px rgba(255, 255, 255, 0.08));
   }
 
   .login-intro span {
@@ -4132,6 +4134,7 @@ th {
     border-radius: 28px 28px 0 0;
     background: #fff;
     box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.22);
+    animation: mobile-login-panel-in .62s .16s cubic-bezier(.2, .8, .2, 1) both;
   }
 
   .login-box {
@@ -4169,6 +4172,41 @@ th {
     margin-top: 10px;
     border-radius: 13px;
     font-size: 16px;
+  }
+
+  @keyframes mobile-login-logo-in {
+    from {
+      opacity: 0;
+      transform: translateY(10px) scale(.88);
+      filter: drop-shadow(0 0 0 rgba(255, 255, 255, 0));
+    }
+    65% {
+      opacity: 1;
+      transform: translateY(0) scale(1.035);
+      filter: drop-shadow(0 0 20px rgba(255, 255, 255, .18));
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes mobile-login-panel-in {
+    from {
+      opacity: 0;
+      transform: translateY(34px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .login-intro img,
+    .login-panel {
+      animation: none;
+    }
   }
 
   .shell {
