@@ -5860,7 +5860,9 @@ function normalizeCommercialSettingsPayload(settings = {}) {
 
 function normalizePipelineFrontSettings(settings = {}) {
   return {
-    mobileFiltersCollapsed: settings.mobileFiltersCollapsed !== false
+    mobileFiltersCollapsed: settings.mobileFiltersCollapsed !== false,
+    mobileFooterStyle: settings.mobileFooterStyle === "full" ? "full" : "floating",
+    mobileFooterTheme: settings.mobileFooterTheme === "light" ? "light" : "dark"
   };
 }
 

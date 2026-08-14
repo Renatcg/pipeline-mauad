@@ -4068,6 +4068,18 @@ th {
 }
 
 @media (max-width: 920px) {
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    overflow-x: hidden;
+    overflow-y: auto;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+
   .login-page {
     padding: 10px;
     align-items: start;
@@ -4253,6 +4265,24 @@ th {
     backdrop-filter: blur(14px);
   }
 
+  .mobile-quick-nav.mobile-quick-full {
+    right: 0;
+    bottom: 0;
+    left: 0;
+    min-height: calc(72px + env(safe-area-inset-bottom));
+    padding: 6px 8px max(6px, env(safe-area-inset-bottom));
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 0;
+  }
+
+  .mobile-quick-nav.mobile-quick-light {
+    border-color: rgba(16, 24, 40, 0.14);
+    background: rgba(255, 255, 255, 0.97);
+    box-shadow: 0 -10px 30px rgba(16, 24, 40, 0.14);
+  }
+
   .mobile-quick-nav button {
     min-width: 0;
     min-height: 48px;
@@ -4269,6 +4299,15 @@ th {
   .mobile-quick-nav button.active {
     background: rgba(255, 255, 255, 0.13);
     color: #fff;
+  }
+
+  .mobile-quick-nav.mobile-quick-light button {
+    color: #667085;
+  }
+
+  .mobile-quick-nav.mobile-quick-light button.active {
+    background: #e9f4ef;
+    color: var(--brand-strong);
   }
 
   .mobile-quick-avatar {

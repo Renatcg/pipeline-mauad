@@ -55,7 +55,7 @@ const state = {
   samEvents: [],
   levFinance: null,
   commercialSettings: {},
-  pipelineFrontSettings: { mobileFiltersCollapsed: true },
+  pipelineFrontSettings: { mobileFiltersCollapsed: true, mobileFooterStyle: "floating", mobileFooterTheme: "dark" },
   levMauadEmailPreview: false,
   structuredDbDiagnostics: null,
   dataSources: {},
@@ -1472,7 +1472,7 @@ async function loadState() {
   state.fupLeadLog = data.fupLeadLog || [];
   state.levFinance = data.levFinance || null;
   state.commercialSettings = data.commercialSettings || {};
-  state.pipelineFrontSettings = data.pipelineFrontSettings || { mobileFiltersCollapsed: true };
+  state.pipelineFrontSettings = data.pipelineFrontSettings || { mobileFiltersCollapsed: true, mobileFooterStyle: "floating", mobileFooterTheme: "dark" };
   resetInactivityTimer();
   state.backupSettings = data.backupSettings || state.backupSettings || null;
   state.dataSources = { ...(state.dataSources || {}), ...(data.dataSources || {}) };
@@ -1615,8 +1615,10 @@ function mobileQuickButton(view, icon, label, targetView = view) {
 }
 
 function renderMobileQuickNav() {
+  const footerStyle = state.pipelineFrontSettings?.mobileFooterStyle === "full" ? "full" : "floating";
+  const footerTheme = state.pipelineFrontSettings?.mobileFooterTheme === "light" ? "light" : "dark";
   return `
-    <nav class="mobile-quick-nav" aria-label="Acesso rápido">
+    <nav class="mobile-quick-nav mobile-quick-${footerStyle} mobile-quick-${footerTheme}" aria-label="Acesso rápido">
       ${mobileQuickButton("home", "⌂", "Início", "kanban")}
       ${mobileQuickButton("kanban", "▦", "Kanban")}
       ${mobileQuickButton("availability", "▩", "Disponibilidade")}
@@ -8304,6 +8306,8 @@ function renderAvailabilityOptionSettings(kind) {
 
 function renderPipelineFrontSettings() {
   const collapsed = state.pipelineFrontSettings?.mobileFiltersCollapsed !== false;
+  const footerStyle = state.pipelineFrontSettings?.mobileFooterStyle === "full" ? "full" : "floating";
+  const footerTheme = state.pipelineFrontSettings?.mobileFooterTheme === "light" ? "light" : "dark";
   settingsLayout(`
     <section class="panel">
       <div class="panel-head">
@@ -8321,6 +8325,20 @@ function renderPipelineFrontSettings() {
             <option value="open" ${!collapsed ? "selected" : ""}>Filtro aberto</option>
           </select>
         </div>
+        <div class="field">
+          <label>Aparência do menu fixo</label>
+          <select name="mobileFooterStyle">
+            <option value="floating" ${footerStyle === "floating" ? "selected" : ""}>Flutuante (modelo atual)</option>
+            <option value="full" ${footerStyle === "full" ? "selected" : ""}>Rodapé completo (largura e altura)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Cor do menu fixo</label>
+          <select name="mobileFooterTheme">
+            <option value="dark" ${footerTheme === "dark" ? "selected" : ""}>Escuro</option>
+            <option value="light" ${footerTheme === "light" ? "selected" : ""}>Branco</option>
+          </select>
+        </div>
         <div class="field full"><button class="primary" type="submit">Salvar</button></div>
       </form>
     </section>
@@ -8330,7 +8348,11 @@ function renderPipelineFrontSettings() {
     const form = new FormData(event.currentTarget);
     const data = await api("/api/pipeline-front-settings", {
       method: "PUT",
-      body: JSON.stringify({ mobileFiltersCollapsed: form.get("mobileFilterMode") === "collapsed" })
+      body: JSON.stringify({
+        mobileFiltersCollapsed: form.get("mobileFilterMode") === "collapsed",
+        mobileFooterStyle: form.get("mobileFooterStyle"),
+        mobileFooterTheme: form.get("mobileFooterTheme")
+      })
     });
     state.pipelineFrontSettings = data.pipelineFrontSettings || state.pipelineFrontSettings;
     state.settingsNotice = "Configuração do front mobile salva.";
