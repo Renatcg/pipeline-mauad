@@ -4894,6 +4894,51 @@ th {
   min-height: 104px;
 }
 
+.front-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.front-choice-grid label {
+  position: relative;
+  min-height: 62px;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  padding: 10px 12px 10px 38px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.front-choice-grid label:has(input:checked) {
+  border-color: var(--brand);
+  background: #ecf8f4;
+  box-shadow: 0 0 0 1px var(--brand);
+}
+
+.front-choice-grid input {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  width: 16px;
+  min-height: 16px;
+  margin: -8px 0 0;
+  accent-color: var(--brand);
+}
+
+.front-choice-grid span {
+  color: var(--ink);
+  font-weight: 850;
+}
+
+.front-choice-grid small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .unit-editor small {
   display: block;
   margin-top: 6px;

@@ -8337,24 +8337,24 @@ function renderPipelineFrontSettings() {
         ${state.settingsNotice ? `<div class="success settings-notice field full">${escapeHtml(state.settingsNotice)}</div>` : ""}
         <div class="field full">
           <label>Exibição dos filtros no mobile</label>
-          <select name="mobileFilterMode">
-            <option value="collapsed" ${collapsed ? "selected" : ""}>Filtro colapsado (ícone e popup)</option>
-            <option value="open" ${!collapsed ? "selected" : ""}>Filtro aberto</option>
-          </select>
+          <div class="front-choice-grid">
+            <label><input type="radio" name="mobileFilterMode" value="collapsed" ${collapsed ? "checked" : ""}><span>Filtro colapsado</span><small>Ícone e popup</small></label>
+            <label><input type="radio" name="mobileFilterMode" value="open" ${!collapsed ? "checked" : ""}><span>Filtro aberto</span><small>Controles sempre visíveis</small></label>
+          </div>
         </div>
         <div class="field">
           <label>Aparência do menu fixo</label>
-          <select name="mobileFooterStyle">
-            <option value="floating" ${footerStyle === "floating" ? "selected" : ""}>Flutuante (modelo atual)</option>
-            <option value="full" ${footerStyle === "full" ? "selected" : ""}>Rodapé completo (largura e altura)</option>
-          </select>
+          <div class="front-choice-grid">
+            <label><input type="radio" name="mobileFooterStyle" value="floating" ${footerStyle === "floating" ? "checked" : ""}><span>Flutuante</span><small>Modelo atual</small></label>
+            <label><input type="radio" name="mobileFooterStyle" value="full" ${footerStyle === "full" ? "checked" : ""}><span>Rodapé completo</span><small>Largura total</small></label>
+          </div>
         </div>
         <div class="field">
           <label>Cor do menu fixo</label>
-          <select name="mobileFooterTheme">
-            <option value="dark" ${footerTheme === "dark" ? "selected" : ""}>Escuro</option>
-            <option value="light" ${footerTheme === "light" ? "selected" : ""}>Branco</option>
-          </select>
+          <div class="front-choice-grid">
+            <label><input type="radio" name="mobileFooterTheme" value="dark" ${footerTheme === "dark" ? "checked" : ""}><span>Escuro</span></label>
+            <label><input type="radio" name="mobileFooterTheme" value="light" ${footerTheme === "light" ? "checked" : ""}><span>Branco</span></label>
+          </div>
         </div>
         <div class="field full"><button class="primary" type="submit">Salvar</button></div>
       </form>
