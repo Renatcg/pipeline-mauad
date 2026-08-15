@@ -5809,9 +5809,14 @@ th {
 }
 
 .sml-public-page {
+  position: fixed;
+  inset: 0;
+  overflow: auto;
   min-height: 100vh;
   padding: 32px;
   background: #f2f5f7;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .sml-public-login,
@@ -5851,6 +5856,26 @@ th {
 .sml-public-confirm {
   width: 100%;
   margin-top: 16px;
+}
+
+.sml-public-select-all {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  margin: 2px 0 10px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.sml-public-select-all input,
+.sml-public-checkbox {
+  width: 15px;
+  min-width: 15px;
+  height: 15px;
+  min-height: 15px;
+  margin: 0;
+  padding: 0;
+  border-radius: 3px;
 }
 
 @media (max-width: 720px) {
