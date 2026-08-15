@@ -5459,6 +5459,149 @@ th {
   overflow-y: auto;
 }
 
+.marketing-quote-modal {
+  width: min(680px, 100%);
+}
+
+.marketing-items-qc-wrap {
+  padding-bottom: 110px;
+}
+
+.marketing-items-qc {
+  min-width: 1050px;
+}
+
+.marketing-items-qc th:nth-child(n+4):nth-child(-n+6),
+.marketing-items-qc td:nth-child(n+4):nth-child(-n+6) {
+  width: 180px;
+}
+
+.marketing-quote-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  min-width: 145px;
+}
+
+.marketing-price {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.marketing-price[class*="rank-"]::before {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  content: "";
+}
+
+.marketing-price.rank-low::before {
+  background: #22c55e;
+}
+
+.marketing-price.rank-middle::before {
+  background: #f59e0b;
+}
+
+.marketing-price.rank-high::before {
+  background: #ef4444;
+}
+
+.marketing-quote-cell.is-winner .marketing-price {
+  border-color: #47be75;
+  background: #eaf9ef;
+  color: #176835;
+}
+
+.marketing-quote-actions {
+  position: relative;
+}
+
+.marketing-quote-actions summary {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-content: center;
+  border-radius: 6px;
+  color: #1671d9;
+  cursor: pointer;
+  font-size: 16px;
+  list-style: none;
+}
+
+.marketing-quote-actions summary::-webkit-details-marker {
+  display: none;
+}
+
+.marketing-quote-actions summary:hover,
+.marketing-quote-actions[open] summary {
+  background: #e8f2ff;
+}
+
+.marketing-quote-actions > div {
+  position: absolute;
+  z-index: 35;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 190px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, .18);
+}
+
+.marketing-quote-actions > div button {
+  width: 100%;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.marketing-supplier-hover {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + 8px);
+  left: 0;
+  display: none;
+  width: 260px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 16px 34px rgba(15, 23, 42, .2);
+}
+
+.marketing-quote-cell:hover .marketing-supplier-hover {
+  display: block;
+}
+
+.marketing-supplier-hover p {
+  margin: 6px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.marketing-supplier-hover button {
+  min-height: 30px;
+  color: #1671d9;
+}
+
+.marketing-quote-empty {
+  color: var(--muted);
+}
+
 .marketing-provision-tabs {
   display: flex;
   margin-bottom: 12px;

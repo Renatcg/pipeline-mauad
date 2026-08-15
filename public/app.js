@@ -114,8 +114,11 @@ const state = {
   marketingActivityModalOpen: false,
   marketingAddedActivities: {},
   marketingEditingItemId: "",
+  marketingItemModalMode: "",
+  marketingEditingQuoteId: "",
   marketingProvisionStatus: "pending",
   marketingAddedItemQuotes: {},
+  marketingQuoteEdits: {},
   marketingItemWinnerSelections: { "action-1:item-1": "item-1-q2", "action-1:item-2": "item-2-q1" },
   marketingQuoteSelections: { "action-1": "quote-2" },
   marketingApprovedActions: [],
@@ -4761,7 +4764,7 @@ function marketingMockActions() {
         { id: "act-8", name: "Operação da ação", duration: 2, start: "2026-10-10", end: "2026-10-11", predecessorId: "act-7", linkType: "T-I" }
       ],
       items: [
-        { id: "item-5", activityId: "act-8", type: "Serviço", description: "Equipe de promotores", quantity: 8, unit: "pessoas", quotes: [] },
+        { id: "item-5", activityId: "act-8", type: "Serviço", description: "Equipe de promotores", quantity: 8, unit: "pessoas", quotes: [{ id: "item-5-q1", supplier: "Ponto Promo", value: 18400, attachment: "proposta-ponto-promo.pdf", details: "Equipe completa, supervisão e uniforme inclusos." }, { id: "item-5-q2", supplier: "Movimento MKT", value: 19750, attachment: "proposta-movimento.pdf", details: "Operação, treinamento e relatório pós-evento." }, { id: "item-5-q3", supplier: "Ativa Promoções", value: 17600, attachment: "cotacao-ativa.pdf", details: "Oito promotores e um coordenador por dois dias." }] },
         { id: "item-6", activityId: "act-7", type: "Produto", description: "Banners e sinalização", quantity: 12, unit: "unidades", quotes: [] },
         { id: "item-7", activityId: "act-8", type: "Serviço", description: "Estrutura promocional", quantity: 1, unit: "pacote", quotes: [] }
       ],
@@ -4864,21 +4867,32 @@ function renderMarketingActivityGantt(action, activities = []) {
 }
 
 function marketingItemQuotes(action, item) {
-  return [...(item.quotes || []), ...(state.marketingAddedItemQuotes[`${action.id}:${item.id}`] || [])];
+  return [...(item.quotes || []), ...(state.marketingAddedItemQuotes[`${action.id}:${item.id}`] || [])].map((quote) => ({ ...quote, ...(state.marketingQuoteEdits[quote.id] || {}) }));
 }
 
 function renderMarketingItemEditor(action, item) {
-  const quotes = marketingItemQuotes(action, item);
-  const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`] || "";
-  return `<div class="modal-backdrop" data-close-marketing-item><section class="modal-card marketing-item-modal"><div class="marketing-item-editor"><div class="panel-head"><div><span class="mock-chip">Edição do item</span><h3>${escapeHtml(item.description)}</h3></div><button class="icon" type="button" data-close-marketing-item>×</button></div><form class="form-grid"><div class="field"><label>Tipo</label><select><option ${item.type === "Produto" ? "selected" : ""}>Produto</option><option ${item.type === "Serviço" ? "selected" : ""}>Serviço</option></select></div><div class="field"><label>Descrição</label><input value="${escapeHtml(item.description)}"></div><div class="field"><label>Quantidade</label><input type="number" value="${item.quantity}"></div><div class="field"><label>Unidade</label><input value="${escapeHtml(item.unit)}"></div><div class="field full"><label>Atividade associada</label><select>${action.activities.map((activity) => `<option value="${activity.id}" ${item.activityId === activity.id ? "selected" : ""}>${escapeHtml(activity.name)}</option>`).join("")}</select></div></form><div class="panel-head marketing-qc-head"><div><h3>Quadro de Cotação (QC)</h3><p class="muted-copy">Inclua propostas e selecione o fornecedor vencedor.</p></div></div><div class="table-wrap"><table class="marketing-qc-table"><thead><tr><th>Vencedor</th><th>Fornecedor</th><th>Valor</th><th>Anexo</th></tr></thead><tbody>${quotes.map((quote) => `<tr class="${winnerId === quote.id ? "is-winner" : ""}"><td><input type="radio" name="marketingWinner" value="${quote.id}" ${winnerId === quote.id ? "checked" : ""}></td><td><strong>${escapeHtml(quote.supplier)}</strong></td><td>${escapeHtml(brl(quote.value))}</td><td>${quote.attachment ? `📎 ${escapeHtml(quote.attachment)}` : "—"}</td></tr>`).join("") || '<tr><td colspan="4">Nenhum fornecedor incluído.</td></tr>'}</tbody></table></div><form id="marketingQuoteForm" class="marketing-quote-form"><div class="field"><label>Fornecedor</label><input name="supplier" required></div><div class="field"><label>Valor</label><input name="value" type="number" min="0" step="0.01" required></div><div class="field"><label>Anexo da proposta</label><input name="attachment" type="file"></div><button class="primary" type="submit">Adicionar fornecedor</button></form><div class="marketing-provision-note"><strong>Pendente de aprovisionamento</strong><span>O vencedor selecionado será incluído na aba Aprovisionamentos do evento, sem envio automático.</span></div></div></section></div>`;
+  return `<div class="modal-backdrop" data-close-marketing-item><section class="modal-card marketing-item-modal"><div class="panel-head"><div><span class="mock-chip">Editar item</span><h3>${escapeHtml(item.description)}</h3></div><button class="icon" type="button" data-close-marketing-item>×</button></div><form class="form-grid"><div class="field"><label>Tipo</label><select><option ${item.type === "Produto" ? "selected" : ""}>Produto</option><option ${item.type === "Serviço" ? "selected" : ""}>Serviço</option></select></div><div class="field"><label>Descrição</label><input value="${escapeHtml(item.description)}"></div><div class="field"><label>Quantidade</label><input type="number" value="${item.quantity}"></div><div class="field"><label>Unidade</label><input value="${escapeHtml(item.unit)}"></div><div class="field full"><label>Atividade associada</label><select>${action.activities.map((activity) => `<option value="${activity.id}" ${item.activityId === activity.id ? "selected" : ""}>${escapeHtml(activity.name)}</option>`).join("")}</select></div><div class="field full"><button class="primary" type="button" data-close-marketing-item>Salvar item</button></div></form></section></div>`;
+}
+
+function renderMarketingQuoteModal(action, item) {
+  const quote = marketingItemQuotes(action, item).find((entry) => entry.id === state.marketingEditingQuoteId);
+  return `<div class="modal-backdrop" data-close-marketing-item><section class="modal-card marketing-quote-modal"><div class="panel-head"><div><span class="mock-chip">${quote ? "Editar proposta" : "Adicionar fornecedor"}</span><h3>${escapeHtml(item.description)}</h3></div><button class="icon" type="button" data-close-marketing-item>×</button></div><form id="marketingQuoteForm" class="form-grid"><div class="field full"><label>Fornecedor</label><input name="supplier" value="${escapeHtml(quote?.supplier || "")}" required></div><div class="field"><label>Valor da proposta</label><input name="value" type="number" min="0" step="0.01" value="${quote?.value || ""}" required></div><div class="field"><label>Anexo da proposta</label><input name="attachment" type="file">${quote?.attachment ? `<small>Atual: ${escapeHtml(quote.attachment)}</small>` : ""}</div><div class="field full"><label>Detalhes da proposta</label><textarea name="details">${escapeHtml(quote?.details || "")}</textarea></div><div class="field full"><button class="primary" type="submit">${quote ? "Salvar proposta" : "Adicionar fornecedor"}</button></div></form></section></div>`;
+}
+
+function marketingQuoteCell(action, item, quote, rank) {
+  if (!quote) return '<span class="marketing-quote-empty">—</span>';
+  const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`];
+  const isWinner = winnerId === quote.id;
+  const rankClass = ["low", "middle", "high"][rank] || "middle";
+  return `<div class="marketing-quote-cell ${isWinner ? "is-winner" : ""}"><span class="marketing-price ${!winnerId ? `rank-${rankClass}` : ""}">${escapeHtml(brl(quote.value))}</span><details class="marketing-quote-actions"><summary title="Ações da proposta">✎</summary><div><button type="button" data-edit-marketing-quote="${item.id}:${quote.id}">Editar proposta</button>${isWinner ? `<button type="button" data-unset-marketing-winner="${item.id}:${quote.id}">Não vencedor</button>` : `<button type="button" data-set-marketing-winner="${item.id}:${quote.id}">Tornar vencedor</button>`}</div></details><div class="marketing-supplier-hover"><strong>${escapeHtml(quote.supplier)}</strong><p>${escapeHtml(quote.details || "Sem detalhes adicionais.")}</p>${quote.attachment ? `<button type="button" data-open-marketing-attachment="${escapeHtml(quote.attachment)}">📎 Abrir anexo</button>` : ""}</div></div>`;
 }
 
 function renderMarketingItems(action) {
-  return `<div class="panel-head"><div><h3>Itens a serem orçados</h3><p class="muted-copy">Produtos a comprar e serviços a contratar.</p></div></div><div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Descrição</th><th>Quantidade</th><th>Unidade</th><th>QC</th><th>Ações</th></tr></thead><tbody>${action.items.map((item) => {
+  return `<div class="panel-head"><div><h3>Itens a serem orçados</h3><p class="muted-copy">Produtos a comprar e serviços a contratar.</p></div></div><div class="table-wrap marketing-items-qc-wrap"><table class="marketing-items-qc"><thead><tr><th>Tipo</th><th>Descrição</th><th>Qtde</th><th>Fornecedor 1</th><th>Fornecedor 2</th><th>Fornecedor 3</th><th>Ações</th></tr></thead><tbody>${action.items.map((item) => {
     const quotes = marketingItemQuotes(action, item);
-    const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`];
-    const winner = quotes.find((quote) => quote.id === winnerId);
-    return `<tr><td><span class="chip">${escapeHtml(item.type)}</span></td><td>${escapeHtml(item.description)}</td><td>${item.quantity}</td><td>${escapeHtml(item.unit)}</td><td>${winner ? `<span class="status-ok">${escapeHtml(winner.supplier)} · ${escapeHtml(brl(winner.value))}</span>` : `${quotes.length} cotações`}</td><td>${renderSettingsActionMenu(`marketing-item-${item.id}`, [`<button type="button" data-edit-marketing-item="${item.id}">Editar item e QC</button>`])}</td></tr>`;
+    const ranked = [...quotes].sort((a, b) => Number(a.value) - Number(b.value));
+    const rankOf = (quote) => Math.max(0, ranked.findIndex((entry) => entry.id === quote?.id));
+    return `<tr><td><span class="chip">${escapeHtml(item.type)}</span></td><td>${escapeHtml(item.description)}</td><td>${item.quantity}</td>${[0, 1, 2].map((index) => `<td>${marketingQuoteCell(action, item, quotes[index], rankOf(quotes[index]))}</td>`).join("")}<td>${renderSettingsActionMenu(`marketing-item-${item.id}`, [`<button type="button" data-edit-marketing-item="${item.id}">Editar item</button>`, `<button type="button" data-add-marketing-supplier="${item.id}">Adicionar fornecedor</button>`])}</td></tr>`;
   }).join("")}</tbody></table></div>`;
 }
 
@@ -4914,7 +4928,7 @@ function renderMarketingEventEditorMock(actions) {
       ${activityTab ? `<div class="panel-head"><div><h3>Plano de atividades</h3><p class="muted-copy">Linha do tempo diária do evento.</p></div><button class="primary" type="button" data-add-marketing-activity>Adicionar atividade</button></div>${renderMarketingActivityGantt(action, activities)}` : state.marketingEventDetailTab === "items" ? renderMarketingItems(action) : renderMarketingEventProvisions(action)}
     </section>
     ${renderMarketingActivityModal(action, activities)}
-    ${state.marketingEditingItemId ? renderMarketingItemEditor(action, action.items.find((item) => item.id === state.marketingEditingItemId)) : ""}
+    ${state.marketingEditingItemId ? (state.marketingItemModalMode === "quote" ? renderMarketingQuoteModal(action, action.items.find((item) => item.id === state.marketingEditingItemId)) : renderMarketingItemEditor(action, action.items.find((item) => item.id === state.marketingEditingItemId))) : ""}
   `;
 }
 
@@ -4967,16 +4981,43 @@ function renderMarketingView() {
   document.querySelectorAll("[data-edit-marketing-event]").forEach((button) => button.addEventListener("click", () => { state.marketingEditingActionId = button.dataset.editMarketingEvent; state.marketingEditingItemId = ""; state.marketingEventDetailTab = "activities"; renderMarketingView(); }));
   document.querySelector("[data-close-marketing-event]")?.addEventListener("click", () => { state.marketingEditingActionId = ""; state.marketingActivityModalOpen = false; renderMarketingView(); });
   document.querySelectorAll("[data-marketing-detail-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingEventDetailTab = button.dataset.marketingDetailTab; state.marketingEditingItemId = ""; renderMarketingView(); }));
-  document.querySelectorAll("[data-edit-marketing-item]").forEach((button) => button.addEventListener("click", () => { state.marketingEditingItemId = button.dataset.editMarketingItem; renderMarketingView(); }));
-  document.querySelectorAll("[data-close-marketing-item]").forEach((element) => element.addEventListener("click", (event) => { if (event.target !== element && element.classList.contains("modal-backdrop")) return; state.marketingEditingItemId = ""; renderMarketingView(); }));
+  document.querySelectorAll("[data-edit-marketing-item]").forEach((button) => button.addEventListener("click", () => { state.marketingEditingItemId = button.dataset.editMarketingItem; state.marketingItemModalMode = "item"; state.marketingEditingQuoteId = ""; renderMarketingView(); }));
+  document.querySelectorAll("[data-add-marketing-supplier]").forEach((button) => button.addEventListener("click", () => {
+    const action = marketingMockActions().find((entry) => entry.id === state.marketingEditingActionId);
+    const item = action?.items.find((entry) => entry.id === button.dataset.addMarketingSupplier);
+    if (item && marketingItemQuotes(action, item).length >= 3) return alert("Este QC já possui três fornecedores. Edite uma das propostas existentes.");
+    state.marketingEditingItemId = button.dataset.addMarketingSupplier; state.marketingItemModalMode = "quote"; state.marketingEditingQuoteId = ""; renderMarketingView();
+  }));
+  document.querySelectorAll("[data-edit-marketing-quote]").forEach((button) => button.addEventListener("click", () => { const [itemId, quoteId] = button.dataset.editMarketingQuote.split(":"); state.marketingEditingItemId = itemId; state.marketingItemModalMode = "quote"; state.marketingEditingQuoteId = quoteId; renderMarketingView(); }));
+  document.querySelectorAll("[data-set-marketing-winner]").forEach((button) => button.addEventListener("click", () => {
+    const [itemId, quoteId] = button.dataset.setMarketingWinner.split(":");
+    if (!confirm("Confirmar este fornecedor como vencedor? Uma pendência será criada na aba Aprovisionamentos.")) return;
+    state.marketingItemWinnerSelections[`${state.marketingEditingActionId}:${itemId}`] = quoteId;
+    renderMarketingView();
+  }));
+  document.querySelectorAll("[data-unset-marketing-winner]").forEach((button) => button.addEventListener("click", () => {
+    const [itemId] = button.dataset.unsetMarketingWinner.split(":");
+    const reason = prompt("Informe o motivo para retirar o fornecedor vencedor:");
+    if (!reason?.trim()) return;
+    delete state.marketingItemWinnerSelections[`${state.marketingEditingActionId}:${itemId}`];
+    alert("Fornecedor desmarcado. O aprovisionamento pendente foi excluído.");
+    renderMarketingView();
+  }));
+  document.querySelectorAll("[data-open-marketing-attachment]").forEach((button) => button.addEventListener("click", () => alert(`Abrindo anexo demonstrativo: ${button.dataset.openMarketingAttachment}`)));
+  document.querySelectorAll("[data-close-marketing-item]").forEach((element) => element.addEventListener("click", (event) => { if (event.target !== element && element.classList.contains("modal-backdrop")) return; state.marketingEditingItemId = ""; state.marketingItemModalMode = ""; state.marketingEditingQuoteId = ""; renderMarketingView(); }));
   document.querySelectorAll("[data-marketing-provision-status]").forEach((button) => button.addEventListener("click", () => { state.marketingProvisionStatus = button.dataset.marketingProvisionStatus; renderMarketingView(); }));
-  document.querySelectorAll('input[name="marketingWinner"]').forEach((input) => input.addEventListener("change", () => { state.marketingItemWinnerSelections[`${state.marketingEditingActionId}:${state.marketingEditingItemId}`] = input.value; renderMarketingView(); }));
   document.querySelector("#marketingQuoteForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const key = `${state.marketingEditingActionId}:${state.marketingEditingItemId}`;
     const file = form.get("attachment");
-    state.marketingAddedItemQuotes[key] = [...(state.marketingAddedItemQuotes[key] || []), { id: `mock-quote-${Date.now()}`, supplier: form.get("supplier"), value: Number(form.get("value") || 0), attachment: file?.name || "" }];
+    const currentAction = marketingMockActions().find((entry) => entry.id === state.marketingEditingActionId);
+    const currentItem = currentAction?.items.find((entry) => entry.id === state.marketingEditingItemId);
+    const currentQuote = currentItem ? marketingItemQuotes(currentAction, currentItem).find((entry) => entry.id === state.marketingEditingQuoteId) : null;
+    const values = { supplier: form.get("supplier"), value: Number(form.get("value") || 0), attachment: file?.name || currentQuote?.attachment || "", details: form.get("details") || "" };
+    if (state.marketingEditingQuoteId) state.marketingQuoteEdits[state.marketingEditingQuoteId] = values;
+    else state.marketingAddedItemQuotes[key] = [...(state.marketingAddedItemQuotes[key] || []), { id: `mock-quote-${Date.now()}`, ...values }];
+    state.marketingEditingItemId = ""; state.marketingItemModalMode = ""; state.marketingEditingQuoteId = "";
     renderMarketingView();
   });
   document.querySelector("[data-add-marketing-activity]")?.addEventListener("click", () => { state.marketingActivityModalOpen = true; renderMarketingView(); });
