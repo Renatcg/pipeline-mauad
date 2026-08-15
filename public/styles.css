@@ -5273,16 +5273,28 @@ th {
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
   margin-top: 4px;
+  align-items: end;
 }
 
 .marketing-event-fields .event-name,
 .marketing-event-fields .event-location {
+  grid-column: span 2;
+}
+
+.marketing-event-fields .event-project,
+.marketing-event-fields .event-contact-email,
+.marketing-event-fields .event-attachments {
+  grid-column: span 2;
+}
+
+.marketing-event-fields .event-assets {
   grid-column: span 3;
 }
 
-.marketing-event-fields .event-assets,
-.marketing-event-fields .event-attachments {
-  grid-column: span 1;
+.marketing-event-fields .field {
+  gap: 3px;
+  margin-top: 0;
+  min-width: 0;
 }
 
 .marketing-event-fields input,
@@ -5292,8 +5304,12 @@ th {
 }
 
 .marketing-event-fields label {
+  display: flex;
+  align-items: flex-end;
+  min-height: 20px;
   margin-bottom: 3px;
   font-size: 10px;
+  line-height: 1.1;
 }
 
 .marketing-attachments {
@@ -5322,7 +5338,10 @@ th {
 
 .marketing-gantt-scroll {
   width: 100%;
-  overflow-x: auto;
+  overflow-x: scroll;
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
   border: 1px solid var(--line);
   border-radius: 9px;
 }
@@ -5358,13 +5377,15 @@ th {
 
 .marketing-gantt-days {
   display: grid;
-  grid-template-columns: repeat(auto-fit, 44px);
+  grid-auto-flow: column;
+  grid-auto-columns: 44px;
   border-left: 1px solid var(--line);
 }
 
 .marketing-gantt-days span {
-  display: grid;
-  place-content: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   height: 45px;
   border-right: 1px solid var(--line);
   color: var(--ink);
@@ -5396,13 +5417,6 @@ th {
 .marketing-gantt-row > div:first-child strong {
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.marketing-gantt-row > div:first-child b {
-  margin-left: auto;
-  color: var(--brand);
-  font-size: 10px;
   white-space: nowrap;
 }
 
@@ -5548,6 +5562,8 @@ th {
 
   .marketing-event-fields .event-name,
   .marketing-event-fields .event-location,
+  .marketing-event-fields .event-project,
+  .marketing-event-fields .event-contact-email,
   .marketing-event-fields .event-assets,
   .marketing-event-fields .event-attachments {
     grid-column: span 2;
