@@ -4889,7 +4889,7 @@ function marketingQuoteCell(action, item, quote, rank) {
   const isWinner = winnerId === quote.id;
   const rankClass = ["low", "middle", "high"][rank] || "middle";
   const menuKey = `${item.id}:${quote.id}`;
-  return `<div class="marketing-quote-cell ${isWinner ? "is-winner" : ""}" data-marketing-supplier-card data-supplier="${escapeHtml(quote.supplier)}" data-details="${escapeHtml(quote.details || "Sem detalhes adicionais.")}" data-attachment="${escapeHtml(quote.attachment || "")}"><span class="marketing-price ${!winnerId ? `rank-${rankClass}` : ""}">${escapeHtml(brl(quote.value))}</span><div class="marketing-quote-actions"><button type="button" class="marketing-quote-edit" data-toggle-marketing-quote-menu="${menuKey}" title="Ações da proposta">✎</button>${state.marketingOpenQuoteMenu === menuKey ? `<div class="marketing-quote-floating-menu"><button type="button" data-edit-marketing-quote="${menuKey}">Editar proposta</button>${isWinner ? `<button type="button" data-unset-marketing-winner="${menuKey}">Não vencedor</button>` : `<button type="button" data-set-marketing-winner="${menuKey}">Tornar vencedor</button>`}</div>` : ""}</div></div>`;
+  return `<div class="marketing-quote-cell ${isWinner ? "is-winner" : ""}" data-marketing-supplier-card data-quote-menu-key="${menuKey}" data-quote-winner="${isWinner ? "true" : "false"}" data-supplier="${escapeHtml(quote.supplier)}" data-details="${escapeHtml(quote.details || "Sem detalhes adicionais.")}" data-attachment="${escapeHtml(quote.attachment || "")}"><span class="marketing-price ${!winnerId ? `rank-${rankClass}` : ""}">${escapeHtml(brl(quote.value))}</span><div class="marketing-quote-actions"><button type="button" class="marketing-quote-edit" data-toggle-marketing-quote-menu="${menuKey}" title="Ações da proposta">✎</button></div></div>`;
 }
 
 function renderMarketingItems(action) {
@@ -4976,6 +4976,43 @@ function renderMarketingViewAtScroll() {
   requestAnimationFrame(() => window.scrollTo({ top, left: 0, behavior: "auto" }));
 }
 
+function openMarketingQuoteActionMenu(anchor, menuKey, isWinner, point) {
+  document.querySelector(".marketing-quote-page-menu")?.remove();
+  document.querySelector(".marketing-supplier-popover")?.remove();
+  const [itemId, quoteId] = menuKey.split(":");
+  const menu = document.createElement("div");
+  menu.className = "marketing-quote-page-menu";
+  menu.innerHTML = `<button type="button" data-page-edit-quote>Editar proposta</button>${isWinner ? '<button type="button" data-page-unset-winner>Não vencedor</button>' : '<button type="button" data-page-set-winner>Tornar vencedor</button>'}`;
+  document.body.appendChild(menu);
+  const rect = anchor.getBoundingClientRect();
+  const left = point?.x ?? rect.right;
+  const top = point?.y ?? rect.bottom + 5;
+  menu.style.left = `${Math.max(12, Math.min(left - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 12))}px`;
+  menu.style.top = `${Math.max(12, Math.min(top, window.innerHeight - menu.offsetHeight - 12))}px`;
+  menu.querySelector("[data-page-edit-quote]")?.addEventListener("click", () => {
+    state.marketingEditingItemId = itemId;
+    state.marketingItemModalMode = "quote";
+    state.marketingEditingQuoteId = quoteId;
+    menu.remove();
+    renderMarketingViewAtScroll();
+  });
+  menu.querySelector("[data-page-set-winner]")?.addEventListener("click", () => {
+    if (!confirm("Confirmar este fornecedor como vencedor? Uma pendência será criada na aba Aprovisionamentos.")) return;
+    state.marketingItemWinnerSelections[`${state.marketingEditingActionId}:${itemId}`] = quoteId;
+    menu.remove();
+    renderMarketingViewAtScroll();
+  });
+  menu.querySelector("[data-page-unset-winner]")?.addEventListener("click", () => {
+    const reason = prompt("Informe o motivo para retirar o fornecedor vencedor:");
+    if (!reason?.trim()) return;
+    delete state.marketingItemWinnerSelections[`${state.marketingEditingActionId}:${itemId}`];
+    menu.remove();
+    alert("Fornecedor desmarcado. O aprovisionamento pendente foi excluído.");
+    renderMarketingViewAtScroll();
+  });
+  setTimeout(() => document.addEventListener("click", (event) => { if (!menu.contains(event.target) && event.target !== anchor) menu.remove(); }, { once: true }), 0);
+}
+
 function renderMarketingView() {
   document.querySelector(".marketing-supplier-popover")?.remove();
   const tabs = [
@@ -5002,7 +5039,7 @@ function renderMarketingView() {
     if (item && marketingItemQuotes(action, item).length >= 3) return alert("Este QC já possui três fornecedores. Edite uma das propostas existentes.");
     state.marketingEditingItemId = button.dataset.addMarketingSupplier; state.marketingItemModalMode = "quote"; state.marketingEditingQuoteId = ""; renderMarketingView();
   }));
-  document.querySelectorAll("[data-toggle-marketing-quote-menu]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); const key = button.dataset.toggleMarketingQuoteMenu; state.marketingOpenQuoteMenu = state.marketingOpenQuoteMenu === key ? "" : key; renderMarketingViewAtScroll(); }));
+  document.querySelectorAll("[data-toggle-marketing-quote-menu]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); const cell = button.closest("[data-marketing-supplier-card]"); openMarketingQuoteActionMenu(button, button.dataset.toggleMarketingQuoteMenu, cell?.dataset.quoteWinner === "true"); }));
   document.querySelectorAll("[data-edit-marketing-quote]").forEach((button) => button.addEventListener("click", () => { const [itemId, quoteId] = button.dataset.editMarketingQuote.split(":"); state.marketingEditingItemId = itemId; state.marketingItemModalMode = "quote"; state.marketingEditingQuoteId = quoteId; state.marketingOpenQuoteMenu = ""; renderMarketingView(); }));
   document.querySelectorAll("[data-set-marketing-winner]").forEach((button) => button.addEventListener("click", () => {
     const [itemId, quoteId] = button.dataset.setMarketingWinner.split(":");
@@ -5040,6 +5077,7 @@ function renderMarketingView() {
       popover.addEventListener("mouseleave", close, { once: true });
     });
     cell.querySelector(".marketing-quote-edit")?.addEventListener("mouseenter", () => document.querySelector(".marketing-supplier-popover")?.remove());
+    cell.addEventListener("contextmenu", (event) => { event.preventDefault(); openMarketingQuoteActionMenu(cell, cell.dataset.quoteMenuKey, cell.dataset.quoteWinner === "true", { x: event.clientX, y: event.clientY }); });
   });
   document.querySelector("#marketingQuoteForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
