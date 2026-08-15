@@ -7669,15 +7669,29 @@ function readEventCaptureSession(req) {
 
 async function transcribeEventCaptureAudio(audioDataUrl) {
   if (!OPENAI_API_KEY) throw new Error("Transcrição por IA ainda não configurada.");
-  const match = String(audioDataUrl || "").match(/^data:(audio\/[\w.+-]+);base64,(.+)$/s);
-  if (!match) throw new Error("Áudio inválido.");
-  const buffer = Buffer.from(match[2], "base64");
+  const dataUrl = String(audioDataUrl || "");
+  const separatorIndex = dataUrl.indexOf(",");
+  const metadata = separatorIndex >= 0 ? dataUrl.slice(0, separatorIndex) : "";
+  const mimeType = String(metadata.slice(5).split(";")[0] || "").toLowerCase();
+  const base64Payload = separatorIndex >= 0 ? dataUrl.slice(separatorIndex + 1).replace(/\s/g, "") : "";
+  if (!metadata.toLowerCase().startsWith("data:audio/") || !/;base64$/i.test(metadata) || !base64Payload || !/^[a-z0-9+/]+={0,2}$/i.test(base64Payload)) {
+    throw new Error("Áudio inválido.");
+  }
+  const buffer = Buffer.from(base64Payload, "base64");
   if (!buffer.length || buffer.length > 8 * 1024 * 1024) throw new Error("O áudio deve ter no máximo 8 MB.");
-  const extension = match[1].includes("mp4") ? "m4a" : match[1].includes("ogg") ? "ogg" : "webm";
+  const extension = mimeType.includes("mp4") || mimeType.includes("m4a")
+    ? "m4a"
+    : mimeType.includes("ogg")
+      ? "ogg"
+      : mimeType.includes("wav")
+        ? "wav"
+        : mimeType.includes("mpeg") || mimeType.includes("mp3")
+          ? "mp3"
+          : "webm";
   const form = new FormData();
   form.append("model", "gpt-4o-mini-transcribe");
   form.append("language", "pt");
-  form.append("file", new Blob([buffer], { type: match[1] }), `captacao.${extension}`);
+  form.append("file", new Blob([buffer], { type: mimeType }), `captacao.${extension}`);
   const transcriptionResponse = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
