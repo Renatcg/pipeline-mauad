@@ -5927,6 +5927,7 @@ function prepareEventCaptureEmail(settings = {}, variables = {}) {
     ? `<div style="margin:16px 0;text-align:center"><img src="${normalized.emailTemplate.imageDataUrl}" alt="Golf Club Resort" style="display:block;width:100%;max-width:720px;height:auto;margin:0 auto;border:0"></div>`
     : "";
   html = normalized.emailTemplate.imagePosition === "bottom" ? `${html}${legacyImageHtml}` : `${legacyImageHtml}${html}`;
+  html = html.replace(/max-width\s*:\s*720px/gi, "max-width:100%");
   const attachments = [];
   html = sanitizeRichHtml(html).replace(/(\bsrc\s*=\s*["'])data:(image\/(?:png|jpe?g|webp|gif));base64,([a-z0-9+/=\s]+)(["'])/gi, (match, prefix, mimeType, content, suffix) => {
     const contentId = `event-capture-message-image-${attachments.length + 1}`;

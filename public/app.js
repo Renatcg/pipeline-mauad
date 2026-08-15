@@ -7924,8 +7924,8 @@ function renderCommercialSettings() {
 function renderEventCaptureMessageSettings() {
   const settings = state.eventCaptureSettings || {};
   const template = settings.emailTemplate || {};
-  const legacyImage = template.imageDataUrl ? `<div style="margin:14px 0;text-align:center"><img src="${escapeHtml(template.imageDataUrl)}" alt="Imagem da mensagem" style="display:block;width:100%;max-width:720px;height:auto;margin:0 auto"></div>` : "";
-  const baseHtml = sanitizeRichHtml(template.html || DEFAULT_EVENT_CAPTURE_EMAIL_HTML);
+  const legacyImage = template.imageDataUrl ? `<div style="margin:14px 0;text-align:center"><img src="${escapeHtml(template.imageDataUrl)}" alt="Imagem da mensagem" style="display:block;width:100%;max-width:100%;height:auto;margin:0 auto"></div>` : "";
+  const baseHtml = sanitizeRichHtml(template.html || DEFAULT_EVENT_CAPTURE_EMAIL_HTML).replace(/max-width\s*:\s*720px/gi, "max-width:100%");
   const html = template.imagePosition === "bottom" ? `${baseHtml}${legacyImage}` : `${legacyImage}${baseHtml}`;
   const fontFamily = template.fontFamily || "Arial";
   const fontSize = template.fontSize || "14px";
@@ -8008,7 +8008,7 @@ function renderEventCaptureMessageSettings() {
       image.alt = "Imagem da mensagem";
       image.style.display = "block";
       image.style.width = "100%";
-      image.style.maxWidth = "720px";
+      image.style.maxWidth = "100%";
       image.style.height = "auto";
       image.style.margin = "0 auto";
       wrapper.appendChild(image);
