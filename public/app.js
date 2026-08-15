@@ -5018,13 +5018,15 @@ function renderMarketingView() {
   const tabs = [
     ["budget", "Orçado × Realizado"],
     ["actions", "Ações e eventos"],
-    ["provision", "Aprovisionamento"]
+    ["campaigns", "Campanhas"],
+    ["pieces", "Peças"],
+    ["recurrences", "Recorrências"]
   ];
   renderShell(`
     ${renderViewHead("Marketing", "Gerenciador de orçamento, ações e aprovisionamento")}
     <div class="mock-banner"><strong>Protótipo navegável</strong><span>Os dados são demonstrativos e nenhuma alteração ou e-mail é gravado.</span></div>
     <div class="tabs marketing-tabs">${tabs.map(([id, label]) => `<button type="button" class="${state.marketingTab === id ? "active" : ""}" data-marketing-tab="${id}">${label}</button>`).join("")}</div>
-    ${state.marketingTab === "budget" ? renderMarketingBudgetMock() : state.marketingTab === "provision" ? renderMarketingProvisionMock() : renderMarketingActionsMock()}
+    ${state.marketingTab === "budget" ? renderMarketingBudgetMock() : state.marketingTab === "actions" ? renderMarketingActionsMock() : ""}
     ${renderMarketingEmailMock()}
   `);
   document.querySelectorAll("[data-marketing-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingTab = button.dataset.marketingTab; state.marketingEditingActionId = ""; state.marketingEditingItemId = ""; state.marketingActivityModalOpen = false; renderMarketingView(); }));
