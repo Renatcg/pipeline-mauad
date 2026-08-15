@@ -7686,6 +7686,12 @@ function bindRichMessageEditor(id, renderPreview) {
   const size = root?.querySelector("[data-rich-font-size]");
   const spacing = root?.querySelector("[data-rich-line-height]");
   const color = root?.querySelector("[data-rich-font-color]");
+  const baseStyle = {
+    fontFamily: family?.value || "Arial",
+    fontSize: size?.value || "14px",
+    color: color?.value || "#17202a",
+    lineHeight: spacing?.value || "1.5"
+  };
   let savedRange = null;
   const rememberSelection = () => {
     const selection = window.getSelection();
@@ -7702,18 +7708,11 @@ function bindRichMessageEditor(id, renderPreview) {
   };
   const getValue = () => ({
     html: sanitizeRichHtml(editor?.innerHTML || ""),
-    fontFamily: family?.value || "Arial",
-    fontSize: size?.value || "14px",
-    color: color?.value || "#17202a",
-    lineHeight: spacing?.value || "1.5"
+    ...baseStyle
   });
   const refresh = () => {
     if (!editor || !preview) return;
     const value = getValue();
-    editor.style.fontFamily = value.fontFamily;
-    editor.style.fontSize = value.fontSize;
-    editor.style.color = value.color;
-    editor.style.lineHeight = value.lineHeight;
     preview.innerHTML = renderPreview(value);
   };
   const applySelectedStyle = (property, value) => {
@@ -7750,11 +7749,11 @@ function bindRichMessageEditor(id, renderPreview) {
   editor?.addEventListener("input", refresh);
   editor?.addEventListener("keyup", rememberSelection);
   editor?.addEventListener("mouseup", rememberSelection);
-  root?.addEventListener("focusout", rememberSelection);
-  family?.addEventListener("change", () => applySelectedStyle("fontFamily", family.value));
-  size?.addEventListener("change", () => applySelectedStyle("fontSize", size.value));
-  spacing?.addEventListener("change", () => applyLineHeight(spacing.value));
-  color?.addEventListener("change", () => applySelectedStyle("color", color.value));
+  root?.querySelector(".email-template-toolbar")?.addEventListener("mousedown", rememberSelection, true);
+  family?.addEventListener("change", () => { applySelectedStyle("fontFamily", family.value); family.value = baseStyle.fontFamily; });
+  size?.addEventListener("change", () => { applySelectedStyle("fontSize", size.value); size.value = baseStyle.fontSize; });
+  spacing?.addEventListener("change", () => { applyLineHeight(spacing.value); spacing.value = baseStyle.lineHeight; });
+  color?.addEventListener("change", () => { applySelectedStyle("color", color.value); color.value = baseStyle.color; });
   root?.querySelectorAll("[data-rich-command]").forEach((button) => {
     button.addEventListener("mousedown", (event) => event.preventDefault());
     button.addEventListener("click", () => { restoreSelection(); editor?.focus(); document.execCommand(button.dataset.richCommand, false, null); rememberSelection(); refresh(); });
