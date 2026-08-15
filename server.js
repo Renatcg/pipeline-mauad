@@ -842,6 +842,7 @@ const ENABLE_LEGACY_JSON_FALLBACK = process.env.ENABLE_LEGACY_JSON_FALLBACK === 
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.INITIAL_ADMIN_PASSWORD || "local-dev-session-secret";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const RESEND_API_KEY_TESTE = process.env.RESEND_API_KEY_TESTE || "";
+const RESEND_API_KEY_GOLF = process.env.RESEND_API_KEY_GOLF || process.env.GOLF_RESEND_API_KEY || "";
 const EMAIL_FROM = process.env.EMAIL_FROM || "Pipeline Mauad <onboarding@resend.dev>";
 const EMAIL_FROM_TESTE = process.env.EMAIL_FROM_TESTE || "";
 const LEV_FINANCE_EMAIL_FROM = process.env.EMAIL_FROM_FINAN_COEVO || process.env.LEV_FINANCE_EMAIL_FROM || "Financeiro Lev <financeiro@grupocoevo.com.br>";
@@ -7730,7 +7731,7 @@ async function fastStructuredEventCaptureRoutes(req, res, url) {
         fromUser: false,
         createdAt: now
       });
-      const emailResult = await sendEmailWithCcFrom("Comercial Mauad <comercial@golfclubresort.com.br>", email, "", "Obrigado por nos visitar no 64º Aberto de Golfe", `<div style="font-family:Arial,sans-serif;color:#17202a;line-height:1.6"><h1 style="font-size:22px">Obrigado pela sua visita, ${escapeHtml(name)}!</h1><p>Agradecemos a atenção dispensada à equipe Comercial Mauad durante o 64º Aberto de Golfe, em Teresópolis.</p><p>Foi um prazer conversar com você. Em breve, nossa equipe poderá apresentar mais detalhes do Golf Club Resort.</p><p>Atenciosamente,<br><strong>Comercial Mauad</strong></p></div>`);
+      const emailResult = await sendEmailWithCcFrom("Comercial Mauad <comercial@golfclubresort.com.br>", email, "", "Obrigado por nos visitar no 64º Aberto de Golfe", `<div style="font-family:Arial,sans-serif;color:#17202a;line-height:1.6"><h1 style="font-size:22px">Obrigado pela sua visita, ${escapeHtml(name)}!</h1><p>Agradecemos a atenção dispensada à equipe Comercial Mauad durante o 64º Aberto de Golfe, em Teresópolis.</p><p>Foi um prazer conversar com você. Em breve, nossa equipe poderá apresentar mais detalhes do Golf Club Resort.</p><p>Atenciosamente,<br><strong>Comercial Mauad</strong></p></div>`, { apiKey: RESEND_API_KEY_GOLF, apiKeyLabel: "RESEND_API_KEY_GOLF" });
       comments.push({
         id: `comment-${crypto.randomUUID()}`,
         leadId: lead.id,
