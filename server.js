@@ -8453,6 +8453,7 @@ async function fastStructuredStateResponse(req, res, url) {
       leads: [],
       integrations,
       permissions,
+      baseAccessSources: baseSources,
       unitDefinitions,
       availabilitySettings,
       baseAccess: structuredBaseAccessFromPermissions(permissions, baseSources.length ? baseSources : allBaseSources({ leads: [] })),
