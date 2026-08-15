@@ -7734,16 +7734,27 @@ function bindRichMessageEditor(id, renderPreview) {
     if (!editor || !restoreSelection()) return;
     const selection = window.getSelection();
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-    if (!range) return;
+    if (!range || range.collapsed) return;
     const blockSelector = "p,div,li,h1,h2,h3,h4,h5,h6,blockquote";
     const blocks = [...editor.querySelectorAll(blockSelector)].filter((block) => { try { return range.intersectsNode(block); } catch { return false; } });
-    if (!blocks.length) {
-      const node = range.commonAncestorContainer.nodeType === Node.TEXT_NODE ? range.commonAncestorContainer.parentElement : range.commonAncestorContainer;
-      const block = node?.closest?.(blockSelector);
-      if (block && editor.contains(block)) blocks.push(block);
+    const styledElements = [...editor.querySelectorAll("[style]")].filter((element) => {
+      if (!element.style.lineHeight) return false;
+      try { return range.intersectsNode(element); } catch { return false; }
+    });
+    const targets = [...new Set([...blocks, ...styledElements])];
+    if (targets.length) {
+      targets.forEach((element) => { element.style.lineHeight = value; });
+    } else {
+      const span = document.createElement("span");
+      span.style.lineHeight = value;
+      try { range.surroundContents(span); } catch { span.appendChild(range.extractContents()); range.insertNode(span); }
+      const nextRange = document.createRange();
+      nextRange.selectNodeContents(span);
+      selection.removeAllRanges();
+      selection.addRange(nextRange);
+      savedRange = nextRange.cloneRange();
     }
-    blocks.forEach((block) => { block.style.lineHeight = value; });
-    restoreSelection();
+    if (targets.length) savedRange = range.cloneRange();
     refresh();
   };
   editor?.addEventListener("input", refresh);
