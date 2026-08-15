@@ -350,11 +350,36 @@ async function readOptimizedVisualMapImage(file) {
 }
 
 async function readOptimizedEmailImage(file) {
-  if (!file?.type?.startsWith("image/")) throw new Error("Selecione uma imagem válida.");
-  if (/\.(heic|heif)$/i.test(String(file.name || "")) || /heic|heif/i.test(file.type)) throw new Error("Envie a imagem em JPG, PNG ou WebP.");
-  const sourceUrl = window.URL?.createObjectURL ? URL.createObjectURL(file) : await readFileAsDataUrl(file);
+  const fileName = String(file?.name || "");
+  const extensionMatch = fileName.match(/\.(jpe?g|png|webp)$/i);
+  if (!file || (!file.type?.startsWith("image/") && !extensionMatch)) throw new Error("Selecione uma imagem JPG, PNG ou WebP.");
+  if (/\.(heic|heif)$/i.test(fileName) || /heic|heif/i.test(file.type)) throw new Error("Envie a imagem em JPG, PNG ou WebP.");
+  let rawDataUrl = String(await readFileAsDataUrl(file));
+  const inferredMimeType = extensionMatch?.[1]?.toLowerCase() === "png"
+    ? "image/png"
+    : extensionMatch?.[1]?.toLowerCase() === "webp"
+      ? "image/webp"
+      : "image/jpeg";
+  if (!/^data:image\//i.test(rawDataUrl)) rawDataUrl = rawDataUrl.replace(/^data:[^;]+/i, `data:${inferredMimeType}`);
+  let image = null;
+  let sourceUrl = "";
   try {
-    const image = await loadImageFromSource(sourceUrl);
+    if (window.createImageBitmap) {
+      try { image = await createImageBitmap(file); } catch { /* tenta os leitores seguintes */ }
+    }
+    if (!image && window.URL?.createObjectURL) {
+      try {
+        sourceUrl = URL.createObjectURL(file);
+        image = await loadImageFromSource(sourceUrl);
+      } catch { /* tenta pelo Data URL */ }
+    }
+    if (!image) {
+      try { image = await loadImageFromSource(rawDataUrl); } catch { /* usa o original, se seguro */ }
+    }
+    if (!image) {
+      if (/^data:image\/(?:png|jpe?g|webp);base64,/i.test(rawDataUrl) && rawDataUrl.length <= 2000000) return rawDataUrl;
+      throw new Error("Não foi possível ler a imagem. Exporte novamente em JPG RGB ou PNG.");
+    }
     const sourceWidth = image.width || image.naturalWidth;
     const sourceHeight = image.height || image.naturalHeight;
     if (!sourceWidth || !sourceHeight) throw new Error("Imagem sem dimensão válida.");
@@ -372,7 +397,8 @@ async function readOptimizedEmailImage(file) {
     }
     throw new Error("A imagem é muito grande. Escolha uma imagem menor.");
   } finally {
-    if (window.URL?.revokeObjectURL && sourceUrl.startsWith("blob:")) URL.revokeObjectURL(sourceUrl);
+    image?.close?.();
+    if (window.URL?.revokeObjectURL && sourceUrl) URL.revokeObjectURL(sourceUrl);
   }
 }
 
@@ -7969,6 +7995,8 @@ function renderEventCaptureMessageSettings() {
     try {
       if (editor.querySelectorAll("img[src^='data:image/']").length >= 3) throw new Error("A mensagem pode ter no máximo 3 imagens.");
       const imageDataUrl = await readOptimizedEmailImage(file);
+      const embeddedImageSize = [...editor.querySelectorAll("img[src^='data:image/']")].reduce((total, item) => total + String(item.getAttribute("src") || "").length, 0);
+      if (embeddedImageSize + imageDataUrl.length > 2600000) throw new Error("As imagens da mensagem ficaram muito pesadas. Remova uma imagem ou use arquivos menores.");
       restoreSelection();
       const selection = window.getSelection();
       const range = selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer) ? selection.getRangeAt(0) : null;
