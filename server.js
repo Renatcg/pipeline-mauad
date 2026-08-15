@@ -24,6 +24,7 @@ const META_HEALTH_MIN_SAMPLE = Number(process.env.META_HEALTH_MIN_SAMPLE || 5);
 const META_HEALTH_MIN_GAP_MINUTES = Number(process.env.META_HEALTH_MIN_GAP_MINUTES || 180);
 const META_HEALTH_ALERT_COOLDOWN_HOURS = Number(process.env.META_HEALTH_ALERT_COOLDOWN_HOURS || 6);
 const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
+const DEFAULT_EVENT_CAPTURE_EMAIL_HTML = "<h1>Obrigado pela sua visita, {{nome_lead}}!</h1><p>Agradecemos a atenção dispensada à equipe Comercial Mauad durante o 64º Aberto de Golfe, em Teresópolis.</p><p>Foi um prazer conversar com você. Em breve, nossa equipe poderá apresentar mais detalhes do Golf Club Resort.</p><p>Atenciosamente,<br><strong>Comercial Mauad</strong></p>";
 const PERMISSION_SCREENS = [
   { id: "screen:kanban", label: "Kanban", view: "kanban" },
   { id: "screen:availability", label: "Disponibilidade", view: "availability" },
@@ -3039,6 +3040,10 @@ function canManageCommercialSettings(user) {
   return ["Admin TI", "Head Comercial"].includes(user.role);
 }
 
+function canManageEventCaptureSettings(user) {
+  return ["Admin TI", "Head Comercial", "Coordenador de Marketing"].includes(user.role);
+}
+
 function hasBaseHistory(lead) {
   return Boolean(lead.sourceStatus || lead.odysseiaStatus || lead.baseSourceBeforePipeline || lead.previousPipelineSource);
 }
@@ -5751,6 +5756,7 @@ async function structuredConfigStateBundle(sql) {
   const forms = formRows.map((row) => row.payload || {}).filter((item) => item.id);
   const permissions = structuredPermissionsFromRows(permissionRows);
   const commercialSettings = normalizeCommercialSettingsPayload(settings.commercialSettings || {});
+  const eventCaptureSettings = normalizeEventCaptureSettings(settings.eventCaptureSettings || {});
   const pipelineFrontSettings = normalizePipelineFrontSettings(settings.pipelineFrontSettings || {});
   const availabilitySettings = normalizeAvailabilitySettings(settings.availabilitySettings || {});
   const unitDefinitions = unitRows.map((row) => normalizeUnitDefinition({
@@ -5794,6 +5800,7 @@ async function structuredConfigStateBundle(sql) {
     knowledgeArticles: articleRows.map((row) => row.payload || {}).filter((item) => item.id),
     knowledgeChatSessions: Array.isArray(settings.knowledgeChatSessions) ? settings.knowledgeChatSessions : [],
     commercialSettings,
+    eventCaptureSettings,
     pipelineFrontSettings
   };
 }
@@ -5868,6 +5875,29 @@ function normalizeCommercialSettingsPayload(settings = {}) {
       ? Math.min(240, Math.max(1, sessionTimeoutMinutes))
       : 15
   };
+}
+
+function normalizeEventCaptureSettings(settings = {}) {
+  const template = settings.emailTemplate || {};
+  return {
+    senderName: String(settings.senderName || "Comercial Mauad").trim() || "Comercial Mauad",
+    emailTemplate: {
+      html: sanitizeRichHtml(template.html || DEFAULT_EVENT_CAPTURE_EMAIL_HTML),
+      fontFamily: String(template.fontFamily || "Arial").trim() || "Arial",
+      fontSize: String(template.fontSize || "14px").trim() || "14px",
+      color: String(template.color || "#17202a").trim() || "#17202a",
+      lineHeight: String(template.lineHeight || "1.6").trim() || "1.6"
+    }
+  };
+}
+
+function renderEventCaptureEmail(settings = {}, variables = {}) {
+  const normalized = normalizeEventCaptureSettings(settings);
+  let html = normalized.emailTemplate.html;
+  Object.entries(variables).forEach(([key, value]) => {
+    html = html.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "gi"), escapeHtml(value));
+  });
+  return `<div style="font-family:${escapeHtml(normalized.emailTemplate.fontFamily)};font-size:${escapeHtml(normalized.emailTemplate.fontSize)};color:${escapeHtml(normalized.emailTemplate.color)};line-height:${escapeHtml(normalized.emailTemplate.lineHeight)}">${sanitizeRichHtml(html)}</div>`;
 }
 
 function normalizePipelineFrontSettings(settings = {}) {
@@ -6837,6 +6867,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
     url.pathname.startsWith("/api/integrations/meta/") ||
     url.pathname.startsWith("/api/integrations/email/") ||
     url.pathname === "/api/commercial-settings" ||
+    url.pathname === "/api/event-capture-settings" ||
     url.pathname === "/api/pipeline-front-settings" ||
     url.pathname === "/api/knowledge" ||
     url.pathname.startsWith("/api/knowledge/") ||
@@ -6875,6 +6906,14 @@ async function fastStructuredSettingsRoutes(req, res, url) {
         sessionTimeoutMinutes: commercialSettings.sessionTimeoutMinutes
       });
       return sendJson(res, 200, { commercialSettings, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/event-capture-settings" && method === "PUT") {
+      if (!canManageEventCaptureSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const eventCaptureSettings = normalizeEventCaptureSettings(await readBody(req));
+      await saveStructuredSetting(sql, "eventCaptureSettings", eventCaptureSettings);
+      await structuredAudit(user, "UPDATE_EVENT_CAPTURE_SETTINGS", { senderName: eventCaptureSettings.senderName });
+      return sendJson(res, 200, { eventCaptureSettings, dataSources: { action: "structured" } });
     }
 
     if (url.pathname === "/api/pipeline-front-settings" && method === "PUT") {
@@ -7690,10 +7729,17 @@ async function fastStructuredEventCaptureRoutes(req, res, url) {
       const email = String(body.email || "").trim().toLowerCase();
       const phone = String(body.phone || "").trim();
       if (name.length < 3 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || phone.replace(/\D/g, "").length < 10) return sendJson(res, 400, { error: "Preencha nome completo, e-mail e telefone válidos." });
+      const phoneDigits = phone.replace(/\D/g, "");
+      const duplicateRows = await sql`SELECT id, name, email, phone FROM crm_leads WHERE lower(email) = ${email} OR regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') = ${phoneDigits} LIMIT 1`;
+      if (duplicateRows.length) {
+        const duplicate = duplicateRows[0];
+        return sendJson(res, 409, { error: `Este contato já está cadastrado como ${duplicate.name || "lead"} (${duplicate.email || duplicate.phone || "dados coincidentes"}).` });
+      }
       const whatsappNumber = formatWhatsappNumber(broker.notifications?.whatsappNumber);
       if (!whatsappNumber) return sendJson(res, 400, { error: `O WhatsApp de ${broker.name || "corretor"} precisa ser cadastrado antes desta captação.` });
-      const status = await firstStructuredPipelineStatus(sql);
-      if (!status) return sendJson(res, 400, { error: "O pipeline ainda não possui um status inicial configurado." });
+      const statusRows = await sql`SELECT status FROM crm_pipeline_statuses WHERE lower(status) = lower('Atendimento') LIMIT 1`;
+      const status = statusRows[0]?.status;
+      if (!status) return sendJson(res, 400, { error: "Cadastre o status Atendimento no pipeline antes de usar esta captação." });
       const now = new Date().toISOString();
       const lead = {
         id: `lead-${crypto.randomUUID()}`,
@@ -7731,7 +7777,10 @@ async function fastStructuredEventCaptureRoutes(req, res, url) {
         fromUser: false,
         createdAt: now
       });
-      const emailResult = await sendEmailWithCcFrom("Comercial Mauad <comercial@golfclubresort.com.br>", email, "", "Obrigado por nos visitar no 64º Aberto de Golfe", `<div style="font-family:Arial,sans-serif;color:#17202a;line-height:1.6"><h1 style="font-size:22px">Obrigado pela sua visita, ${escapeHtml(name)}!</h1><p>Agradecemos a atenção dispensada à equipe Comercial Mauad durante o 64º Aberto de Golfe, em Teresópolis.</p><p>Foi um prazer conversar com você. Em breve, nossa equipe poderá apresentar mais detalhes do Golf Club Resort.</p><p>Atenciosamente,<br><strong>Comercial Mauad</strong></p></div>`, { apiKey: RESEND_API_KEY_GOLF, apiKeyLabel: "RESEND_API_KEY_GOLF" });
+      const captureSettingsRows = await sql`SELECT payload FROM crm_settings WHERE key = 'eventCaptureSettings' LIMIT 1`;
+      const captureSettings = normalizeEventCaptureSettings(captureSettingsRows[0]?.payload || {});
+      const emailHtml = renderEventCaptureEmail(captureSettings, { nome_lead: name, nome_corretor: broker.name || "corretor" });
+      const emailResult = await sendEmailWithCcFrom(`${captureSettings.senderName} <comercial@golfclubresort.com.br>`, email, "", "Obrigado por nos visitar no 64º Aberto de Golfe", emailHtml, { apiKey: RESEND_API_KEY_GOLF, apiKeyLabel: "RESEND_API_KEY_GOLF" });
       comments.push({
         id: `comment-${crypto.randomUUID()}`,
         leadId: lead.id,
@@ -8374,6 +8423,7 @@ async function fastStructuredStateResponse(req, res, url) {
       baseSources,
       permissions,
       commercialSettings,
+      eventCaptureSettings,
       pipelineFrontSettings,
       integrations,
       knowledgeArticles,
@@ -8397,6 +8447,7 @@ async function fastStructuredStateResponse(req, res, url) {
       knowledgeArticles,
       knowledgeChatSessions,
       commercialSettings,
+      eventCaptureSettings,
       pipelineFrontSettings,
       levFinance: {
         settings: settings.levFinanceSettings || {},
@@ -8453,6 +8504,7 @@ async function fastStructuredStateResponse(req, res, url) {
         presence: redisEnabled() ? "redis" : "structured"
       },
       commercialSettings: stateDb.commercialSettings,
+      eventCaptureSettings: canManageEventCaptureSettings(user) ? stateDb.eventCaptureSettings : null,
       pipelineFrontSettings: stateDb.pipelineFrontSettings,
       backupSettings: canManageSettings(user) ? normalizeBackupSettings(settings.backupSettings || {}) : null,
       levFinance: (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? publicLevFinance(stateDb) : null,

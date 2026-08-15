@@ -57,6 +57,7 @@ const state = {
   levFinance: null,
   smlFinance: null,
   commercialSettings: {},
+  eventCaptureSettings: {},
   pipelineFrontSettings: { mobileFiltersCollapsed: true, mobileFooterStyle: "floating", mobileFooterTheme: "dark" },
   levMauadEmailPreview: false,
   structuredDbDiagnostics: null,
@@ -170,7 +171,7 @@ const profileAccess = {
   "Gerente Financeiro": ["marketing", "finance", "financeSml", "settings", "knowledge"],
   "Auxiliar Financeiro": ["finance", "financeSml", "settings", "knowledge"],
   "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"],
-  "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"]
+  "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "settings", "knowledge"]
 };
 
 const routeByView = {
@@ -221,6 +222,8 @@ const DEFAULT_LEV_EMAIL_TEMPLATE_HTML = `
   {{tabela_vendas}}
   <p>Obrigado.</p>
 `;
+
+const DEFAULT_EVENT_CAPTURE_EMAIL_HTML = `<h1>Obrigado pela sua visita, {{nome_lead}}!</h1><p>Agradecemos a atenção dispensada à equipe Comercial Mauad durante o 64º Aberto de Golfe, em Teresópolis.</p><p>Foi um prazer conversar com você. Em breve, nossa equipe poderá apresentar mais detalhes do Golf Club Resort.</p><p>Atenciosamente,<br><strong>Comercial Mauad</strong></p>`;
 
 const LEV_EMAIL_TEMPLATE_VARIABLES = [
   { key: "data_pagamento", label: "Data de pagamento" },
@@ -556,6 +559,10 @@ function canManageLevFinanceSettings() {
 
 function canManageCommercialSettings() {
   return ["Admin TI", "Head Comercial"].includes(state.user?.role);
+}
+
+function canManageEventCaptureSettings() {
+  return ["Admin TI", "Head Comercial", "Coordenador de Marketing"].includes(state.user?.role);
 }
 
 function editableRoles() {
@@ -1514,6 +1521,7 @@ async function loadState() {
   state.levFinance = data.levFinance || null;
   state.smlFinance = data.smlFinance || { settings: {}, sales: [], receipts: [], paidUnits: [], settlements: [] };
   state.commercialSettings = data.commercialSettings || {};
+  state.eventCaptureSettings = data.eventCaptureSettings || {};
   state.pipelineFrontSettings = data.pipelineFrontSettings || { mobileFiltersCollapsed: true, mobileFooterStyle: "floating", mobileFooterTheme: "dark" };
   resetInactivityTimer();
   state.backupSettings = data.backupSettings || state.backupSettings || null;
@@ -5202,6 +5210,7 @@ function availableSettingsGroups() {
         ...(canManagePipelineSettings() ? [{ id: "architectureOptions", label: "Arquitetura" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "typologyOptions", label: "Tipologia" }] : []),
         ...(canManagePipelineSettings() ? [{ id: "pipelineFront", label: "Front" }] : []),
+        ...(canManageEventCaptureSettings() ? [{ id: "eventCaptureMessage", label: "Mensagem captação" }] : []),
         ...(canManageCommercialSettings() ? [{ id: "commercial", label: "Configurações comerciais" }] : [])
       ]
     },
@@ -5287,6 +5296,7 @@ function settingsLayout(content) {
 function renderSettings() {
   if (["integrations", "logs", "knowledge", "backup", "structuredDb"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
   if (["statuses", "tags", "projects", "availabilityStatuses", "architectureOptions", "typologyOptions", "pipelineFront", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
+  if (state.settingsTab === "eventCaptureMessage" && !canManageEventCaptureSettings()) state.settingsTab = "users";
   if (["levFinance", "smlFinance"].includes(state.settingsTab) && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "commercial" && !canManageCommercialSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) {
@@ -5303,6 +5313,7 @@ function renderSettings() {
   if (state.settingsTab === "architectureOptions") return renderAvailabilityOptionSettings("architecture");
   if (state.settingsTab === "typologyOptions") return renderAvailabilityOptionSettings("typology");
   if (state.settingsTab === "pipelineFront") return renderPipelineFrontSettings();
+  if (state.settingsTab === "eventCaptureMessage") return renderEventCaptureMessageSettings();
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
   if (state.settingsTab === "smlFinance") return renderSmlFinanceSettings();
   if (state.settingsTab === "commercial") return renderCommercialSettings();
@@ -7842,6 +7853,66 @@ function renderCommercialSettings() {
   });
 }
 
+function renderEventCaptureMessageSettings() {
+  const settings = state.eventCaptureSettings || {};
+  const template = settings.emailTemplate || {};
+  const html = sanitizeRichHtml(template.html || DEFAULT_EVENT_CAPTURE_EMAIL_HTML);
+  const fontFamily = template.fontFamily || "Arial";
+  const fontSize = template.fontSize || "14px";
+  const color = template.color || "#17202a";
+  const lineHeight = template.lineHeight || "1.6";
+  const renderPreview = (source) => sanitizeRichHtml(source).replace(/\{\{\s*nome_lead\s*\}\}/gi, "Renato Guimarães").replace(/\{\{\s*nome_corretor\s*\}\}/gi, "Corretor Mauad");
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head"><div><h2>Mensagem de captação</h2><p class="muted-copy">Configura o e-mail enviado aos leads captados no evento.</p></div></div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
+      <form id="eventCaptureSettingsForm" class="form-grid editor">
+        <div class="field full"><label>Nome do remetente</label><input name="senderName" value="${escapeHtml(settings.senderName || "Comercial Mauad")}" required><small>O endereço continuará sendo comercial@golfclubresort.com.br.</small></div>
+        <div class="field full"><label>Mensagem do e-mail de agradecimento</label><div class="email-template-builder">
+          <section class="email-template-editor-pane">
+            <div class="email-template-toolbar" aria-label="Ferramentas de formatação">
+              <select id="captureEmailFontFamily" title="Fonte">${["Arial", "Georgia", "Times New Roman", "Verdana", "Tahoma", "Courier New"].map((font) => `<option value="${escapeHtml(font)}" ${font === fontFamily ? "selected" : ""}>${escapeHtml(font)}</option>`).join("")}</select>
+              <select id="captureEmailFontSize" title="Tamanho">${["12px", "13px", "14px", "15px", "16px", "18px", "20px", "24px"].map((size) => `<option value="${size}" ${size === fontSize ? "selected" : ""}>${size}</option>`).join("")}</select>
+              <select id="captureEmailLineHeight" title="Espaçamento entre linhas">${["1", "1.15", "1.3", "1.5", "1.6", "1.8", "2"].map((value) => `<option value="${value}" ${value === lineHeight ? "selected" : ""}>${value}</option>`).join("")}</select>
+              <input id="captureEmailFontColor" type="color" value="${escapeHtml(color)}" title="Cor da fonte"><span class="toolbar-separator"></span>
+              <button type="button" data-capture-email-command="bold" title="Negrito"><strong>B</strong></button><button type="button" data-capture-email-command="italic" title="Itálico"><em>I</em></button><button type="button" data-capture-email-command="underline" title="Sublinhado"><u>U</u></button><span class="toolbar-separator"></span>
+              <button type="button" data-capture-email-command="insertUnorderedList" title="Marcadores">•</button><button type="button" data-capture-email-command="insertOrderedList" title="Lista numerada">1.</button><button type="button" data-capture-email-command="outdent" title="Diminuir recuo">&lt;</button><button type="button" data-capture-email-command="indent" title="Aumentar recuo">&gt;</button><span class="toolbar-separator"></span>
+              <button type="button" data-capture-email-command="justifyLeft" title="Alinhar à esquerda">Esq</button><button type="button" data-capture-email-command="justifyCenter" title="Centralizar">C</button><button type="button" data-capture-email-command="justifyRight" title="Alinhar à direita">Dir</button><button type="button" data-capture-email-command="justifyFull" title="Justificar">Just</button>
+            </div>
+            <div class="template-variable-bar"><span>Variáveis</span><button type="button" data-capture-email-variable="nome_lead">Nome do lead</button><button type="button" data-capture-email-variable="nome_corretor">Nome do corretor</button></div>
+            <div id="captureEmailTemplateEditor" class="rich-email-editor" contenteditable="true" style="font-family:${escapeHtml(fontFamily)};font-size:${escapeHtml(fontSize)};color:${escapeHtml(color)};line-height:${escapeHtml(lineHeight)}">${html}</div>
+          </section>
+          <section class="email-template-preview-pane"><div class="preview-title">Prévia</div><div id="captureEmailTemplatePreview" class="email-preview-body template-preview-body" style="font-family:${escapeHtml(fontFamily)};font-size:${escapeHtml(fontSize)};color:${escapeHtml(color)};line-height:${escapeHtml(lineHeight)}">${renderPreview(html)}</div></section>
+        </div></div>
+        <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar mensagem</button></div></div>
+      </form>
+    </section>
+  `);
+  bindSettingsCommon();
+  const editor = document.querySelector("#captureEmailTemplateEditor");
+  const preview = document.querySelector("#captureEmailTemplatePreview");
+  const family = document.querySelector("#captureEmailFontFamily");
+  const size = document.querySelector("#captureEmailFontSize");
+  const spacing = document.querySelector("#captureEmailLineHeight");
+  const fontColor = document.querySelector("#captureEmailFontColor");
+  const refresh = () => { if (!editor || !preview) return; [editor, preview].forEach((element) => { element.style.fontFamily = family.value; element.style.fontSize = size.value; element.style.color = fontColor.value; element.style.lineHeight = spacing.value; }); preview.innerHTML = renderPreview(editor.innerHTML); };
+  editor?.addEventListener("input", refresh);
+  [family, size, spacing, fontColor].forEach((control) => { control?.addEventListener("input", refresh); control?.addEventListener("change", refresh); });
+  document.querySelectorAll("[data-capture-email-command]").forEach((button) => button.addEventListener("click", () => { editor?.focus(); document.execCommand(button.dataset.captureEmailCommand, false, null); refresh(); }));
+  document.querySelectorAll("[data-capture-email-variable]").forEach((button) => button.addEventListener("click", () => { editor?.focus(); document.execCommand("insertText", false, `{{${button.dataset.captureEmailVariable}}}`); refresh(); }));
+  document.querySelector("#eventCaptureSettingsForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button[type='submit']");
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const data = await api("/api/event-capture-settings", { method: "PUT", body: JSON.stringify({ senderName: new FormData(event.currentTarget).get("senderName"), emailTemplate: { html: sanitizeRichHtml(editor?.innerHTML || DEFAULT_EVENT_CAPTURE_EMAIL_HTML), fontFamily: family?.value, fontSize: size?.value, color: fontColor?.value, lineHeight: spacing?.value } }) });
+      state.eventCaptureSettings = data.eventCaptureSettings || {};
+      state.settingsNotice = "Mensagem de captação salva.";
+      renderSettings();
+    } catch (error) { setButtonBusy(button, false); alert(error.message); }
+  });
+}
+
 function downloadJsonFile(filename, data) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -10130,6 +10201,11 @@ function renderGolfEventCapture() {
     } catch (error) { renderBrokerChoice(error.message); }
   };
   const renderLeadForm = () => {
+    audioDataUrl = "";
+    transcript = "";
+    recorder = null;
+    stream?.getTracks?.().forEach((track) => track.stop());
+    stream = null;
     app.innerHTML = `<main class="event-capture-page"><section class="event-capture-card event-capture-form-card"><div class="event-capture-session"><span>Atendimento por</span><strong>${escapeHtml(capture.broker?.name || "Corretor")}</strong><button type="button" data-change-capture-broker>Trocar</button></div><h1>Novo contato</h1><p>Digite os dados ou use o microfone para preencher pela voz.</p><form data-event-lead-form><div class="field"><label>Nome completo</label><input name="name" autocomplete="name" required></div><div class="field"><label>E-mail</label><input name="email" type="email" autocomplete="email" required></div><div class="field"><label>Telefone</label><input name="phone" type="tel" inputmode="tel" autocomplete="tel" required></div><button class="event-capture-mic" type="button" data-capture-mic aria-label="Gravar dados por voz"><span>🎙</span><strong>Preencher por voz</strong><small>Toque para começar a gravar</small></button><div class="event-capture-audio-status" data-capture-audio-status></div><button class="primary event-capture-main-button" type="submit">Salvar lead</button></form></section></main>`;
     document.querySelector("[data-change-capture-broker]")?.addEventListener("click", () => { localStorage.removeItem(storageKey); capture = { token: "", expiresAt: 0, broker: null }; renderBrokerChoice(); });
     const form = document.querySelector("[data-event-lead-form]");
