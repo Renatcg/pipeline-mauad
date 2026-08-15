@@ -5292,17 +5292,23 @@ th {
   margin-top: 14px;
 }
 
-.marketing-gantt {
-  min-width: 760px;
-  overflow: hidden;
+.marketing-gantt-scroll {
+  width: 100%;
+  overflow-x: auto;
   border: 1px solid var(--line);
   border-radius: 9px;
+}
+
+.marketing-gantt {
+  width: calc(250px + var(--timeline-width));
+  min-width: 760px;
+  overflow: hidden;
 }
 
 .marketing-gantt-head,
 .marketing-gantt-row {
   display: grid;
-  grid-template-columns: minmax(220px, .72fr) minmax(420px, 1.4fr);
+  grid-template-columns: 250px var(--timeline-width);
 }
 
 .marketing-gantt-head {
@@ -5316,6 +5322,35 @@ th {
 .marketing-gantt-head > *,
 .marketing-gantt-row > * {
   padding: 10px 12px;
+}
+
+.marketing-gantt-head > .marketing-gantt-days {
+  padding: 0;
+}
+
+.marketing-gantt-days {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, 34px);
+  border-left: 1px solid var(--line);
+}
+
+.marketing-gantt-days span {
+  display: grid;
+  place-content: center;
+  height: 45px;
+  border-right: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 11px;
+  text-align: center;
+}
+
+.marketing-gantt-days span.weekend {
+  background: #e8edf1;
+}
+
+.marketing-gantt-days small {
+  color: var(--muted);
+  font-size: 8px;
 }
 
 .marketing-gantt-row {
@@ -5332,11 +5367,78 @@ th {
   font-size: 11px;
 }
 
+.marketing-gantt-row > div:first-child em {
+  color: #9a5a00;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 750;
+}
+
 .marketing-gantt-track {
   position: relative;
   min-height: 42px;
   border-left: 1px solid var(--line);
-  background: repeating-linear-gradient(90deg, transparent 0, transparent calc(12.5% - 1px), #edf0f3 calc(12.5% - 1px), #edf0f3 12.5%);
+  background: repeating-linear-gradient(90deg, transparent 0, transparent 33px, #edf0f3 33px, #edf0f3 34px);
+}
+
+.marketing-gantt-row.is-payment {
+  background: #fffaf0;
+}
+
+.marketing-gantt-row.is-payment .marketing-gantt-track i {
+  background: linear-gradient(90deg, #f59e0b, #f97316);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, .22);
+}
+
+.marketing-gantt-row.is-milestone .marketing-gantt-track i {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 9px;
+  transform: translateY(-50%) rotate(45deg);
+  border-radius: 3px;
+  background: #334155;
+  box-shadow: none;
+}
+
+.marketing-item-editor {
+  display: grid;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.marketing-qc-head {
+  margin: 4px 0 -8px;
+}
+
+.marketing-qc-table {
+  min-width: 650px;
+}
+
+.marketing-qc-table tr.is-winner {
+  background: #edf9f5;
+}
+
+.marketing-quote-form {
+  display: grid;
+  grid-template-columns: 1fr 180px 1fr auto;
+  gap: 10px;
+  align-items: end;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: #f8fafb;
+}
+
+.marketing-provision-note {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 11px 13px;
+  border-radius: 9px;
+  background: #fff7e6;
+  color: #7a4a00;
+  font-size: 12px;
 }
 
 .marketing-gantt-track i {
@@ -5390,6 +5492,15 @@ th {
 
   .marketing-event-workspace {
     overflow-x: auto;
+  }
+
+  .marketing-quote-form {
+    grid-template-columns: 1fr;
+  }
+
+  .marketing-provision-note {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 

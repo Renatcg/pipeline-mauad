@@ -113,6 +113,9 @@ const state = {
   marketingEventDetailTab: "activities",
   marketingActivityModalOpen: false,
   marketingAddedActivities: {},
+  marketingEditingItemId: "",
+  marketingAddedItemQuotes: {},
+  marketingItemWinnerSelections: { "action-1:item-1": "item-1-q2", "action-1:item-2": "item-2-q1" },
   marketingQuoteSelections: { "action-1": "quote-2" },
   marketingApprovedActions: [],
   marketingEmailPreview: "",
@@ -4698,13 +4701,17 @@ function marketingMockActions() {
   return [
     {
       id: "action-1",
+      createdAt: "2026-08-14",
       name: "Evento de relacionamento com corretores",
       eventDate: "2026-09-18",
+      eventStart: "2026-09-18",
+      eventEnd: "2026-09-18",
       project: firstProject,
       period: "18/09/2026",
       location: "Casa de Eventos Lagoa, Rio de Janeiro",
       eventContact: "Mariana Lopes · (21) 99999-1122",
-      floorCost: 12500,
+      sponsorshipValue: 12500,
+      sponsorshipProvisionRequestedAt: "2026-08-17",
       assets: "KV aprovado, convite digital, lista de corretores e apresentação comercial",
       attachments: ["proposta-local.pdf", "planta-evento.pdf"],
       purpose: "Apresentação de produto e relacionamento com imobiliárias parceiras.",
@@ -4716,10 +4723,10 @@ function marketingMockActions() {
         { id: "act-5", name: "Montagem e realização", duration: 2, start: "2026-09-17", end: "2026-09-18", predecessorId: "act-3", linkType: "T-I" }
       ],
       items: [
-        { id: "item-1", type: "Serviço", description: "Locação do espaço e mobiliário", quantity: 1, unit: "pacote" },
-        { id: "item-2", type: "Serviço", description: "Buffet para convidados", quantity: 120, unit: "pessoas" },
-        { id: "item-3", type: "Produto", description: "Kits de boas-vindas", quantity: 120, unit: "unidades" },
-        { id: "item-4", type: "Serviço", description: "Sonorização e iluminação", quantity: 1, unit: "diária" }
+        { id: "item-1", type: "Serviço", description: "Locação do espaço e mobiliário", quantity: 1, unit: "pacote", provisionRequestedAt: "2026-08-18", quotes: [{ id: "item-1-q1", supplier: "Experiência Eventos", value: 14800, attachment: "proposta-experiencia.pdf" }, { id: "item-1-q2", supplier: "Casa Sete Produções", value: 13250, attachment: "cotacao-casa-sete.pdf" }] },
+        { id: "item-2", type: "Serviço", description: "Buffet para convidados", quantity: 120, unit: "pessoas", provisionRequestedAt: "2026-08-25", quotes: [{ id: "item-2-q1", supplier: "Buffet Primavera", value: 10800, attachment: "proposta-buffet.pdf" }] },
+        { id: "item-3", type: "Produto", description: "Kits de boas-vindas", quantity: 120, unit: "unidades", quotes: [] },
+        { id: "item-4", type: "Serviço", description: "Sonorização e iluminação", quantity: 1, unit: "diária", quotes: [] }
       ],
       quotes: [
         { id: "quote-1", supplier: "Experiência Eventos", scope: "Espaço, buffet e equipe", value: 28600, terms: "50% na contratação" },
@@ -4729,13 +4736,17 @@ function marketingMockActions() {
     },
     {
       id: "action-2",
+      createdAt: "2026-08-14",
       name: "Ação de lançamento regional",
       eventDate: "2026-10-10",
+      eventStart: "2026-10-10",
+      eventEnd: "2026-10-11",
       project: secondProject,
       period: "10/10/2026 a 11/10/2026",
       location: "Praça Central, Petrópolis",
       eventContact: "Rafael Nunes · (24) 98888-4400",
-      floorCost: 7800,
+      sponsorshipValue: 7800,
+      sponsorshipProvisionRequestedAt: "2026-09-22",
       assets: "Material de PDV, uniformes, landing page e mídia regional",
       attachments: ["briefing-acao.pdf"],
       purpose: "Ativação regional para geração de visitas ao empreendimento.",
@@ -4745,9 +4756,9 @@ function marketingMockActions() {
         { id: "act-8", name: "Operação da ação", duration: 2, start: "2026-10-10", end: "2026-10-11", predecessorId: "act-7", linkType: "T-I" }
       ],
       items: [
-        { id: "item-5", type: "Serviço", description: "Equipe de promotores", quantity: 8, unit: "pessoas" },
-        { id: "item-6", type: "Produto", description: "Banners e sinalização", quantity: 12, unit: "unidades" },
-        { id: "item-7", type: "Serviço", description: "Estrutura promocional", quantity: 1, unit: "pacote" }
+        { id: "item-5", type: "Serviço", description: "Equipe de promotores", quantity: 8, unit: "pessoas", quotes: [] },
+        { id: "item-6", type: "Produto", description: "Banners e sinalização", quantity: 12, unit: "unidades", quotes: [] },
+        { id: "item-7", type: "Serviço", description: "Estrutura promocional", quantity: 1, unit: "pacote", quotes: [] }
       ],
       quotes: [
         { id: "quote-4", supplier: "Ponto Promo", scope: "Promotores, estrutura e materiais", value: 18400, terms: "Pagamento em 21 dias" },
@@ -4762,6 +4773,20 @@ function marketingPaymentDate() {
   const schedule = state.levFinance?.settings?.paymentSchedule || [];
   const match = schedule.find((item) => today >= item.start && today <= item.end);
   return match?.paymentDate || "2026-09-04";
+}
+
+function marketingPaymentDateFor(requestDate) {
+  const fallback = [
+    { start: "2026-08-11", end: "2026-08-17", paymentDate: "2026-09-04" },
+    { start: "2026-08-18", end: "2026-08-24", paymentDate: "2026-09-11" },
+    { start: "2026-08-25", end: "2026-08-31", paymentDate: "2026-09-18" },
+    { start: "2026-09-01", end: "2026-09-07", paymentDate: "2026-09-25" },
+    { start: "2026-09-08", end: "2026-09-14", paymentDate: "2026-10-02" },
+    { start: "2026-09-15", end: "2026-09-21", paymentDate: "2026-10-09" },
+    { start: "2026-09-22", end: "2026-09-28", paymentDate: "2026-10-16" }
+  ];
+  const schedule = state.levFinance?.settings?.paymentSchedule?.length ? state.levFinance.settings.paymentSchedule : fallback;
+  return schedule.find((item) => requestDate >= item.start && requestDate <= item.end)?.paymentDate || marketingPaymentDate();
 }
 
 function marketingMonthlyMock() {
@@ -4801,21 +4826,57 @@ function renderMarketingActionsMock() {
 }
 
 function marketingActivitiesForAction(action) {
-  return [...(action.activities || []), ...(state.marketingAddedActivities[action.id] || [])];
+  const payments = [{ id: `payment-${action.id}-sponsorship`, name: "Pagamento · Patrocínio", requestDate: action.sponsorshipProvisionRequestedAt, value: action.sponsorshipValue }];
+  (action.items || []).forEach((item) => {
+    const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`];
+    if (winnerId && item.provisionRequestedAt) payments.push({ id: `payment-${action.id}-${item.id}`, name: `Pagamento · ${item.description}`, requestDate: item.provisionRequestedAt });
+  });
+  const paymentActivities = payments.filter((item) => item.requestDate).map((item) => {
+    const paymentDate = marketingPaymentDateFor(item.requestDate);
+    return { ...item, start: paymentDate, end: paymentDate, duration: 1, automatic: true, linkType: "Calendário Mauad" };
+  });
+  const milestones = [
+    { id: `milestone-${action.id}-start`, name: "Início do evento", start: action.eventStart, end: action.eventStart, duration: 1, milestone: true },
+    { id: `milestone-${action.id}-end`, name: "Fim do evento", start: action.eventEnd, end: action.eventEnd, duration: 1, milestone: true }
+  ];
+  return [...(action.activities || []), ...(state.marketingAddedActivities[action.id] || []), ...milestones, ...paymentActivities];
 }
 
-function renderMarketingActivityGantt(activities = []) {
-  const timestamps = activities.flatMap((activity) => [new Date(`${activity.start}T00:00:00`).getTime(), new Date(`${activity.end}T00:00:00`).getTime()]).filter(Number.isFinite);
-  const min = Math.min(...timestamps);
-  const max = Math.max(...timestamps);
-  const span = Math.max(86400000, max - min + 86400000);
-  return `<div class="marketing-gantt"><div class="marketing-gantt-head"><span>Atividade</span><strong>Linha do tempo</strong></div>${activities.map((activity) => {
+function renderMarketingActivityGantt(action, activities = []) {
+  const dayMs = 86400000;
+  const first = new Date(`${action.createdAt}T00:00:00`).getTime();
+  const activityEnds = activities.map((item) => new Date(`${item.end}T00:00:00`).getTime()).filter(Number.isFinite);
+  const last = Math.max(first, ...activityEnds);
+  const days = Array.from({ length: Math.round((last - first) / dayMs) + 1 }, (_, index) => new Date(first + index * dayMs));
+  const width = days.length * 34;
+  return `<div class="marketing-gantt-scroll"><div class="marketing-gantt" style="--timeline-width:${width}px"><div class="marketing-gantt-head"><span>Atividade</span><div class="marketing-gantt-days">${days.map((day) => `<span class="${[0, 6].includes(day.getDay()) ? "weekend" : ""}">${String(day.getDate()).padStart(2, "0")}<small>${String(day.getMonth() + 1).padStart(2, "0")}</small></span>`).join("")}</div></div>${activities.map((activity) => {
     const start = new Date(`${activity.start}T00:00:00`).getTime();
     const end = new Date(`${activity.end}T00:00:00`).getTime();
-    const left = ((start - min) / span) * 100;
-    const width = Math.max(4, ((end - start + 86400000) / span) * 100);
-    return `<div class="marketing-gantt-row"><div><strong>${escapeHtml(activity.name)}</strong><span>${escapeHtml(dateLabel(activity.start))} — ${escapeHtml(dateLabel(activity.end))}</span></div><div class="marketing-gantt-track"><i style="--gantt-left:${left}%;--gantt-width:${width}%"></i></div></div>`;
-  }).join("") || '<div class="empty">Nenhuma atividade cadastrada.</div>'}</div>`;
+    const left = Math.max(0, Math.round((start - first) / dayMs) * 34);
+    const barWidth = Math.max(34, (Math.round((end - start) / dayMs) + 1) * 34);
+    return `<div class="marketing-gantt-row ${activity.automatic ? "is-payment" : ""} ${activity.milestone ? "is-milestone" : ""}"><div><strong>${escapeHtml(activity.name)}</strong><span>${escapeHtml(dateLabel(activity.start))} — ${escapeHtml(dateLabel(activity.end))}</span>${activity.automatic ? `<em>Automática · solicitação ${escapeHtml(dateLabel(activity.requestDate))}</em>` : activity.milestone ? "<em>Marco rastreável do evento</em>" : ""}</div><div class="marketing-gantt-track"><i style="--gantt-left:${left}px;--gantt-width:${barWidth}px"></i></div></div>`;
+  }).join("") || '<div class="empty">Nenhuma atividade cadastrada.</div>'}</div></div>`;
+}
+
+function marketingItemQuotes(action, item) {
+  return [...(item.quotes || []), ...(state.marketingAddedItemQuotes[`${action.id}:${item.id}`] || [])];
+}
+
+function renderMarketingItemEditor(action, item) {
+  const quotes = marketingItemQuotes(action, item);
+  const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`] || "";
+  return `<div class="marketing-item-editor"><div class="panel-head"><div><span class="mock-chip">Edição do item</span><h3>${escapeHtml(item.description)}</h3></div><button type="button" data-close-marketing-item>← Voltar aos itens</button></div><form class="form-grid"><div class="field"><label>Tipo</label><select><option ${item.type === "Produto" ? "selected" : ""}>Produto</option><option ${item.type === "Serviço" ? "selected" : ""}>Serviço</option></select></div><div class="field"><label>Descrição</label><input value="${escapeHtml(item.description)}"></div><div class="field"><label>Quantidade</label><input type="number" value="${item.quantity}"></div><div class="field"><label>Unidade</label><input value="${escapeHtml(item.unit)}"></div></form><div class="panel-head marketing-qc-head"><div><h3>Quadro de Cotação (QC)</h3><p class="muted-copy">Inclua propostas e selecione o fornecedor vencedor.</p></div></div><div class="table-wrap"><table class="marketing-qc-table"><thead><tr><th>Vencedor</th><th>Fornecedor</th><th>Valor</th><th>Anexo</th></tr></thead><tbody>${quotes.map((quote) => `<tr class="${winnerId === quote.id ? "is-winner" : ""}"><td><input type="radio" name="marketingWinner" value="${quote.id}" ${winnerId === quote.id ? "checked" : ""}></td><td><strong>${escapeHtml(quote.supplier)}</strong></td><td>${escapeHtml(brl(quote.value))}</td><td>${quote.attachment ? `📎 ${escapeHtml(quote.attachment)}` : "—"}</td></tr>`).join("") || '<tr><td colspan="4">Nenhum fornecedor incluído.</td></tr>'}</tbody></table></div><form id="marketingQuoteForm" class="marketing-quote-form"><div class="field"><label>Fornecedor</label><input name="supplier" required></div><div class="field"><label>Valor</label><input name="value" type="number" min="0" step="0.01" required></div><div class="field"><label>Anexo da proposta</label><input name="attachment" type="file"></div><button class="primary" type="submit">Adicionar fornecedor</button></form><div class="marketing-provision-note"><strong>Aprovisionamento automático</strong><span>Ao selecionar o vencedor, o pagamento entra no calendário Mauad e cria uma atividade no Gantt.</span></div></div>`;
+}
+
+function renderMarketingItems(action) {
+  const editing = action.items.find((item) => item.id === state.marketingEditingItemId);
+  if (editing) return renderMarketingItemEditor(action, editing);
+  return `<div class="panel-head"><div><h3>Itens a serem orçados</h3><p class="muted-copy">Produtos a comprar e serviços a contratar.</p></div></div><div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Descrição</th><th>Quantidade</th><th>Unidade</th><th>QC</th><th>Ações</th></tr></thead><tbody>${action.items.map((item) => {
+    const quotes = marketingItemQuotes(action, item);
+    const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`];
+    const winner = quotes.find((quote) => quote.id === winnerId);
+    return `<tr><td><span class="chip">${escapeHtml(item.type)}</span></td><td>${escapeHtml(item.description)}</td><td>${item.quantity}</td><td>${escapeHtml(item.unit)}</td><td>${winner ? `<span class="status-ok">${escapeHtml(winner.supplier)} · ${escapeHtml(brl(winner.value))}</span>` : `${quotes.length} cotações`}</td><td>${renderSettingsActionMenu(`marketing-item-${item.id}`, [`<button type="button" data-edit-marketing-item="${item.id}">Editar item e QC</button>`])}</td></tr>`;
+  }).join("")}</tbody></table></div>`;
 }
 
 function renderMarketingActivityModal(action, activities) {
@@ -4831,27 +4892,31 @@ function renderMarketingEventEditorMock(actions) {
     <button type="button" class="secondary marketing-back-button" data-close-marketing-event>← Voltar para eventos</button>
     <section class="panel marketing-event-editor">
       <div class="panel-head"><div><span class="mock-chip">Edição demonstrativa</span><h2>${escapeHtml(action.name)}</h2></div><button class="primary" type="button" data-save-marketing-event>Salvar evento</button></div>
-      <form class="form-grid marketing-event-fields"><div class="field full"><label>Nome do evento</label><input value="${escapeHtml(action.name)}"></div><div class="field"><label>Local</label><input value="${escapeHtml(action.location)}"></div><div class="field"><label>Período do evento</label><input value="${escapeHtml(action.period)}"></div><div class="field"><label>Empreendimento</label><select>${(state.projects || []).map((project) => `<option ${project === action.project ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}</select></div><div class="field"><label>Contato no evento</label><input value="${escapeHtml(action.eventContact)}"></div><div class="field"><label>Valor do “chão”</label><input value="${escapeHtml(brl(action.floorCost))}"></div><div class="field full"><label>Assets recebidos</label><textarea>${escapeHtml(action.assets)}</textarea></div><div class="field full"><label>Anexos</label><div class="marketing-attachments">${action.attachments.map((file) => `<span>📎 ${escapeHtml(file)}</span>`).join("")}<button type="button" data-marketing-mock-notice>Adicionar anexo</button></div></div></form>
+      <form class="form-grid marketing-event-fields"><div class="field full"><label>Nome do evento</label><input value="${escapeHtml(action.name)}"></div><div class="field"><label>Local</label><input value="${escapeHtml(action.location)}"></div><div class="field"><label>Data de início</label><input type="date" value="${escapeHtml(action.eventStart)}"><small>Marco principal rastreável do Gantt</small></div><div class="field"><label>Data de fim</label><input type="date" value="${escapeHtml(action.eventEnd)}"><small>Marco principal rastreável do Gantt</small></div><div class="field"><label>Empreendimento</label><select>${(state.projects || []).map((project) => `<option ${project === action.project ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}</select></div><div class="field"><label>Contato no evento</label><input value="${escapeHtml(action.eventContact)}"></div><div class="field"><label>Valor do Patrocínio</label><input value="${escapeHtml(brl(action.sponsorshipValue))}"><small>Aprovisionamento previsto em ${escapeHtml(dateLabel(marketingPaymentDateFor(action.sponsorshipProvisionRequestedAt)))}</small></div><div class="field"><label>Data da solicitação do patrocínio</label><input type="date" value="${escapeHtml(action.sponsorshipProvisionRequestedAt)}"></div><div class="field full"><label>Assets recebidos</label><textarea>${escapeHtml(action.assets)}</textarea></div><div class="field full"><label>Anexos</label><div class="marketing-attachments">${action.attachments.map((file) => `<span>📎 ${escapeHtml(file)}</span>`).join("")}<button type="button" data-marketing-mock-notice>Adicionar anexo</button></div></div></form>
     </section>
     <section class="panel marketing-event-workspace">
       <div class="tabs"><button type="button" class="${activityTab ? "active" : ""}" data-marketing-detail-tab="activities">Atividades</button><button type="button" class="${!activityTab ? "active" : ""}" data-marketing-detail-tab="items">Itens</button></div>
-      ${activityTab ? `<div class="panel-head"><div><h3>Plano de atividades</h3><p class="muted-copy">Cronograma e relações de precedência.</p></div><button class="primary" type="button" data-add-marketing-activity>Adicionar atividade</button></div>${renderMarketingActivityGantt(activities)}` : `<div class="panel-head"><div><h3>Itens a serem orçados</h3><p class="muted-copy">Produtos a comprar e serviços a contratar.</p></div></div><div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Descrição</th><th>Quantidade</th><th>Unidade</th></tr></thead><tbody>${action.items.map((item) => `<tr><td><span class="chip">${escapeHtml(item.type)}</span></td><td>${escapeHtml(item.description)}</td><td>${item.quantity}</td><td>${escapeHtml(item.unit)}</td></tr>`).join("")}</tbody></table></div>`}
+      ${activityTab ? `<div class="panel-head"><div><h3>Plano de atividades</h3><p class="muted-copy">Linha diária da criação do evento ao último pagamento aprovisionado.</p></div><button class="primary" type="button" data-add-marketing-activity>Adicionar atividade</button></div>${renderMarketingActivityGantt(action, activities)}` : renderMarketingItems(action)}
     </section>
     ${renderMarketingActivityModal(action, activities)}
   `;
 }
 
 function renderMarketingProvisionMock() {
-  const actions = marketingMockActions().filter((action) => state.marketingQuoteSelections[action.id]);
-  const paymentDate = marketingPaymentDate();
+  const provisions = marketingMockActions().flatMap((action) => {
+    const rows = [{ id: `${action.id}-sponsorship`, action, label: "Patrocínio", supplier: "Organização do evento", value: action.sponsorshipValue, requestedAt: action.sponsorshipProvisionRequestedAt }];
+    action.items.forEach((item) => {
+      const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`];
+      const winner = marketingItemQuotes(action, item).find((quote) => quote.id === winnerId);
+      if (winner) rows.push({ id: `${action.id}-${item.id}`, action, label: item.description, supplier: winner.supplier, value: winner.value, requestedAt: item.provisionRequestedAt || action.sponsorshipProvisionRequestedAt });
+    });
+    return rows;
+  });
   return `
     <section class="panel marketing-panel">
       <div class="panel-head"><div><h2>Aprovisionamento</h2><p class="muted-copy">Prévia do fluxo entre Marketing, Financeiro Mauad e fornecedor. Nenhum e-mail será enviado nesta versão.</p></div></div>
       <div class="marketing-provision-list">
-        ${actions.map((action) => {
-          const quote = action.quotes.find((item) => item.id === state.marketingQuoteSelections[action.id]);
-          return `<article class="marketing-provision-card"><div><span>${escapeHtml(action.project)}</span><h3>${escapeHtml(action.name)}</h3><p>${escapeHtml(quote?.supplier || "Fornecedor não selecionado")} · ${escapeHtml(brl(quote?.value || 0))}</p></div><dl><div><dt>Solicitação</dt><dd>${escapeHtml(new Date().toLocaleDateString("pt-BR"))}</dd></div><div><dt>Pagamento previsto</dt><dd>${escapeHtml(dateLabel(paymentDate))}</dd></div></dl><div class="row-actions"><button type="button" data-marketing-email="finance:${action.id}">Prévia Financeiro</button><button type="button" data-marketing-email="supplier:${action.id}">Prévia Fornecedor</button></div></article>`;
-        }).join("")}
+        ${provisions.map((row) => `<article class="marketing-provision-card"><div><span>${escapeHtml(row.action.project)} · ${escapeHtml(row.label)}</span><h3>${escapeHtml(row.action.name)}</h3><p>${escapeHtml(row.supplier)} · ${escapeHtml(brl(row.value))}</p></div><dl><div><dt>Solicitação</dt><dd>${escapeHtml(dateLabel(row.requestedAt))}</dd></div><div><dt>Pagamento previsto</dt><dd>${escapeHtml(dateLabel(marketingPaymentDateFor(row.requestedAt)))}</dd></div></dl><div class="row-actions"><button type="button" data-marketing-email="finance:${row.action.id}">Prévia Financeiro</button><button type="button" data-marketing-email="supplier:${row.action.id}">Prévia Fornecedor</button></div></article>`).join("")}
       </div>
     </section>
   `;
@@ -4881,11 +4946,22 @@ function renderMarketingView() {
     ${state.marketingTab === "budget" ? renderMarketingBudgetMock() : state.marketingTab === "provision" ? renderMarketingProvisionMock() : renderMarketingActionsMock()}
     ${renderMarketingEmailMock()}
   `);
-  document.querySelectorAll("[data-marketing-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingTab = button.dataset.marketingTab; state.marketingEditingActionId = ""; state.marketingActivityModalOpen = false; renderMarketingView(); }));
+  document.querySelectorAll("[data-marketing-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingTab = button.dataset.marketingTab; state.marketingEditingActionId = ""; state.marketingEditingItemId = ""; state.marketingActivityModalOpen = false; renderMarketingView(); }));
   bindSettingsActionMenus();
-  document.querySelectorAll("[data-edit-marketing-event]").forEach((button) => button.addEventListener("click", () => { state.marketingEditingActionId = button.dataset.editMarketingEvent; state.marketingEventDetailTab = "activities"; renderMarketingView(); }));
+  document.querySelectorAll("[data-edit-marketing-event]").forEach((button) => button.addEventListener("click", () => { state.marketingEditingActionId = button.dataset.editMarketingEvent; state.marketingEditingItemId = ""; state.marketingEventDetailTab = "activities"; renderMarketingView(); }));
   document.querySelector("[data-close-marketing-event]")?.addEventListener("click", () => { state.marketingEditingActionId = ""; state.marketingActivityModalOpen = false; renderMarketingView(); });
-  document.querySelectorAll("[data-marketing-detail-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingEventDetailTab = button.dataset.marketingDetailTab; renderMarketingView(); }));
+  document.querySelectorAll("[data-marketing-detail-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingEventDetailTab = button.dataset.marketingDetailTab; state.marketingEditingItemId = ""; renderMarketingView(); }));
+  document.querySelectorAll("[data-edit-marketing-item]").forEach((button) => button.addEventListener("click", () => { state.marketingEditingItemId = button.dataset.editMarketingItem; renderMarketingView(); }));
+  document.querySelector("[data-close-marketing-item]")?.addEventListener("click", () => { state.marketingEditingItemId = ""; renderMarketingView(); });
+  document.querySelectorAll('input[name="marketingWinner"]').forEach((input) => input.addEventListener("change", () => { state.marketingItemWinnerSelections[`${state.marketingEditingActionId}:${state.marketingEditingItemId}`] = input.value; renderMarketingView(); }));
+  document.querySelector("#marketingQuoteForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const key = `${state.marketingEditingActionId}:${state.marketingEditingItemId}`;
+    const file = form.get("attachment");
+    state.marketingAddedItemQuotes[key] = [...(state.marketingAddedItemQuotes[key] || []), { id: `mock-quote-${Date.now()}`, supplier: form.get("supplier"), value: Number(form.get("value") || 0), attachment: file?.name || "" }];
+    renderMarketingView();
+  });
   document.querySelector("[data-add-marketing-activity]")?.addEventListener("click", () => { state.marketingActivityModalOpen = true; renderMarketingView(); });
   document.querySelectorAll("[data-close-marketing-activity]").forEach((element) => element.addEventListener("click", (event) => { if (event.target !== element && element.classList.contains("modal-backdrop")) return; state.marketingActivityModalOpen = false; renderMarketingView(); }));
   document.querySelector("#marketingActivityForm")?.addEventListener("submit", (event) => {
