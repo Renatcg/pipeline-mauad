@@ -358,7 +358,7 @@ async function readOptimizedEmailImage(file) {
     const sourceWidth = image.width || image.naturalWidth;
     const sourceHeight = image.height || image.naturalHeight;
     if (!sourceWidth || !sourceHeight) throw new Error("Imagem sem dimensão válida.");
-    const scale = Math.min(1, 1200 / sourceWidth, 1200 / sourceHeight);
+    const scale = Math.min(1, 1000 / sourceWidth, 1000 / sourceHeight);
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(sourceWidth * scale));
     canvas.height = Math.max(1, Math.round(sourceHeight * scale));
@@ -368,7 +368,7 @@ async function readOptimizedEmailImage(file) {
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
     for (const quality of [0.84, 0.74, 0.64, 0.54]) {
       const dataUrl = canvas.toDataURL("image/jpeg", quality);
-      if (dataUrl.length <= 1500000) return dataUrl;
+      if (dataUrl.length <= 700000) return dataUrl;
     }
     throw new Error("A imagem é muito grande. Escolha uma imagem menor.");
   } finally {
@@ -7898,18 +7898,14 @@ function renderCommercialSettings() {
 function renderEventCaptureMessageSettings() {
   const settings = state.eventCaptureSettings || {};
   const template = settings.emailTemplate || {};
-  const html = sanitizeRichHtml(template.html || DEFAULT_EVENT_CAPTURE_EMAIL_HTML);
+  const legacyImage = template.imageDataUrl ? `<div style="margin:14px 0;text-align:center"><img src="${escapeHtml(template.imageDataUrl)}" alt="Imagem da mensagem" style="display:block;width:100%;max-width:720px;height:auto;margin:0 auto"></div>` : "";
+  const baseHtml = sanitizeRichHtml(template.html || DEFAULT_EVENT_CAPTURE_EMAIL_HTML);
+  const html = template.imagePosition === "bottom" ? `${baseHtml}${legacyImage}` : `${legacyImage}${baseHtml}`;
   const fontFamily = template.fontFamily || "Arial";
   const fontSize = template.fontSize || "14px";
   const color = template.color || "#17202a";
   const lineHeight = template.lineHeight || "1.6";
-  let imageDataUrl = template.imageDataUrl || "";
-  let imagePosition = template.imagePosition === "bottom" ? "bottom" : "top";
-  const renderPreview = (source) => {
-    const content = sanitizeRichHtml(source).replace(/\{\{\s*nome_lead\s*\}\}/gi, "Renato Guimarães").replace(/\{\{\s*nome_corretor\s*\}\}/gi, "Corretor Mauad");
-    const image = imageDataUrl ? `<div class="capture-email-image-preview"><img src="${escapeHtml(imageDataUrl)}" alt="Imagem da mensagem"></div>` : "";
-    return imagePosition === "bottom" ? `${content}${image}` : `${image}${content}`;
-  };
+  const renderPreview = (source) => sanitizeRichHtml(source).replace(/\{\{\s*nome_lead\s*\}\}/gi, "Renato Guimarães").replace(/\{\{\s*nome_corretor\s*\}\}/gi, "Corretor Mauad");
   settingsLayout(`
     <section class="panel">
       <div class="panel-head"><div><h2>Mensagem de captação</h2><p class="muted-copy">Configura o e-mail enviado aos leads captados no evento.</p></div></div>
@@ -7917,7 +7913,6 @@ function renderEventCaptureMessageSettings() {
       <form id="eventCaptureSettingsForm" class="form-grid editor">
         <div class="field"><label>Nome do remetente</label><input name="senderName" value="${escapeHtml(settings.senderName || "Comercial Mauad")}" required><small>O endereço continuará sendo comercial@golfclubresort.com.br.</small></div>
         <div class="field"><label>Assunto do e-mail</label><input name="subject" value="${escapeHtml(settings.subject || "Obrigado por nos visitar no 64º Aberto de Golfe")}" required></div>
-        <div class="field full capture-email-image-settings"><label>Imagem da mensagem</label><div class="capture-email-image-controls"><input id="captureEmailImage" type="file" accept="image/jpeg,image/png,image/webp"><select id="captureEmailImagePosition" aria-label="Posição da imagem"><option value="top" ${imagePosition === "top" ? "selected" : ""}>No topo da mensagem</option><option value="bottom" ${imagePosition === "bottom" ? "selected" : ""}>No final da mensagem</option></select><button type="button" id="removeCaptureEmailImage" ${imageDataUrl ? "" : "disabled"}>Remover imagem</button></div><small>A imagem será otimizada e enviada incorporada ao e-mail.</small></div>
         <div class="field full"><label>Mensagem do e-mail de agradecimento</label><div class="email-template-builder">
           <section class="email-template-editor-pane">
             <div class="email-template-toolbar capture-email-toolbar" aria-label="Ferramentas de formatação">
@@ -7928,6 +7923,7 @@ function renderEventCaptureMessageSettings() {
               <input id="captureEmailFontColor" type="color" value="${escapeHtml(color)}" title="Cor da fonte"><span class="toolbar-separator"></span>
               <button type="button" data-capture-email-command="bold" title="Negrito"><strong>B</strong></button><button type="button" data-capture-email-command="italic" title="Itálico"><em>I</em></button><button type="button" data-capture-email-command="underline" title="Sublinhado"><u>U</u></button><span class="toolbar-separator"></span>
               <button type="button" data-capture-email-command="insertUnorderedList" title="Marcadores" aria-label="Marcadores">•≡</button><button type="button" data-capture-email-command="insertOrderedList" title="Lista numerada" aria-label="Lista numerada">1≡</button><button type="button" data-capture-email-command="outdent" title="Diminuir recuo" aria-label="Diminuir recuo">⇤</button><button type="button" data-capture-email-command="indent" title="Aumentar recuo" aria-label="Aumentar recuo">⇥</button>
+              <span class="toolbar-separator"></span><button type="button" id="insertCaptureEmailImage" title="Inserir imagem no cursor" aria-label="Inserir imagem"><svg viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14" rx="2"/><circle cx="7" cy="7.5" r="1.5"/><path d="m4.5 15 4-4 2.5 2.5 2-2 2.5 3.5"/></svg></button><input id="captureEmailImage" type="file" accept="image/jpeg,image/png,image/webp" hidden>
               </div><div class="capture-toolbar-row capture-align-row">
               <button type="button" data-capture-email-command="justifyLeft" title="Alinhar à esquerda" aria-label="Alinhar à esquerda"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h9M3 12h14M3 16h9"/></svg></button><button type="button" data-capture-email-command="justifyCenter" title="Centralizar" aria-label="Centralizar"><svg viewBox="0 0 20 20"><path d="M3 4h14M5.5 8h9M3 12h14M5.5 16h9"/></svg></button><button type="button" data-capture-email-command="justifyRight" title="Alinhar à direita" aria-label="Alinhar à direita"><svg viewBox="0 0 20 20"><path d="M3 4h14M8 8h9M3 12h14M8 16h9"/></svg></button><button type="button" data-capture-email-command="justifyFull" title="Justificar" aria-label="Justificar"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h14M3 12h14M3 16h14"/></svg></button>
               </div>
@@ -7949,8 +7945,7 @@ function renderEventCaptureMessageSettings() {
   const spacing = document.querySelector("#captureEmailLineHeight");
   const fontColor = document.querySelector("#captureEmailFontColor");
   const imageInput = document.querySelector("#captureEmailImage");
-  const imagePositionInput = document.querySelector("#captureEmailImagePosition");
-  const removeImageButton = document.querySelector("#removeCaptureEmailImage");
+  const insertImageButton = document.querySelector("#insertCaptureEmailImage");
   let savedRange = null;
   const rememberSelection = () => {
     const selection = window.getSelection();
@@ -7966,20 +7961,46 @@ function renderEventCaptureMessageSettings() {
     return true;
   };
   const refresh = () => { if (editor && preview) preview.innerHTML = renderPreview(editor.innerHTML); };
+  insertImageButton?.addEventListener("mousedown", (event) => event.preventDefault());
+  insertImageButton?.addEventListener("click", () => imageInput?.click());
   imageInput?.addEventListener("change", async () => {
     const file = imageInput.files?.[0];
     if (!file) return;
     try {
-      imageDataUrl = await readOptimizedEmailImage(file);
-      removeImageButton.disabled = false;
+      if (editor.querySelectorAll("img[src^='data:image/']").length >= 3) throw new Error("A mensagem pode ter no máximo 3 imagens.");
+      const imageDataUrl = await readOptimizedEmailImage(file);
+      restoreSelection();
+      const selection = window.getSelection();
+      const range = selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer) ? selection.getRangeAt(0) : null;
+      const wrapper = document.createElement("div");
+      wrapper.style.margin = "14px 0";
+      wrapper.style.textAlign = "center";
+      const image = document.createElement("img");
+      image.src = imageDataUrl;
+      image.alt = "Imagem da mensagem";
+      image.style.display = "block";
+      image.style.width = "100%";
+      image.style.maxWidth = "720px";
+      image.style.height = "auto";
+      image.style.margin = "0 auto";
+      wrapper.appendChild(image);
+      if (range) {
+        range.deleteContents();
+        range.insertNode(wrapper);
+      } else {
+        editor.appendChild(wrapper);
+      }
+      const nextRange = document.createRange();
+      nextRange.setStartAfter(wrapper);
+      nextRange.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(nextRange);
+      savedRange = nextRange.cloneRange();
       refresh();
     } catch (error) {
-      imageInput.value = "";
       alert(error.message);
-    }
+    } finally { imageInput.value = ""; }
   });
-  imagePositionInput?.addEventListener("change", () => { imagePosition = imagePositionInput.value === "bottom" ? "bottom" : "top"; refresh(); });
-  removeImageButton?.addEventListener("click", () => { imageDataUrl = ""; imageInput.value = ""; removeImageButton.disabled = true; refresh(); });
   const applySelectedStyle = (property, value) => {
     if (!editor || !restoreSelection()) return;
     const selection = window.getSelection();
@@ -8040,7 +8061,7 @@ function renderEventCaptureMessageSettings() {
     try {
       setButtonBusy(button, true, "Salvando...");
       const formData = new FormData(event.currentTarget);
-      const data = await api("/api/event-capture-settings", { method: "PUT", body: JSON.stringify({ senderName: formData.get("senderName"), subject: formData.get("subject"), emailTemplate: { html: sanitizeRichHtml(editor?.innerHTML || DEFAULT_EVENT_CAPTURE_EMAIL_HTML), fontFamily, fontSize, color, lineHeight, imageDataUrl, imagePosition } }) });
+      const data = await api("/api/event-capture-settings", { method: "PUT", body: JSON.stringify({ senderName: formData.get("senderName"), subject: formData.get("subject"), emailTemplate: { html: sanitizeRichHtml(editor?.innerHTML || DEFAULT_EVENT_CAPTURE_EMAIL_HTML), fontFamily, fontSize, color, lineHeight } }) });
       state.eventCaptureSettings = data.eventCaptureSettings || {};
       state.settingsNotice = "Mensagem de captação salva.";
       renderSettings();

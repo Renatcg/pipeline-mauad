@@ -5914,30 +5914,36 @@ function normalizeEventCaptureSettings(settings = {}) {
 }
 
 function renderEventCaptureEmail(settings = {}, variables = {}) {
+  return prepareEventCaptureEmail(settings, variables).html;
+}
+
+function prepareEventCaptureEmail(settings = {}, variables = {}) {
   const normalized = normalizeEventCaptureSettings(settings);
   let html = normalized.emailTemplate.html;
   Object.entries(variables).forEach(([key, value]) => {
     html = html.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "gi"), escapeHtml(value));
   });
-  const imageHtml = normalized.emailTemplate.imageDataUrl
-    ? '<div style="margin:16px 0;text-align:center"><img src="cid:event-capture-message-image" alt="Golf Club Resort" style="display:block;width:100%;max-width:720px;height:auto;margin:0 auto;border:0"></div>'
+  const legacyImageHtml = normalized.emailTemplate.imageDataUrl
+    ? `<div style="margin:16px 0;text-align:center"><img src="${normalized.emailTemplate.imageDataUrl}" alt="Golf Club Resort" style="display:block;width:100%;max-width:720px;height:auto;margin:0 auto;border:0"></div>`
     : "";
-  const contentHtml = `<div style="font-family:${escapeHtml(normalized.emailTemplate.fontFamily)};font-size:${escapeHtml(normalized.emailTemplate.fontSize)};color:${escapeHtml(normalized.emailTemplate.color)};line-height:${escapeHtml(normalized.emailTemplate.lineHeight)}">${sanitizeRichHtml(html)}</div>`;
-  return normalized.emailTemplate.imagePosition === "bottom" ? `${contentHtml}${imageHtml}` : `${imageHtml}${contentHtml}`;
-}
-
-function eventCaptureEmailImageAttachment(settings = {}) {
-  const dataUrl = normalizeEventCaptureSettings(settings).emailTemplate.imageDataUrl;
-  const match = dataUrl.match(/^data:(image\/(?:png|jpe?g|webp|gif));base64,([a-z0-9+/=\s]+)$/i);
-  if (!match) return [];
-  const extension = match[1].includes("png") ? "png" : match[1].includes("webp") ? "webp" : match[1].includes("gif") ? "gif" : "jpg";
-  return [{
-    filename: `imagem-captacao.${extension}`,
-    content: match[2].replace(/\s/g, ""),
-    content_type: match[1].toLowerCase(),
-    content_id: "event-capture-message-image",
-    content_disposition: "inline"
-  }];
+  html = normalized.emailTemplate.imagePosition === "bottom" ? `${html}${legacyImageHtml}` : `${legacyImageHtml}${html}`;
+  const attachments = [];
+  html = sanitizeRichHtml(html).replace(/(\bsrc\s*=\s*["'])data:(image\/(?:png|jpe?g|webp|gif));base64,([a-z0-9+/=\s]+)(["'])/gi, (match, prefix, mimeType, content, suffix) => {
+    const contentId = `event-capture-message-image-${attachments.length + 1}`;
+    const extension = mimeType.includes("png") ? "png" : mimeType.includes("webp") ? "webp" : mimeType.includes("gif") ? "gif" : "jpg";
+    attachments.push({
+      filename: `imagem-captacao-${attachments.length + 1}.${extension}`,
+      content: content.replace(/\s/g, ""),
+      content_type: mimeType.toLowerCase(),
+      content_id: contentId,
+      content_disposition: "inline"
+    });
+    return `${prefix}cid:${contentId}${suffix}`;
+  });
+  return {
+    html: `<div style="font-family:${escapeHtml(normalized.emailTemplate.fontFamily)};font-size:${escapeHtml(normalized.emailTemplate.fontSize)};color:${escapeHtml(normalized.emailTemplate.color)};line-height:${escapeHtml(normalized.emailTemplate.lineHeight)}">${html}</div>`,
+    attachments
+  };
 }
 
 function normalizePipelineFrontSettings(settings = {}) {
@@ -7833,11 +7839,11 @@ async function fastStructuredEventCaptureRoutes(req, res, url) {
       });
       const captureSettingsRows = await sql`SELECT payload FROM crm_settings WHERE key = 'eventCaptureSettings' LIMIT 1`;
       const captureSettings = normalizeEventCaptureSettings(captureSettingsRows[0]?.payload || {});
-      const emailHtml = renderEventCaptureEmail(captureSettings, { nome_lead: name, nome_corretor: broker.name || "corretor" });
-      const emailResult = await sendEmailWithCcFrom(`${captureSettings.senderName} <comercial@golfclubresort.com.br>`, email, "", captureSettings.subject, emailHtml, {
+      const emailContent = prepareEventCaptureEmail(captureSettings, { nome_lead: name, nome_corretor: broker.name || "corretor" });
+      const emailResult = await sendEmailWithCcFrom(`${captureSettings.senderName} <comercial@golfclubresort.com.br>`, email, "", captureSettings.subject, emailContent.html, {
         apiKey: RESEND_API_KEY_GOLF,
         apiKeyLabel: "RESEND_API_KEY_GOLF",
-        attachments: eventCaptureEmailImageAttachment(captureSettings)
+        attachments: emailContent.attachments
       });
       comments.push({
         id: `comment-${crypto.randomUUID()}`,
