@@ -114,6 +114,7 @@ const state = {
   marketingActivityModalOpen: false,
   marketingAddedActivities: {},
   marketingEditingItemId: "",
+  marketingProvisionStatus: "pending",
   marketingAddedItemQuotes: {},
   marketingItemWinnerSelections: { "action-1:item-1": "item-1-q2", "action-1:item-2": "item-2-q1" },
   marketingQuoteSelections: { "action-1": "quote-2" },
@@ -4709,7 +4710,9 @@ function marketingMockActions() {
       project: firstProject,
       period: "18/09/2026",
       location: "Casa de Eventos Lagoa, Rio de Janeiro",
-      eventContact: "Mariana Lopes · (21) 99999-1122",
+      contactName: "Mariana Lopes",
+      contactEmail: "mariana@casadeeventos.com.br",
+      contactPhone: "(21) 99999-1122",
       sponsorshipValue: 12500,
       sponsorshipProvisionRequestedAt: "2026-08-17",
       assets: "KV aprovado, convite digital, lista de corretores e apresentação comercial",
@@ -4723,10 +4726,10 @@ function marketingMockActions() {
         { id: "act-5", name: "Montagem e realização", duration: 2, start: "2026-09-17", end: "2026-09-18", predecessorId: "act-3", linkType: "T-I" }
       ],
       items: [
-        { id: "item-1", type: "Serviço", description: "Locação do espaço e mobiliário", quantity: 1, unit: "pacote", provisionRequestedAt: "2026-08-18", quotes: [{ id: "item-1-q1", supplier: "Experiência Eventos", value: 14800, attachment: "proposta-experiencia.pdf" }, { id: "item-1-q2", supplier: "Casa Sete Produções", value: 13250, attachment: "cotacao-casa-sete.pdf" }] },
-        { id: "item-2", type: "Serviço", description: "Buffet para convidados", quantity: 120, unit: "pessoas", provisionRequestedAt: "2026-08-25", quotes: [{ id: "item-2-q1", supplier: "Buffet Primavera", value: 10800, attachment: "proposta-buffet.pdf" }] },
-        { id: "item-3", type: "Produto", description: "Kits de boas-vindas", quantity: 120, unit: "unidades", quotes: [] },
-        { id: "item-4", type: "Serviço", description: "Sonorização e iluminação", quantity: 1, unit: "diária", quotes: [] }
+        { id: "item-1", activityId: "act-3", type: "Serviço", description: "Locação do espaço e mobiliário", quantity: 1, unit: "pacote", quotes: [{ id: "item-1-q1", supplier: "Experiência Eventos", value: 14800, attachment: "proposta-experiencia.pdf" }, { id: "item-1-q2", supplier: "Casa Sete Produções", value: 13250, attachment: "cotacao-casa-sete.pdf" }] },
+        { id: "item-2", activityId: "act-5", type: "Serviço", description: "Buffet para convidados", quantity: 120, unit: "pessoas", quotes: [{ id: "item-2-q1", supplier: "Buffet Primavera", value: 10800, attachment: "proposta-buffet.pdf" }] },
+        { id: "item-3", activityId: "act-2", type: "Produto", description: "Kits de boas-vindas", quantity: 120, unit: "unidades", quotes: [] },
+        { id: "item-4", activityId: "act-5", type: "Serviço", description: "Sonorização e iluminação", quantity: 1, unit: "diária", quotes: [] }
       ],
       quotes: [
         { id: "quote-1", supplier: "Experiência Eventos", scope: "Espaço, buffet e equipe", value: 28600, terms: "50% na contratação" },
@@ -4744,7 +4747,9 @@ function marketingMockActions() {
       project: secondProject,
       period: "10/10/2026 a 11/10/2026",
       location: "Praça Central, Petrópolis",
-      eventContact: "Rafael Nunes · (24) 98888-4400",
+      contactName: "Rafael Nunes",
+      contactEmail: "rafael@acaoregional.com.br",
+      contactPhone: "(24) 98888-4400",
       sponsorshipValue: 7800,
       sponsorshipProvisionRequestedAt: "2026-09-22",
       assets: "Material de PDV, uniformes, landing page e mídia regional",
@@ -4756,9 +4761,9 @@ function marketingMockActions() {
         { id: "act-8", name: "Operação da ação", duration: 2, start: "2026-10-10", end: "2026-10-11", predecessorId: "act-7", linkType: "T-I" }
       ],
       items: [
-        { id: "item-5", type: "Serviço", description: "Equipe de promotores", quantity: 8, unit: "pessoas", quotes: [] },
-        { id: "item-6", type: "Produto", description: "Banners e sinalização", quantity: 12, unit: "unidades", quotes: [] },
-        { id: "item-7", type: "Serviço", description: "Estrutura promocional", quantity: 1, unit: "pacote", quotes: [] }
+        { id: "item-5", activityId: "act-8", type: "Serviço", description: "Equipe de promotores", quantity: 8, unit: "pessoas", quotes: [] },
+        { id: "item-6", activityId: "act-7", type: "Produto", description: "Banners e sinalização", quantity: 12, unit: "unidades", quotes: [] },
+        { id: "item-7", activityId: "act-8", type: "Serviço", description: "Estrutura promocional", quantity: 1, unit: "pacote", quotes: [] }
       ],
       quotes: [
         { id: "quote-4", supplier: "Ponto Promo", scope: "Promotores, estrutura e materiais", value: 18400, terms: "Pagamento em 21 dias" },
@@ -4826,20 +4831,19 @@ function renderMarketingActionsMock() {
 }
 
 function marketingActivitiesForAction(action) {
-  const payments = [{ id: `payment-${action.id}-sponsorship`, name: "Pagamento · Patrocínio", requestDate: action.sponsorshipProvisionRequestedAt, value: action.sponsorshipValue }];
-  (action.items || []).forEach((item) => {
-    const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`];
-    if (winnerId && item.provisionRequestedAt) payments.push({ id: `payment-${action.id}-${item.id}`, name: `Pagamento · ${item.description}`, requestDate: item.provisionRequestedAt });
-  });
-  const paymentActivities = payments.filter((item) => item.requestDate).map((item) => {
-    const paymentDate = marketingPaymentDateFor(item.requestDate);
-    return { ...item, start: paymentDate, end: paymentDate, duration: 1, automatic: true, linkType: "Calendário Mauad" };
-  });
   const milestones = [
     { id: `milestone-${action.id}-start`, name: "Início do evento", start: action.eventStart, end: action.eventStart, duration: 1, milestone: true },
     { id: `milestone-${action.id}-end`, name: "Fim do evento", start: action.eventEnd, end: action.eventEnd, duration: 1, milestone: true }
   ];
-  return [...(action.activities || []), ...(state.marketingAddedActivities[action.id] || []), ...milestones, ...paymentActivities];
+  return [...(action.activities || []), ...(state.marketingAddedActivities[action.id] || []), ...milestones];
+}
+
+function marketingActivityCost(action, activityId) {
+  return (action.items || []).filter((item) => item.activityId === activityId).reduce((total, item) => {
+    const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`];
+    const winner = marketingItemQuotes(action, item).find((quote) => quote.id === winnerId);
+    return total + Number(winner?.value || 0);
+  }, 0);
 }
 
 function renderMarketingActivityGantt(action, activities = []) {
@@ -4848,13 +4852,14 @@ function renderMarketingActivityGantt(action, activities = []) {
   const activityEnds = activities.map((item) => new Date(`${item.end}T00:00:00`).getTime()).filter(Number.isFinite);
   const last = Math.max(first, ...activityEnds);
   const days = Array.from({ length: Math.round((last - first) / dayMs) + 1 }, (_, index) => new Date(first + index * dayMs));
-  const width = days.length * 34;
-  return `<div class="marketing-gantt-scroll"><div class="marketing-gantt" style="--timeline-width:${width}px"><div class="marketing-gantt-head"><span>Atividade</span><div class="marketing-gantt-days">${days.map((day) => `<span class="${[0, 6].includes(day.getDay()) ? "weekend" : ""}">${String(day.getDate()).padStart(2, "0")}<small>${String(day.getMonth() + 1).padStart(2, "0")}</small></span>`).join("")}</div></div>${activities.map((activity) => {
+  const width = days.length * 44;
+  return `<div class="marketing-gantt-scroll"><div class="marketing-gantt" style="--timeline-width:${width}px"><div class="marketing-gantt-head"><span>Atividade</span><div class="marketing-gantt-days">${days.map((day) => `<span class="${[0, 6].includes(day.getDay()) ? "weekend" : ""}">${String(day.getDate()).padStart(2, "0")}/${String(day.getMonth() + 1).padStart(2, "0")}</span>`).join("")}</div></div>${activities.map((activity) => {
     const start = new Date(`${activity.start}T00:00:00`).getTime();
     const end = new Date(`${activity.end}T00:00:00`).getTime();
-    const left = Math.max(0, Math.round((start - first) / dayMs) * 34);
-    const barWidth = Math.max(34, (Math.round((end - start) / dayMs) + 1) * 34);
-    return `<div class="marketing-gantt-row ${activity.automatic ? "is-payment" : ""} ${activity.milestone ? "is-milestone" : ""}"><div><strong>${escapeHtml(activity.name)}</strong><span>${escapeHtml(dateLabel(activity.start))} — ${escapeHtml(dateLabel(activity.end))}</span>${activity.automatic ? `<em>Automática · solicitação ${escapeHtml(dateLabel(activity.requestDate))}</em>` : activity.milestone ? "<em>Marco rastreável do evento</em>" : ""}</div><div class="marketing-gantt-track"><i style="--gantt-left:${left}px;--gantt-width:${barWidth}px"></i></div></div>`;
+    const left = Math.max(0, Math.round((start - first) / dayMs) * 44);
+    const barWidth = Math.max(44, (Math.round((end - start) / dayMs) + 1) * 44);
+    const cost = marketingActivityCost(action, activity.id);
+    return `<div class="marketing-gantt-row ${activity.milestone ? "is-milestone" : ""}"><div><strong>${escapeHtml(activity.name)}</strong>${cost ? `<b>${escapeHtml(brl(cost))}</b>` : ""}</div><div class="marketing-gantt-track"><i style="--gantt-left:${left}px;--gantt-width:${barWidth}px"></i></div></div>`;
   }).join("") || '<div class="empty">Nenhuma atividade cadastrada.</div>'}</div></div>`;
 }
 
@@ -4865,18 +4870,28 @@ function marketingItemQuotes(action, item) {
 function renderMarketingItemEditor(action, item) {
   const quotes = marketingItemQuotes(action, item);
   const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`] || "";
-  return `<div class="marketing-item-editor"><div class="panel-head"><div><span class="mock-chip">Edição do item</span><h3>${escapeHtml(item.description)}</h3></div><button type="button" data-close-marketing-item>← Voltar aos itens</button></div><form class="form-grid"><div class="field"><label>Tipo</label><select><option ${item.type === "Produto" ? "selected" : ""}>Produto</option><option ${item.type === "Serviço" ? "selected" : ""}>Serviço</option></select></div><div class="field"><label>Descrição</label><input value="${escapeHtml(item.description)}"></div><div class="field"><label>Quantidade</label><input type="number" value="${item.quantity}"></div><div class="field"><label>Unidade</label><input value="${escapeHtml(item.unit)}"></div></form><div class="panel-head marketing-qc-head"><div><h3>Quadro de Cotação (QC)</h3><p class="muted-copy">Inclua propostas e selecione o fornecedor vencedor.</p></div></div><div class="table-wrap"><table class="marketing-qc-table"><thead><tr><th>Vencedor</th><th>Fornecedor</th><th>Valor</th><th>Anexo</th></tr></thead><tbody>${quotes.map((quote) => `<tr class="${winnerId === quote.id ? "is-winner" : ""}"><td><input type="radio" name="marketingWinner" value="${quote.id}" ${winnerId === quote.id ? "checked" : ""}></td><td><strong>${escapeHtml(quote.supplier)}</strong></td><td>${escapeHtml(brl(quote.value))}</td><td>${quote.attachment ? `📎 ${escapeHtml(quote.attachment)}` : "—"}</td></tr>`).join("") || '<tr><td colspan="4">Nenhum fornecedor incluído.</td></tr>'}</tbody></table></div><form id="marketingQuoteForm" class="marketing-quote-form"><div class="field"><label>Fornecedor</label><input name="supplier" required></div><div class="field"><label>Valor</label><input name="value" type="number" min="0" step="0.01" required></div><div class="field"><label>Anexo da proposta</label><input name="attachment" type="file"></div><button class="primary" type="submit">Adicionar fornecedor</button></form><div class="marketing-provision-note"><strong>Aprovisionamento automático</strong><span>Ao selecionar o vencedor, o pagamento entra no calendário Mauad e cria uma atividade no Gantt.</span></div></div>`;
+  return `<div class="modal-backdrop" data-close-marketing-item><section class="modal-card marketing-item-modal"><div class="marketing-item-editor"><div class="panel-head"><div><span class="mock-chip">Edição do item</span><h3>${escapeHtml(item.description)}</h3></div><button class="icon" type="button" data-close-marketing-item>×</button></div><form class="form-grid"><div class="field"><label>Tipo</label><select><option ${item.type === "Produto" ? "selected" : ""}>Produto</option><option ${item.type === "Serviço" ? "selected" : ""}>Serviço</option></select></div><div class="field"><label>Descrição</label><input value="${escapeHtml(item.description)}"></div><div class="field"><label>Quantidade</label><input type="number" value="${item.quantity}"></div><div class="field"><label>Unidade</label><input value="${escapeHtml(item.unit)}"></div><div class="field full"><label>Atividade associada</label><select>${action.activities.map((activity) => `<option value="${activity.id}" ${item.activityId === activity.id ? "selected" : ""}>${escapeHtml(activity.name)}</option>`).join("")}</select></div></form><div class="panel-head marketing-qc-head"><div><h3>Quadro de Cotação (QC)</h3><p class="muted-copy">Inclua propostas e selecione o fornecedor vencedor.</p></div></div><div class="table-wrap"><table class="marketing-qc-table"><thead><tr><th>Vencedor</th><th>Fornecedor</th><th>Valor</th><th>Anexo</th></tr></thead><tbody>${quotes.map((quote) => `<tr class="${winnerId === quote.id ? "is-winner" : ""}"><td><input type="radio" name="marketingWinner" value="${quote.id}" ${winnerId === quote.id ? "checked" : ""}></td><td><strong>${escapeHtml(quote.supplier)}</strong></td><td>${escapeHtml(brl(quote.value))}</td><td>${quote.attachment ? `📎 ${escapeHtml(quote.attachment)}` : "—"}</td></tr>`).join("") || '<tr><td colspan="4">Nenhum fornecedor incluído.</td></tr>'}</tbody></table></div><form id="marketingQuoteForm" class="marketing-quote-form"><div class="field"><label>Fornecedor</label><input name="supplier" required></div><div class="field"><label>Valor</label><input name="value" type="number" min="0" step="0.01" required></div><div class="field"><label>Anexo da proposta</label><input name="attachment" type="file"></div><button class="primary" type="submit">Adicionar fornecedor</button></form><div class="marketing-provision-note"><strong>Pendente de aprovisionamento</strong><span>O vencedor selecionado será incluído na aba Aprovisionamentos do evento, sem envio automático.</span></div></div></section></div>`;
 }
 
 function renderMarketingItems(action) {
-  const editing = action.items.find((item) => item.id === state.marketingEditingItemId);
-  if (editing) return renderMarketingItemEditor(action, editing);
   return `<div class="panel-head"><div><h3>Itens a serem orçados</h3><p class="muted-copy">Produtos a comprar e serviços a contratar.</p></div></div><div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Descrição</th><th>Quantidade</th><th>Unidade</th><th>QC</th><th>Ações</th></tr></thead><tbody>${action.items.map((item) => {
     const quotes = marketingItemQuotes(action, item);
     const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`];
     const winner = quotes.find((quote) => quote.id === winnerId);
     return `<tr><td><span class="chip">${escapeHtml(item.type)}</span></td><td>${escapeHtml(item.description)}</td><td>${item.quantity}</td><td>${escapeHtml(item.unit)}</td><td>${winner ? `<span class="status-ok">${escapeHtml(winner.supplier)} · ${escapeHtml(brl(winner.value))}</span>` : `${quotes.length} cotações`}</td><td>${renderSettingsActionMenu(`marketing-item-${item.id}`, [`<button type="button" data-edit-marketing-item="${item.id}">Editar item e QC</button>`])}</td></tr>`;
   }).join("")}</tbody></table></div>`;
+}
+
+function renderMarketingEventProvisions(action) {
+  const rows = [{ id: "sponsorship", label: "Patrocínio", supplier: "—", value: action.sponsorshipValue, status: "pending" }];
+  action.items.forEach((item) => {
+    const winnerId = state.marketingItemWinnerSelections[`${action.id}:${item.id}`];
+    const winner = marketingItemQuotes(action, item).find((quote) => quote.id === winnerId);
+    if (winner) rows.push({ id: item.id, label: item.description, supplier: winner.supplier, value: winner.value, status: "pending" });
+  });
+  const tabs = [["pending", "Pendentes"], ["confirmation", "Aguardando confirmação"], ["invoices", "NFs enviadas"], ["paid", "Pagos"]];
+  const filtered = rows.filter((row) => row.status === state.marketingProvisionStatus);
+  return `<div class="panel-head"><div><h3>Aprovisionamentos do evento</h3><p class="muted-copy">O envio e o avanço de etapa são sempre manuais.</p></div></div><div class="tabs marketing-provision-tabs">${tabs.map(([id, label]) => `<button type="button" class="${state.marketingProvisionStatus === id ? "active" : ""}" data-marketing-provision-status="${id}">${label}</button>`).join("")}</div><div class="table-wrap"><table><thead><tr><th>Origem</th><th>Fornecedor</th><th>Valor</th><th>Ação</th></tr></thead><tbody>${filtered.map((row) => `<tr><td><strong>${escapeHtml(row.label)}</strong></td><td>${escapeHtml(row.supplier)}</td><td>${escapeHtml(brl(row.value))}</td><td><button type="button" data-marketing-mock-notice>Aprovisionar</button></td></tr>`).join("") || '<tr><td colspan="4">Nenhum aprovisionamento nesta etapa.</td></tr>'}</tbody></table></div>`;
 }
 
 function renderMarketingActivityModal(action, activities) {
@@ -4887,18 +4902,19 @@ function renderMarketingActivityModal(action, activities) {
 function renderMarketingEventEditorMock(actions) {
   const action = actions.find((item) => item.id === state.marketingEditingActionId) || actions[0];
   const activities = marketingActivitiesForAction(action);
-  const activityTab = state.marketingEventDetailTab !== "items";
+  const activityTab = state.marketingEventDetailTab === "activities";
   return `
     <button type="button" class="secondary marketing-back-button" data-close-marketing-event>← Voltar para eventos</button>
     <section class="panel marketing-event-editor">
       <div class="panel-head"><div><span class="mock-chip">Edição demonstrativa</span><h2>${escapeHtml(action.name)}</h2></div><button class="primary" type="button" data-save-marketing-event>Salvar evento</button></div>
-      <form class="form-grid marketing-event-fields"><div class="field full"><label>Nome do evento</label><input value="${escapeHtml(action.name)}"></div><div class="field"><label>Local</label><input value="${escapeHtml(action.location)}"></div><div class="field"><label>Data de início</label><input type="date" value="${escapeHtml(action.eventStart)}"><small>Marco principal rastreável do Gantt</small></div><div class="field"><label>Data de fim</label><input type="date" value="${escapeHtml(action.eventEnd)}"><small>Marco principal rastreável do Gantt</small></div><div class="field"><label>Empreendimento</label><select>${(state.projects || []).map((project) => `<option ${project === action.project ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}</select></div><div class="field"><label>Contato no evento</label><input value="${escapeHtml(action.eventContact)}"></div><div class="field"><label>Valor do Patrocínio</label><input value="${escapeHtml(brl(action.sponsorshipValue))}"><small>Aprovisionamento previsto em ${escapeHtml(dateLabel(marketingPaymentDateFor(action.sponsorshipProvisionRequestedAt)))}</small></div><div class="field"><label>Data da solicitação do patrocínio</label><input type="date" value="${escapeHtml(action.sponsorshipProvisionRequestedAt)}"></div><div class="field full"><label>Assets recebidos</label><textarea>${escapeHtml(action.assets)}</textarea></div><div class="field full"><label>Anexos</label><div class="marketing-attachments">${action.attachments.map((file) => `<span>📎 ${escapeHtml(file)}</span>`).join("")}<button type="button" data-marketing-mock-notice>Adicionar anexo</button></div></div></form>
+      <form class="marketing-event-fields"><div class="field event-name"><label>Nome do evento</label><input value="${escapeHtml(action.name)}"></div><div class="field event-location"><label>Local</label><input value="${escapeHtml(action.location)}"></div><div class="field"><label>Início</label><input type="date" value="${escapeHtml(action.eventStart)}"></div><div class="field"><label>Fim</label><input type="date" value="${escapeHtml(action.eventEnd)}"></div><div class="field"><label>Empreendimento</label><select>${(state.projects || []).map((project) => `<option ${project === action.project ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}</select></div><div class="field"><label>Nome do contato</label><input value="${escapeHtml(action.contactName)}"></div><div class="field"><label>E-mail</label><input type="email" value="${escapeHtml(action.contactEmail)}"></div><div class="field"><label>Telefone</label><input value="${escapeHtml(action.contactPhone)}"></div><div class="field"><label>Valor do Patrocínio</label><input value="${escapeHtml(brl(action.sponsorshipValue))}"></div><div class="field event-assets"><label>Assets recebidos</label><input value="${escapeHtml(action.assets)}"></div><div class="field event-attachments"><label>Anexos</label><div class="marketing-attachments">${action.attachments.map((file) => `<span>📎 ${escapeHtml(file)}</span>`).join("")}<button type="button" data-marketing-mock-notice>+</button></div></div></form>
     </section>
     <section class="panel marketing-event-workspace">
-      <div class="tabs"><button type="button" class="${activityTab ? "active" : ""}" data-marketing-detail-tab="activities">Atividades</button><button type="button" class="${!activityTab ? "active" : ""}" data-marketing-detail-tab="items">Itens</button></div>
-      ${activityTab ? `<div class="panel-head"><div><h3>Plano de atividades</h3><p class="muted-copy">Linha diária da criação do evento ao último pagamento aprovisionado.</p></div><button class="primary" type="button" data-add-marketing-activity>Adicionar atividade</button></div>${renderMarketingActivityGantt(action, activities)}` : renderMarketingItems(action)}
+      <div class="tabs"><button type="button" class="${activityTab ? "active" : ""}" data-marketing-detail-tab="activities">Atividades</button><button type="button" class="${state.marketingEventDetailTab === "items" ? "active" : ""}" data-marketing-detail-tab="items">Itens</button><button type="button" class="${state.marketingEventDetailTab === "provisions" ? "active" : ""}" data-marketing-detail-tab="provisions">Aprovisionamentos</button></div>
+      ${activityTab ? `<div class="panel-head"><div><h3>Plano de atividades</h3><p class="muted-copy">Linha do tempo diária do evento.</p></div><button class="primary" type="button" data-add-marketing-activity>Adicionar atividade</button></div>${renderMarketingActivityGantt(action, activities)}` : state.marketingEventDetailTab === "items" ? renderMarketingItems(action) : renderMarketingEventProvisions(action)}
     </section>
     ${renderMarketingActivityModal(action, activities)}
+    ${state.marketingEditingItemId ? renderMarketingItemEditor(action, action.items.find((item) => item.id === state.marketingEditingItemId)) : ""}
   `;
 }
 
@@ -4952,7 +4968,8 @@ function renderMarketingView() {
   document.querySelector("[data-close-marketing-event]")?.addEventListener("click", () => { state.marketingEditingActionId = ""; state.marketingActivityModalOpen = false; renderMarketingView(); });
   document.querySelectorAll("[data-marketing-detail-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingEventDetailTab = button.dataset.marketingDetailTab; state.marketingEditingItemId = ""; renderMarketingView(); }));
   document.querySelectorAll("[data-edit-marketing-item]").forEach((button) => button.addEventListener("click", () => { state.marketingEditingItemId = button.dataset.editMarketingItem; renderMarketingView(); }));
-  document.querySelector("[data-close-marketing-item]")?.addEventListener("click", () => { state.marketingEditingItemId = ""; renderMarketingView(); });
+  document.querySelectorAll("[data-close-marketing-item]").forEach((element) => element.addEventListener("click", (event) => { if (event.target !== element && element.classList.contains("modal-backdrop")) return; state.marketingEditingItemId = ""; renderMarketingView(); }));
+  document.querySelectorAll("[data-marketing-provision-status]").forEach((button) => button.addEventListener("click", () => { state.marketingProvisionStatus = button.dataset.marketingProvisionStatus; renderMarketingView(); }));
   document.querySelectorAll('input[name="marketingWinner"]').forEach((input) => input.addEventListener("change", () => { state.marketingItemWinnerSelections[`${state.marketingEditingActionId}:${state.marketingEditingItemId}`] = input.value; renderMarketingView(); }));
   document.querySelector("#marketingQuoteForm")?.addEventListener("submit", (event) => {
     event.preventDefault();

@@ -5269,7 +5269,31 @@ th {
 }
 
 .marketing-event-fields {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
   margin-top: 4px;
+}
+
+.marketing-event-fields .event-name,
+.marketing-event-fields .event-location {
+  grid-column: span 3;
+}
+
+.marketing-event-fields .event-assets,
+.marketing-event-fields .event-attachments {
+  grid-column: span 1;
+}
+
+.marketing-event-fields input,
+.marketing-event-fields select {
+  min-height: 36px;
+  padding: 7px 9px;
+}
+
+.marketing-event-fields label {
+  margin-bottom: 3px;
+  font-size: 10px;
 }
 
 .marketing-attachments {
@@ -5280,12 +5304,16 @@ th {
 }
 
 .marketing-attachments span {
-  padding: 7px 9px;
+  max-width: 150px;
+  overflow: hidden;
+  padding: 6px 7px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #f8fafb;
   font-size: 12px;
   font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .marketing-event-workspace > .panel-head {
@@ -5330,7 +5358,7 @@ th {
 
 .marketing-gantt-days {
   display: grid;
-  grid-template-columns: repeat(auto-fit, 34px);
+  grid-template-columns: repeat(auto-fit, 44px);
   border-left: 1px solid var(--line);
 }
 
@@ -5342,6 +5370,7 @@ th {
   color: var(--ink);
   font-size: 11px;
   text-align: center;
+  white-space: nowrap;
 }
 
 .marketing-gantt-days span.weekend {
@@ -5358,27 +5387,30 @@ th {
 }
 
 .marketing-gantt-row > div:first-child {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
 }
 
-.marketing-gantt-row > div:first-child span {
-  color: var(--muted);
-  font-size: 11px;
+.marketing-gantt-row > div:first-child strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.marketing-gantt-row > div:first-child em {
-  color: #9a5a00;
+.marketing-gantt-row > div:first-child b {
+  margin-left: auto;
+  color: var(--brand);
   font-size: 10px;
-  font-style: normal;
-  font-weight: 750;
+  white-space: nowrap;
 }
 
 .marketing-gantt-track {
   position: relative;
   min-height: 42px;
   border-left: 1px solid var(--line);
-  background: repeating-linear-gradient(90deg, transparent 0, transparent 33px, #edf0f3 33px, #edf0f3 34px);
+  background: repeating-linear-gradient(90deg, transparent 0, transparent 43px, #edf0f3 43px, #edf0f3 44px);
 }
 
 .marketing-gantt-row.is-payment {
@@ -5405,6 +5437,22 @@ th {
   display: grid;
   gap: 16px;
   margin-top: 14px;
+}
+
+.marketing-item-modal {
+  width: min(960px, 100%);
+  max-height: min(88vh, 820px);
+  overflow-y: auto;
+}
+
+.marketing-provision-tabs {
+  display: flex;
+  margin-bottom: 12px;
+  overflow-x: auto;
+}
+
+.marketing-provision-tabs button {
+  flex: 0 0 auto;
 }
 
 .marketing-qc-head {
@@ -5492,6 +5540,17 @@ th {
 
   .marketing-event-workspace {
     overflow-x: auto;
+  }
+
+  .marketing-event-fields {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .marketing-event-fields .event-name,
+  .marketing-event-fields .event-location,
+  .marketing-event-fields .event-assets,
+  .marketing-event-fields .event-attachments {
+    grid-column: span 2;
   }
 
   .marketing-quote-form {
