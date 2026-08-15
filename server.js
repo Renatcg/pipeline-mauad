@@ -4738,9 +4738,10 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_settlements (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
-  await sql`CREATE TABLE IF NOT EXISTS crm_sml_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, signal_value numeric, financing_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_sml_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, signal_value numeric, financing_value numeric, commission_value numeric, realtor_company text, zero_entry boolean NOT NULL DEFAULT false, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`ALTER TABLE crm_sml_sales ADD COLUMN IF NOT EXISTS signal_value numeric`;
   await sql`ALTER TABLE crm_sml_sales ADD COLUMN IF NOT EXISTS financing_value numeric`;
+  await sql`ALTER TABLE crm_sml_sales ADD COLUMN IF NOT EXISTS zero_entry boolean NOT NULL DEFAULT false`;
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS crm_sml_sales_unit_unique ON crm_sml_sales (upper(unit))`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_settlements (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
@@ -7479,12 +7480,15 @@ async function fastStructuredSmlFinanceRoutes(req, res, url) {
       if (publicMatch[2] === "login") return sendJson(res, 200, { sales, expiresAt: link.expires_at });
       const confirmedIds = new Set(Array.isArray(body.saleIds) ? body.saleIds.map(String) : []);
       const confirmed = sales.filter((sale) => confirmedIds.has(sale.id));
-      for (const sale of confirmed) {
-        const next = { ...sale, status: "Aguardando autorização", smlConfirmedAt: new Date().toISOString() };
-        await sql`UPDATE crm_sml_sales SET status = ${next.status}, payload = ${JSON.stringify(next)}::jsonb WHERE id = ${sale.id}`;
+      const isTest = Boolean(link.payload?.test);
+      if (!isTest) {
+        for (const sale of confirmed) {
+          const next = { ...sale, status: "Aguardando autorização", smlConfirmedAt: new Date().toISOString() };
+          await sql`UPDATE crm_sml_sales SET status = ${next.status}, payload = ${JSON.stringify(next)}::jsonb WHERE id = ${sale.id}`;
+        }
       }
-      await sql`UPDATE crm_sml_authorization_links SET confirmed_at = now(), payload = ${JSON.stringify({ confirmedIds: confirmed.map((sale) => sale.id) })}::jsonb WHERE id = ${link.id}`;
-      return sendJson(res, 200, { ok: true, confirmed: confirmed.length });
+      await sql`UPDATE crm_sml_authorization_links SET confirmed_at = now(), payload = ${JSON.stringify({ ...(link.payload || {}), confirmedIds: confirmed.map((sale) => sale.id) })}::jsonb WHERE id = ${link.id}`;
+      return sendJson(res, 200, { ok: true, confirmed: confirmed.length, test: isTest });
     }
 
     const user = await structuredUserFromSession(req, res, sql);
@@ -7534,14 +7538,44 @@ async function fastStructuredSmlFinanceRoutes(req, res, url) {
         const contractValue = Number(raw.contractValue || 0);
         const sale = { ...raw, signedAt: "", contractValue, commissionPercent: settings.commissionPercent, commissionValue: Math.round(contractValue * settings.commissionPercent) / 100, status: "Pendente", importedAt: new Date().toISOString() };
         if (!sale.id || !sale.unit || !sale.client || contractValue <= 0) continue;
-        await sql`INSERT INTO crm_sml_sales (id, unit, client, signed_at, contract_value, signal_value, financing_value, commission_value, realtor_company, status, nf_number, paid_at, payload) VALUES (${sale.id}, ${sale.unit}, ${sale.client}, null, ${sale.contractValue}, ${Number(sale.signalValue || 0)}, ${Number(sale.financingValue || 0)}, ${sale.commissionValue}, ${sale.realEstate || ""}, ${sale.status}, '', null, ${JSON.stringify(sale)}::jsonb) ON CONFLICT (id) DO NOTHING`;
+        await sql`INSERT INTO crm_sml_sales (id, unit, client, signed_at, contract_value, signal_value, financing_value, commission_value, realtor_company, zero_entry, status, nf_number, paid_at, payload) VALUES (${sale.id}, ${sale.unit}, ${sale.client}, null, ${sale.contractValue}, ${Number(sale.signalValue || 0)}, ${Number(sale.financingValue || 0)}, ${sale.commissionValue}, ${sale.realEstate || ""}, false, ${sale.status}, '', null, ${JSON.stringify(sale)}::jsonb) ON CONFLICT (id) DO NOTHING`;
         imported += 1;
       }
       await structuredAudit(user, "IMPORT_SML_SALES", { imported });
       return sendJson(res, 200, { ok: true, imported });
     }
-    if (method === "POST" && url.pathname === "/api/sml-finance/send-authorization") {
-      if (!settings.authorizationTo) return sendJson(res, 400, { error: "Configure o e-mail do financeiro SML" });
+    if (method === "POST" && url.pathname === "/api/sml-finance/identify-zero-entry") {
+      const saleRows = await sql`SELECT id, payload FROM crm_sml_sales ORDER BY unit ASC`;
+      let identified = 0;
+      for (const row of saleRows) {
+        const sale = row.payload || {};
+        const signal = Number(sale.signalValue || 0);
+        const financing = Number(sale.financingValue || 0);
+        const contract = Number(sale.contractValue || 0);
+        const eligible = !sale.zeroEntryDismissed && signal < 1000 && Math.abs((signal + financing) - contract) <= 0.01;
+        const next = { ...sale, zeroEntry: eligible };
+        if (eligible) identified += 1;
+        await sql`UPDATE crm_sml_sales SET zero_entry = ${eligible}, payload = ${JSON.stringify(next)}::jsonb WHERE id = ${row.id}`;
+      }
+      const refreshed = await sql`SELECT payload FROM crm_sml_sales ORDER BY signed_at DESC NULLS LAST, unit ASC`;
+      await structuredAudit(user, "IDENTIFY_SML_ZERO_ENTRY", { identified });
+      return sendJson(res, 200, { identified, sales: refreshed.map((row) => row.payload || {}) });
+    }
+    const zeroEntryMatch = url.pathname.match(/^\/api\/sml-finance\/sales\/([^/]+)\/zero-entry$/);
+    if (method === "PATCH" && zeroEntryMatch) {
+      const id = decodeURIComponent(zeroEntryMatch[1]);
+      const rows = await sql`SELECT payload FROM crm_sml_sales WHERE id = ${id} LIMIT 1`;
+      const sale = rows[0]?.payload;
+      if (!sale) return sendJson(res, 404, { error: "Venda não encontrada" });
+      const next = { ...sale, zeroEntry: false, zeroEntryDismissed: true, zeroEntryDismissedAt: new Date().toISOString(), zeroEntryDismissedBy: user.id };
+      await sql`UPDATE crm_sml_sales SET zero_entry = false, payload = ${JSON.stringify(next)}::jsonb WHERE id = ${id}`;
+      await structuredAudit(user, "UNCHECK_SML_ZERO_ENTRY", { id, unit: sale.unit });
+      return sendJson(res, 200, { sale: next });
+    }
+    if (method === "POST" && ["/api/sml-finance/send-authorization", "/api/sml-finance/send-authorization-test"].includes(url.pathname)) {
+      const isTest = url.pathname.endsWith("-test");
+      const targetEmail = isTest ? "renat.cg@gmail.com" : settings.authorizationTo;
+      if (!targetEmail) return sendJson(res, 400, { error: "Configure o e-mail do financeiro SML" });
       const saleRows = await sql`SELECT payload FROM crm_sml_sales WHERE status = 'Pendente' ORDER BY unit ASC`;
       const sales = saleRows.map((row) => row.payload || {});
       if (!sales.length) return sendJson(res, 400, { error: "Não há vendas pendentes" });
@@ -7549,13 +7583,14 @@ async function fastStructuredSmlFinanceRoutes(req, res, url) {
       const password = crypto.randomBytes(5).toString("base64url").toUpperCase();
       const expiresAt = new Date(Date.now() + settings.authorizationExpiryHours * 3600000);
       const id = `sml-auth-${crypto.randomUUID()}`;
-      await sql`INSERT INTO crm_sml_authorization_links (id, token_hash, email, password_hash, sale_ids, expires_at, payload) VALUES (${id}, ${crypto.createHash("sha256").update(token).digest("hex")}, ${settings.authorizationTo}, ${hashPassword(password)}, ${JSON.stringify(sales.map((sale) => sale.id))}::jsonb, ${expiresAt}, ${JSON.stringify({ createdBy: user.id })}::jsonb)`;
+      await sql`INSERT INTO crm_sml_authorization_links (id, token_hash, email, password_hash, sale_ids, expires_at, payload) VALUES (${id}, ${crypto.createHash("sha256").update(token).digest("hex")}, ${targetEmail}, ${hashPassword(password)}, ${JSON.stringify(sales.map((sale) => sale.id))}::jsonb, ${expiresAt}, ${JSON.stringify({ createdBy: user.id, test: isTest })}::jsonb)`;
       const origin = `${req.headers["x-forwarded-proto"] || "https"}://${req.headers["x-forwarded-host"] || req.headers.host}`;
       const link = `${origin}/autorizacao-sml/${token}`;
       const message = String(settings.authorizationMessage || "").replaceAll("\n", "<br>");
-      const email = await sendEmailWithCc(settings.authorizationTo, settings.authorizationCc, settings.authorizationSubject, `<p>${message}</p><p><a href="${link}">Acessar confirmação de vendas</a></p><p><strong>E-mail:</strong> ${settings.authorizationTo}<br><strong>Senha:</strong> ${password}</p><p>Este acesso expira em ${settings.authorizationExpiryHours} horas.</p>`);
-      await structuredAudit(user, "SEND_SML_AUTHORIZATION", { count: sales.length, expiresAt: expiresAt.toISOString(), sent: email.sent });
-      return sendJson(res, 200, { ok: true, sent: email.sent, reason: email.reason || "", expiresAt: expiresAt.toISOString() });
+      const subject = `${isTest ? "[TESTE] " : ""}${settings.authorizationSubject}`;
+      const email = await sendEmailWithCc(targetEmail, isTest ? "" : settings.authorizationCc, subject, `<p>${isTest ? "<strong>Este é um teste. Nenhuma confirmação alterará as vendas.</strong></p>" : ""}<p>${message}</p><p><a href="${link}">Acessar confirmação de vendas</a></p><p><strong>E-mail:</strong> ${targetEmail}<br><strong>Senha:</strong> ${password}</p><p>Este acesso expira em ${settings.authorizationExpiryHours} horas.</p>`);
+      await structuredAudit(user, isTest ? "SEND_SML_AUTHORIZATION_TEST" : "SEND_SML_AUTHORIZATION", { count: sales.length, expiresAt: expiresAt.toISOString(), sent: email.sent, to: targetEmail });
+      return sendJson(res, 200, { ok: true, sent: email.sent, reason: email.reason || "", expiresAt: expiresAt.toISOString(), to: targetEmail, test: isTest });
     }
     return false;
   } catch (error) {

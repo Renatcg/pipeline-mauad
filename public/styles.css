@@ -53,6 +53,47 @@ button.primary:hover {
   background: var(--brand-strong);
 }
 
+.sml-zero-cell {
+  text-align: center;
+}
+
+.sml-zero-cell[data-sml-zero-entry] {
+  cursor: context-menu;
+}
+
+.sml-zero-check {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid #86d5a6;
+  border-radius: 50%;
+  background: #eaf9ef;
+  color: #15803d;
+  font-weight: 800;
+}
+
+.sml-zero-context-menu {
+  position: fixed;
+  z-index: 1400;
+  width: 200px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.sml-zero-context-menu button {
+  width: 100%;
+  border: 0;
+  text-align: left;
+}
+
+.sml-zero-context-menu button:hover {
+  background: var(--chip);
+}
+
 .compact-button {
   min-height: 34px;
   padding: 6px 10px;
