@@ -5268,6 +5268,18 @@ th {
   margin-top: 14px;
 }
 
+.marketing-event-tabbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.marketing-event-tabbar .tabs {
+  margin: 0;
+}
+
 .marketing-event-fields {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -5407,6 +5419,11 @@ th {
   border-top: 1px solid var(--line);
 }
 
+.marketing-gantt-row > * {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
 .marketing-gantt-row > div:first-child {
   display: flex;
   gap: 8px;
@@ -5423,9 +5440,15 @@ th {
 
 .marketing-gantt-track {
   position: relative;
-  min-height: 42px;
+  min-height: 24px;
+  padding-top: 0;
+  padding-bottom: 0;
   border-left: 1px solid var(--line);
   background: repeating-linear-gradient(90deg, transparent 0, transparent 43px, #edf0f3 43px, #edf0f3 44px);
+}
+
+.marketing-gantt-row[data-marketing-activity-row] > div:first-child {
+  cursor: context-menu;
 }
 
 .marketing-gantt-row.is-payment {
@@ -5470,6 +5493,11 @@ th {
 
 .marketing-items-qc {
   min-width: 1050px;
+}
+
+.marketing-items-qc td {
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 
 .marketing-items-qc th:nth-child(n+4):nth-child(-n+6),
@@ -5537,6 +5565,24 @@ th {
   cursor: pointer;
   font-size: 16px;
   list-style: none;
+}
+
+.marketing-quote-edit {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  min-height: 25px;
+  padding: 0;
+  place-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #1671d9;
+  font-size: 16px;
+}
+
+.marketing-quote-edit:hover {
+  background: #e8f2ff;
 }
 
 .marketing-quote-actions summary::-webkit-details-marker {
@@ -5618,6 +5664,29 @@ th {
 }
 
 .marketing-supplier-hover button {
+  min-height: 30px;
+  color: #1671d9;
+}
+
+.marketing-supplier-popover {
+  position: fixed;
+  z-index: 1100;
+  width: 270px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 16px 34px rgba(15, 23, 42, .2);
+}
+
+.marketing-supplier-popover p {
+  margin: 6px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.marketing-supplier-popover button {
   min-height: 30px;
   color: #1671d9;
 }
@@ -5721,6 +5790,11 @@ th {
 
   .marketing-event-workspace {
     overflow-x: auto;
+  }
+
+  .marketing-event-tabbar {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .marketing-event-fields {
