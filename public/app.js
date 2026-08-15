@@ -7872,13 +7872,16 @@ function renderEventCaptureMessageSettings() {
         <div class="field full"><label>Mensagem do e-mail de agradecimento</label><div class="email-template-builder">
           <section class="email-template-editor-pane">
             <div class="email-template-toolbar capture-email-toolbar" aria-label="Ferramentas de formatação">
+              <div class="capture-toolbar-row">
               <select id="captureEmailFontFamily" title="Fonte">${["Arial", "Georgia", "Times New Roman", "Verdana", "Tahoma", "Courier New"].map((font) => `<option value="${escapeHtml(font)}" ${font === fontFamily ? "selected" : ""}>${escapeHtml(font)}</option>`).join("")}</select>
-              <select id="captureEmailFontSize" title="Tamanho">${["12px", "13px", "14px", "15px", "16px", "18px", "20px", "24px"].map((size) => `<option value="${size}" ${size === fontSize ? "selected" : ""}>${size}</option>`).join("")}</select>
+              <select id="captureEmailFontSize" title="Tamanho">${["8px", "9px", "10px", "11px", "12px", "13px", "14px", "15px", "16px", "18px", "20px", "22px", "24px", "28px", "32px", "36px", "40px", "48px", "56px", "64px"].map((size) => `<option value="${size}" ${size === fontSize ? "selected" : ""}>${size}</option>`).join("")}</select>
               <select id="captureEmailLineHeight" title="Espaçamento entre linhas">${["1", "1.15", "1.3", "1.5", "1.6", "1.8", "2"].map((value) => `<option value="${value}" ${value === lineHeight ? "selected" : ""}>${value}</option>`).join("")}</select>
               <input id="captureEmailFontColor" type="color" value="${escapeHtml(color)}" title="Cor da fonte"><span class="toolbar-separator"></span>
               <button type="button" data-capture-email-command="bold" title="Negrito"><strong>B</strong></button><button type="button" data-capture-email-command="italic" title="Itálico"><em>I</em></button><button type="button" data-capture-email-command="underline" title="Sublinhado"><u>U</u></button><span class="toolbar-separator"></span>
-              <button type="button" data-capture-email-command="insertUnorderedList" title="Marcadores" aria-label="Marcadores">•≡</button><button type="button" data-capture-email-command="insertOrderedList" title="Lista numerada" aria-label="Lista numerada">1≡</button><button type="button" data-capture-email-command="outdent" title="Diminuir recuo" aria-label="Diminuir recuo">⇤</button><button type="button" data-capture-email-command="indent" title="Aumentar recuo" aria-label="Aumentar recuo">⇥</button><span class="toolbar-separator"></span>
+              <button type="button" data-capture-email-command="insertUnorderedList" title="Marcadores" aria-label="Marcadores">•≡</button><button type="button" data-capture-email-command="insertOrderedList" title="Lista numerada" aria-label="Lista numerada">1≡</button><button type="button" data-capture-email-command="outdent" title="Diminuir recuo" aria-label="Diminuir recuo">⇤</button><button type="button" data-capture-email-command="indent" title="Aumentar recuo" aria-label="Aumentar recuo">⇥</button>
+              </div><div class="capture-toolbar-row capture-align-row">
               <button type="button" data-capture-email-command="justifyLeft" title="Alinhar à esquerda" aria-label="Alinhar à esquerda"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h9M3 12h14M3 16h9"/></svg></button><button type="button" data-capture-email-command="justifyCenter" title="Centralizar" aria-label="Centralizar"><svg viewBox="0 0 20 20"><path d="M3 4h14M5.5 8h9M3 12h14M5.5 16h9"/></svg></button><button type="button" data-capture-email-command="justifyRight" title="Alinhar à direita" aria-label="Alinhar à direita"><svg viewBox="0 0 20 20"><path d="M3 4h14M8 8h9M3 12h14M8 16h9"/></svg></button><button type="button" data-capture-email-command="justifyFull" title="Justificar" aria-label="Justificar"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h14M3 12h14M3 16h14"/></svg></button>
+              </div>
             </div>
             <div class="template-variable-bar"><span>Variáveis</span><button type="button" data-capture-email-variable="nome_lead">Nome do lead</button><button type="button" data-capture-email-variable="nome_corretor">Nome do corretor</button></div>
             <div id="captureEmailTemplateEditor" class="rich-email-editor" contenteditable="true" style="font-family:${escapeHtml(fontFamily)};font-size:${escapeHtml(fontSize)};color:${escapeHtml(color)};line-height:${escapeHtml(lineHeight)}">${html}</div>
@@ -7931,13 +7934,31 @@ function renderEventCaptureMessageSettings() {
     savedRange = nextRange.cloneRange();
     refresh();
   };
+  const applySelectedLineHeight = (value) => {
+    if (!editor || !restoreSelection()) return;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!range) return;
+    const blockSelector = "p,div,li,h1,h2,h3,h4,h5,h6,blockquote";
+    const blocks = [...editor.querySelectorAll(blockSelector)].filter((block) => {
+      try { return range.intersectsNode(block); } catch { return false; }
+    });
+    if (!blocks.length) {
+      let node = range.commonAncestorContainer.nodeType === Node.TEXT_NODE ? range.commonAncestorContainer.parentElement : range.commonAncestorContainer;
+      const block = node?.closest?.(blockSelector);
+      if (block && editor.contains(block)) blocks.push(block);
+    }
+    blocks.forEach((block) => { block.style.lineHeight = value; });
+    restoreSelection();
+    refresh();
+  };
   editor?.addEventListener("input", refresh);
   editor?.addEventListener("keyup", rememberSelection);
   editor?.addEventListener("mouseup", rememberSelection);
   document.addEventListener("selectionchange", rememberSelection);
   family?.addEventListener("change", () => applySelectedStyle("fontFamily", family.value));
   size?.addEventListener("change", () => applySelectedStyle("fontSize", size.value));
-  spacing?.addEventListener("change", () => applySelectedStyle("lineHeight", spacing.value));
+  spacing?.addEventListener("change", () => applySelectedLineHeight(spacing.value));
   fontColor?.addEventListener("change", () => applySelectedStyle("color", fontColor.value));
   document.querySelectorAll("[data-capture-email-command]").forEach((button) => {
     button.addEventListener("mousedown", (event) => event.preventDefault());
