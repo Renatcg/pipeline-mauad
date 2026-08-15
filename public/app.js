@@ -7737,13 +7737,12 @@ function bindRichMessageEditor(id, renderPreview) {
     if (!range || range.collapsed) return;
     const blockSelector = "p,div,li,h1,h2,h3,h4,h5,h6,blockquote";
     const blocks = [...editor.querySelectorAll(blockSelector)].filter((block) => { try { return range.intersectsNode(block); } catch { return false; } });
-    const styledElements = [...editor.querySelectorAll("[style]")].filter((element) => {
-      if (!element.style.lineHeight) return false;
-      try { return range.intersectsNode(element); } catch { return false; }
-    });
-    const targets = [...new Set([...blocks, ...styledElements])];
+    const targets = blocks.filter((block) => !blocks.some((candidate) => candidate !== block && block.contains(candidate)));
     if (targets.length) {
-      targets.forEach((element) => { element.style.lineHeight = value; });
+      targets.forEach((element) => {
+        element.querySelectorAll("[style]").forEach((descendant) => descendant.style.removeProperty("line-height"));
+        element.style.setProperty("line-height", value, "important");
+      });
     } else {
       const span = document.createElement("span");
       span.style.lineHeight = value;
