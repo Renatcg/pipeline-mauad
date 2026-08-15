@@ -2781,6 +2781,43 @@ th {
   padding: 0 9px;
 }
 
+.capture-email-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.capture-email-toolbar select {
+  width: auto;
+  min-width: 0;
+}
+
+#captureEmailFontFamily { width: 140px; }
+#captureEmailFontSize { width: 76px; }
+#captureEmailLineHeight { width: 88px; }
+
+.capture-email-toolbar button {
+  display: inline-grid;
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  place-items: center;
+  font-size: 15px;
+}
+
+.capture-email-toolbar button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.7;
+}
+
+.capture-email-toolbar .toolbar-separator {
+  margin: 3px 0;
+}
+
 .template-variable-bar {
   display: flex;
   flex-wrap: wrap;

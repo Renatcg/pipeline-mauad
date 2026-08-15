@@ -7871,14 +7871,14 @@ function renderEventCaptureMessageSettings() {
         <div class="field"><label>Assunto do e-mail</label><input name="subject" value="${escapeHtml(settings.subject || "Obrigado por nos visitar no 64º Aberto de Golfe")}" required></div>
         <div class="field full"><label>Mensagem do e-mail de agradecimento</label><div class="email-template-builder">
           <section class="email-template-editor-pane">
-            <div class="email-template-toolbar" aria-label="Ferramentas de formatação">
+            <div class="email-template-toolbar capture-email-toolbar" aria-label="Ferramentas de formatação">
               <select id="captureEmailFontFamily" title="Fonte">${["Arial", "Georgia", "Times New Roman", "Verdana", "Tahoma", "Courier New"].map((font) => `<option value="${escapeHtml(font)}" ${font === fontFamily ? "selected" : ""}>${escapeHtml(font)}</option>`).join("")}</select>
               <select id="captureEmailFontSize" title="Tamanho">${["12px", "13px", "14px", "15px", "16px", "18px", "20px", "24px"].map((size) => `<option value="${size}" ${size === fontSize ? "selected" : ""}>${size}</option>`).join("")}</select>
               <select id="captureEmailLineHeight" title="Espaçamento entre linhas">${["1", "1.15", "1.3", "1.5", "1.6", "1.8", "2"].map((value) => `<option value="${value}" ${value === lineHeight ? "selected" : ""}>${value}</option>`).join("")}</select>
               <input id="captureEmailFontColor" type="color" value="${escapeHtml(color)}" title="Cor da fonte"><span class="toolbar-separator"></span>
               <button type="button" data-capture-email-command="bold" title="Negrito"><strong>B</strong></button><button type="button" data-capture-email-command="italic" title="Itálico"><em>I</em></button><button type="button" data-capture-email-command="underline" title="Sublinhado"><u>U</u></button><span class="toolbar-separator"></span>
-              <button type="button" data-capture-email-command="insertUnorderedList" title="Marcadores">•</button><button type="button" data-capture-email-command="insertOrderedList" title="Lista numerada">1.</button><button type="button" data-capture-email-command="outdent" title="Diminuir recuo">&lt;</button><button type="button" data-capture-email-command="indent" title="Aumentar recuo">&gt;</button><span class="toolbar-separator"></span>
-              <button type="button" data-capture-email-command="justifyLeft" title="Alinhar à esquerda">Esq</button><button type="button" data-capture-email-command="justifyCenter" title="Centralizar">C</button><button type="button" data-capture-email-command="justifyRight" title="Alinhar à direita">Dir</button><button type="button" data-capture-email-command="justifyFull" title="Justificar">Just</button>
+              <button type="button" data-capture-email-command="insertUnorderedList" title="Marcadores" aria-label="Marcadores">•≡</button><button type="button" data-capture-email-command="insertOrderedList" title="Lista numerada" aria-label="Lista numerada">1≡</button><button type="button" data-capture-email-command="outdent" title="Diminuir recuo" aria-label="Diminuir recuo">⇤</button><button type="button" data-capture-email-command="indent" title="Aumentar recuo" aria-label="Aumentar recuo">⇥</button><span class="toolbar-separator"></span>
+              <button type="button" data-capture-email-command="justifyLeft" title="Alinhar à esquerda" aria-label="Alinhar à esquerda"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h9M3 12h14M3 16h9"/></svg></button><button type="button" data-capture-email-command="justifyCenter" title="Centralizar" aria-label="Centralizar"><svg viewBox="0 0 20 20"><path d="M3 4h14M5.5 8h9M3 12h14M5.5 16h9"/></svg></button><button type="button" data-capture-email-command="justifyRight" title="Alinhar à direita" aria-label="Alinhar à direita"><svg viewBox="0 0 20 20"><path d="M3 4h14M8 8h9M3 12h14M8 16h9"/></svg></button><button type="button" data-capture-email-command="justifyFull" title="Justificar" aria-label="Justificar"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h14M3 12h14M3 16h14"/></svg></button>
             </div>
             <div class="template-variable-bar"><span>Variáveis</span><button type="button" data-capture-email-variable="nome_lead">Nome do lead</button><button type="button" data-capture-email-variable="nome_corretor">Nome do corretor</button></div>
             <div id="captureEmailTemplateEditor" class="rich-email-editor" contenteditable="true" style="font-family:${escapeHtml(fontFamily)};font-size:${escapeHtml(fontSize)};color:${escapeHtml(color)};line-height:${escapeHtml(lineHeight)}">${html}</div>
@@ -7896,18 +7896,64 @@ function renderEventCaptureMessageSettings() {
   const size = document.querySelector("#captureEmailFontSize");
   const spacing = document.querySelector("#captureEmailLineHeight");
   const fontColor = document.querySelector("#captureEmailFontColor");
-  const refresh = () => { if (!editor || !preview) return; [editor, preview].forEach((element) => { element.style.fontFamily = family.value; element.style.fontSize = size.value; element.style.color = fontColor.value; element.style.lineHeight = spacing.value; }); preview.innerHTML = renderPreview(editor.innerHTML); };
+  let savedRange = null;
+  const rememberSelection = () => {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || !editor) return;
+    const range = selection.getRangeAt(0);
+    if (editor.contains(range.commonAncestorContainer)) savedRange = range.cloneRange();
+  };
+  const restoreSelection = () => {
+    if (!savedRange) return false;
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(savedRange);
+    return true;
+  };
+  const refresh = () => { if (editor && preview) preview.innerHTML = renderPreview(editor.innerHTML); };
+  const applySelectedStyle = (property, value) => {
+    if (!editor || !restoreSelection()) return;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!range || range.collapsed) return;
+    const span = document.createElement("span");
+    span.style[property] = value;
+    try {
+      range.surroundContents(span);
+    } catch {
+      span.appendChild(range.extractContents());
+      range.insertNode(span);
+    }
+    const nextRange = document.createRange();
+    nextRange.selectNodeContents(span);
+    selection.removeAllRanges();
+    selection.addRange(nextRange);
+    savedRange = nextRange.cloneRange();
+    refresh();
+  };
   editor?.addEventListener("input", refresh);
-  [family, size, spacing, fontColor].forEach((control) => { control?.addEventListener("input", refresh); control?.addEventListener("change", refresh); });
-  document.querySelectorAll("[data-capture-email-command]").forEach((button) => button.addEventListener("click", () => { editor?.focus(); document.execCommand(button.dataset.captureEmailCommand, false, null); refresh(); }));
-  document.querySelectorAll("[data-capture-email-variable]").forEach((button) => button.addEventListener("click", () => { editor?.focus(); document.execCommand("insertText", false, `{{${button.dataset.captureEmailVariable}}}`); refresh(); }));
+  editor?.addEventListener("keyup", rememberSelection);
+  editor?.addEventListener("mouseup", rememberSelection);
+  document.addEventListener("selectionchange", rememberSelection);
+  family?.addEventListener("change", () => applySelectedStyle("fontFamily", family.value));
+  size?.addEventListener("change", () => applySelectedStyle("fontSize", size.value));
+  spacing?.addEventListener("change", () => applySelectedStyle("lineHeight", spacing.value));
+  fontColor?.addEventListener("change", () => applySelectedStyle("color", fontColor.value));
+  document.querySelectorAll("[data-capture-email-command]").forEach((button) => {
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => { restoreSelection(); document.execCommand(button.dataset.captureEmailCommand, false, null); rememberSelection(); refresh(); });
+  });
+  document.querySelectorAll("[data-capture-email-variable]").forEach((button) => {
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => { restoreSelection(); document.execCommand("insertText", false, `{{${button.dataset.captureEmailVariable}}}`); rememberSelection(); refresh(); });
+  });
   document.querySelector("#eventCaptureSettingsForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector("button[type='submit']");
     try {
       setButtonBusy(button, true, "Salvando...");
       const formData = new FormData(event.currentTarget);
-      const data = await api("/api/event-capture-settings", { method: "PUT", body: JSON.stringify({ senderName: formData.get("senderName"), subject: formData.get("subject"), emailTemplate: { html: sanitizeRichHtml(editor?.innerHTML || DEFAULT_EVENT_CAPTURE_EMAIL_HTML), fontFamily: family?.value, fontSize: size?.value, color: fontColor?.value, lineHeight: spacing?.value } }) });
+      const data = await api("/api/event-capture-settings", { method: "PUT", body: JSON.stringify({ senderName: formData.get("senderName"), subject: formData.get("subject"), emailTemplate: { html: sanitizeRichHtml(editor?.innerHTML || DEFAULT_EVENT_CAPTURE_EMAIL_HTML), fontFamily, fontSize, color, lineHeight } }) });
       state.eventCaptureSettings = data.eventCaptureSettings || {};
       state.settingsNotice = "Mensagem de captação salva.";
       renderSettings();
