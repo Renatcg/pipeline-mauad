@@ -7599,6 +7599,165 @@ async function fastStructuredSmlFinanceRoutes(req, res, url) {
   }
 }
 
+function readEventCaptureSession(req) {
+  const authorization = String(req.headers.authorization || "");
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  if (!token.includes(".")) return null;
+  const [body, signature] = token.split(".");
+  const expected = crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+  if (!signature || Buffer.byteLength(signature) !== Buffer.byteLength(expected)) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    return payload.type === "event-capture" && payload.expiresAt > Date.now() ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+async function transcribeEventCaptureAudio(audioDataUrl) {
+  if (!OPENAI_API_KEY) throw new Error("Transcrição por IA ainda não configurada.");
+  const match = String(audioDataUrl || "").match(/^data:(audio\/[\w.+-]+);base64,(.+)$/s);
+  if (!match) throw new Error("Áudio inválido.");
+  const buffer = Buffer.from(match[2], "base64");
+  if (!buffer.length || buffer.length > 8 * 1024 * 1024) throw new Error("O áudio deve ter no máximo 8 MB.");
+  const extension = match[1].includes("mp4") ? "m4a" : match[1].includes("ogg") ? "ogg" : "webm";
+  const form = new FormData();
+  form.append("model", "gpt-4o-mini-transcribe");
+  form.append("language", "pt");
+  form.append("file", new Blob([buffer], { type: match[1] }), `captacao.${extension}`);
+  const transcriptionResponse = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    body: form
+  });
+  const transcription = await transcriptionResponse.json().catch(() => ({}));
+  if (!transcriptionResponse.ok) throw new Error(transcription.error?.message || "Não foi possível transcrever o áudio.");
+  const transcript = String(transcription.text || "").trim();
+  const extractionResponse = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      instructions: "Extraia nome completo, email e telefone de uma transcrição em português. Não invente dados. Responda somente JSON com as chaves name, email e phone.",
+      input: transcript,
+      text: { format: { type: "json_object" } },
+      max_output_tokens: 300
+    })
+  });
+  const extraction = await extractionResponse.json().catch(() => ({}));
+  if (!extractionResponse.ok) throw new Error(extraction.error?.message || "Não foi possível organizar os dados transcritos.");
+  const text = extraction.output_text || extraction.output?.flatMap((item) => item.content || []).map((content) => content.text || "").join("").trim();
+  const fields = JSON.parse(text || "{}");
+  return { transcript, fields: { name: String(fields.name || ""), email: String(fields.email || ""), phone: String(fields.phone || "") } };
+}
+
+async function fastStructuredEventCaptureRoutes(req, res, url) {
+  if (!DATABASE_URL || !url.pathname.startsWith("/api/event-capture/golf-64")) return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchemaOnce(sql);
+    if (req.method === "GET" && url.pathname === "/api/event-capture/golf-64/brokers") {
+      const rows = await sql`SELECT payload FROM crm_users WHERE active = true ORDER BY name ASC`;
+      const brokers = rows.map((row) => row.payload || {}).filter(isAssignableBroker).map((broker) => ({
+        id: broker.id,
+        name: broker.name || broker.username || "Corretor",
+        hasWhatsapp: Boolean(broker.notifications?.whatsappNumber)
+      }));
+      return sendJson(res, 200, { brokers });
+    }
+    if (req.method === "POST" && url.pathname === "/api/event-capture/golf-64/session") {
+      const body = await readBody(req);
+      const broker = await activeStructuredBroker(sql, String(body.brokerId || ""));
+      if (!broker) return sendJson(res, 400, { error: "Selecione um corretor ativo." });
+      const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+      const token = signSession({ type: "event-capture", brokerId: broker.id, expiresAt });
+      return sendJson(res, 200, { token, expiresAt, broker: { id: broker.id, name: broker.name || broker.username || "Corretor" } });
+    }
+    const captureSession = readEventCaptureSession(req);
+    if (!captureSession) return sendJson(res, 401, { error: "Sessão expirada. Identifique novamente o corretor." });
+    const broker = await activeStructuredBroker(sql, captureSession.brokerId);
+    if (!broker) return sendJson(res, 401, { error: "Corretor indisponível. Inicie uma nova sessão." });
+    if (req.method === "POST" && url.pathname === "/api/event-capture/golf-64/transcribe") {
+      const body = await readBody(req);
+      return sendJson(res, 200, await transcribeEventCaptureAudio(body.audioDataUrl));
+    }
+    if (req.method === "POST" && url.pathname === "/api/event-capture/golf-64/leads") {
+      const body = await readBody(req);
+      const name = String(body.name || "").trim();
+      const email = String(body.email || "").trim().toLowerCase();
+      const phone = String(body.phone || "").trim();
+      if (name.length < 3 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || phone.replace(/\D/g, "").length < 10) return sendJson(res, 400, { error: "Preencha nome completo, e-mail e telefone válidos." });
+      const whatsappNumber = formatWhatsappNumber(broker.notifications?.whatsappNumber);
+      if (!whatsappNumber) return sendJson(res, 400, { error: `O WhatsApp de ${broker.name || "corretor"} precisa ser cadastrado antes desta captação.` });
+      const status = await firstStructuredPipelineStatus(sql);
+      if (!status) return sendJson(res, 400, { error: "O pipeline ainda não possui um status inicial configurado." });
+      const now = new Date().toISOString();
+      const lead = {
+        id: `lead-${crypto.randomUUID()}`,
+        externalId: `EVENTO-GOLF64-${Date.now()}`,
+        name,
+        email,
+        phone,
+        source: "64º Aberto de Golfe",
+        status,
+        inPipeline: true,
+        assignedTo: broker.id,
+        assignedName: broker.name || broker.username || "",
+        desiredProject: "Golf Club Resort",
+        project: "Golf Club Resort",
+        tags: [],
+        comments: [],
+        favorite: false,
+        favoritesByUser: {},
+        order: Date.now(),
+        createdAt: now,
+        updatedAt: now
+      };
+      await saveStructuredLead(sql, lead);
+      await sql`INSERT INTO crm_base_sources (name) VALUES (${lead.source}) ON CONFLICT DO NOTHING`;
+      const comments = [];
+      if (body.audioDataUrl) comments.push({
+        id: `comment-${crypto.randomUUID()}`,
+        leadId: lead.id,
+        authorId: broker.id,
+        authorName: broker.name || "Corretor",
+        text: `Áudio da captação no 64º Aberto de Golfe. Transcrição: ${String(body.transcript || "Não disponível").trim()}`,
+        audioDataUrl: String(body.audioDataUrl),
+        audioMimeType: String(body.audioDataUrl).match(/^data:([^;]+)/)?.[1] || "audio/webm",
+        compulsory: true,
+        fromUser: false,
+        createdAt: now
+      });
+      const emailResult = await sendEmailWithCcFrom("Comercial Mauad <comercial@golfclubresort.com.br>", email, "", "Obrigado por nos visitar no 64º Aberto de Golfe", `<div style="font-family:Arial,sans-serif;color:#17202a;line-height:1.6"><h1 style="font-size:22px">Obrigado pela sua visita, ${escapeHtml(name)}!</h1><p>Agradecemos a atenção dispensada à equipe Comercial Mauad durante o 64º Aberto de Golfe, em Teresópolis.</p><p>Foi um prazer conversar com você. Em breve, nossa equipe poderá apresentar mais detalhes do Golf Club Resort.</p><p>Atenciosamente,<br><strong>Comercial Mauad</strong></p></div>`);
+      comments.push({
+        id: `comment-${crypto.randomUUID()}`,
+        leadId: lead.id,
+        authorId: broker.id,
+        authorName: broker.name || "Corretor",
+        text: emailResult.sent ? `E-mail de agradecimento enviado para ${email}.` : `Não foi possível enviar o e-mail de agradecimento para ${email}: ${emailResult.reason || "falha não informada"}.`,
+        compulsory: true,
+        fromUser: false,
+        createdAt: new Date().toISOString()
+      });
+      for (const comment of comments) {
+        await sql`INSERT INTO crm_lead_comments (id, lead_id, author_user_id, author_name, comment_text, from_user, deleted, created_at, payload) VALUES (${comment.id}, ${lead.id}, ${broker.id}, ${broker.name || ""}, ${comment.text}, false, false, ${dbDate(comment.createdAt)}, ${JSON.stringify(comment)}::jsonb)`;
+      }
+      const actor = { id: broker.id, username: broker.username || "", name: broker.name || "", role: broker.role || "Corretor" };
+      await recordStructuredLeadStatusMovement(sql, { actor, lead, fromStatus: "", toStatus: status, movementType: "create", source: "64º Aberto de Golfe", screen: "event_capture", statusAt: now });
+      await structuredAudit(actor, "CREATE_EVENT_LEAD", { leadId: lead.id, event: "64º Aberto de Golfe", emailSent: emailResult.sent });
+      await structuredFup(actor, lead, "CREATE_LEAD", { source: lead.source, assignedTo: lead.assignedName, project: lead.desiredProject });
+      const whatsappText = `Olá, ${broker.name || "corretor"}. Sou ${name} e nos encontramos no 64º Aberto de Golfe, em Teresópolis.`;
+      return sendJson(res, 201, { ok: true, leadId: lead.id, emailSent: emailResult.sent, whatsappUrl: `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(whatsappText)}` });
+    }
+    return false;
+  } catch (error) {
+    mirrorStructuredError("event-capture", error);
+    return sendJson(res, 500, { error: error.message || "Erro na captação do evento." });
+  }
+}
+
 async function fastStructuredLevFinanceRoutes(req, res, url) {
   if (!DATABASE_URL || !url.pathname.startsWith("/api/lev-finance/")) return false;
   try {
@@ -11076,7 +11235,7 @@ function routeStatic(req, res) {
   res.writeHead(200, {
     "Content-Type": type,
     "X-Content-Type-Options": "nosniff",
-    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: https://api.qrserver.com; media-src 'self' data: blob:; base-uri 'none'; frame-ancestors 'none'",
     "Cache-Control": "no-store"
   });
   fs.createReadStream(filePath).pipe(res);
@@ -12539,6 +12698,7 @@ async function handleRequest(req, res) {
     if (await fastStructuredAuthRoutes(req, res, url)) return;
     if (await fastStructuredUserPermissionRoutes(req, res, url)) return;
     if (await fastStructuredSettingsRoutes(req, res, url)) return;
+    if (await fastStructuredEventCaptureRoutes(req, res, url)) return;
     if (await fastStructuredSmlFinanceRoutes(req, res, url)) return;
     if (await fastStructuredLevFinanceRoutes(req, res, url)) return;
     if (await fastStructuredSalesReportRoutes(req, res, url)) return;

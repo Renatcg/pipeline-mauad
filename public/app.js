@@ -3880,6 +3880,7 @@ function renderCommentBubble(comment, lead) {
           ]) : ""}
         </div>
         <p>${escapeHtml(text)}</p>
+        ${comment.audioDataUrl && !deleted ? `<audio class="lead-comment-audio" controls preload="metadata" src="${escapeHtml(comment.audioDataUrl)}"></audio>` : ""}
         ${deleted && comment.deletedByName ? `<small>Excluída por ${escapeHtml(comment.deletedByName)}</small>` : ""}
       </div>
     </article>
@@ -10088,10 +10089,117 @@ function renderSmlExternalAuthorization() {
   renderLogin();
 }
 
+function renderGolfEventCapture() {
+  const storageKey = "mauad:golf64-capture-session";
+  let capture = { token: "", expiresAt: 0, broker: null };
+  try { capture = JSON.parse(localStorage.getItem(storageKey) || "{}") || capture; } catch { /* sessão inválida */ }
+  if (!capture.token || Number(capture.expiresAt || 0) <= Date.now()) {
+    localStorage.removeItem(storageKey);
+    capture = { token: "", expiresAt: 0, broker: null };
+  }
+  let audioDataUrl = "";
+  let transcript = "";
+  let recorder = null;
+  let stream = null;
+  const captureApi = async (path, options = {}) => {
+    const response = await fetch(`/api/event-capture/golf-64${path}`, {
+      ...options,
+      headers: { "Content-Type": "application/json", ...(capture.token ? { Authorization: `Bearer ${capture.token}` } : {}), ...(options.headers || {}) }
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Não foi possível concluir a operação.");
+    return data;
+  };
+  const renderBrokerChoice = async (message = "") => {
+    app.innerHTML = `<main class="event-capture-page"><section class="event-capture-card"><div class="event-capture-brand">Golf Club Resort</div><h1>Captação no 64º Aberto de Golfe</h1><p>Antes de começar, informe quem está usando este aparelho.</p>${message ? `<div class="error">${escapeHtml(message)}</div>` : ""}<div class="event-capture-loading">Carregando corretores...</div></section></main>`;
+    try {
+      const data = await captureApi("/brokers");
+      const card = document.querySelector(".event-capture-card");
+      card.innerHTML = `<div class="event-capture-brand">Golf Club Resort</div><h1>Captação no 64º Aberto de Golfe</h1><p>Antes de começar, informe quem está usando este aparelho. Esta identificação será mantida por 24 horas.</p><form data-capture-broker-form><div class="field"><label>Corretor</label><select name="brokerId" required><option value="">Selecione</option>${(data.brokers || []).map((broker) => `<option value="${escapeHtml(broker.id)}">${escapeHtml(broker.name)}${broker.hasWhatsapp ? "" : " — sem WhatsApp cadastrado"}</option>`).join("")}</select></div><button class="primary event-capture-main-button" type="submit">Continuar</button></form>`;
+      card.querySelector("[data-capture-broker-form]")?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = event.currentTarget.querySelector("button");
+        try {
+          setButtonBusy(button, true, "Identificando...");
+          const result = await captureApi("/session", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget).entries())) });
+          capture = result;
+          localStorage.setItem(storageKey, JSON.stringify(capture));
+          renderLeadForm();
+        } catch (error) { renderBrokerChoice(error.message); }
+      });
+    } catch (error) { renderBrokerChoice(error.message); }
+  };
+  const renderLeadForm = () => {
+    app.innerHTML = `<main class="event-capture-page"><section class="event-capture-card event-capture-form-card"><div class="event-capture-session"><span>Atendimento por</span><strong>${escapeHtml(capture.broker?.name || "Corretor")}</strong><button type="button" data-change-capture-broker>Trocar</button></div><h1>Novo contato</h1><p>Digite os dados ou use o microfone para preencher pela voz.</p><form data-event-lead-form><div class="field"><label>Nome completo</label><input name="name" autocomplete="name" required></div><div class="field"><label>E-mail</label><input name="email" type="email" autocomplete="email" required></div><div class="field"><label>Telefone</label><input name="phone" type="tel" inputmode="tel" autocomplete="tel" required></div><button class="event-capture-mic" type="button" data-capture-mic aria-label="Gravar dados por voz"><span>🎙</span><strong>Preencher por voz</strong><small>Toque para começar a gravar</small></button><div class="event-capture-audio-status" data-capture-audio-status></div><button class="primary event-capture-main-button" type="submit">Salvar lead</button></form></section></main>`;
+    document.querySelector("[data-change-capture-broker]")?.addEventListener("click", () => { localStorage.removeItem(storageKey); capture = { token: "", expiresAt: 0, broker: null }; renderBrokerChoice(); });
+    const form = document.querySelector("[data-event-lead-form]");
+    const mic = document.querySelector("[data-capture-mic]");
+    const status = document.querySelector("[data-capture-audio-status]");
+    mic?.addEventListener("click", async () => {
+      if (recorder?.state === "recording") { recorder.stop(); return; }
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") return alert("Este navegador não oferece gravação de áudio.");
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const chunks = [];
+        recorder = new MediaRecorder(stream);
+        recorder.addEventListener("dataavailable", (event) => { if (event.data.size) chunks.push(event.data); });
+        recorder.addEventListener("stop", async () => {
+          stream?.getTracks().forEach((track) => track.stop());
+          mic.classList.remove("is-recording");
+          mic.querySelector("strong").textContent = "Processando áudio...";
+          status.textContent = "A IA está transcrevendo e organizando os dados.";
+          try {
+            const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+            audioDataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result || "")); reader.onerror = reject; reader.readAsDataURL(blob); });
+            const result = await captureApi("/transcribe", { method: "POST", body: JSON.stringify({ audioDataUrl }) });
+            transcript = result.transcript || "";
+            form.elements.name.value = result.fields?.name || form.elements.name.value;
+            form.elements.email.value = result.fields?.email || form.elements.email.value;
+            form.elements.phone.value = result.fields?.phone || form.elements.phone.value;
+            status.innerHTML = `<strong>Dados preenchidos.</strong> Confira e corrija antes de salvar.<br><span>${escapeHtml(transcript)}</span>`;
+          } catch (error) { status.textContent = error.message; }
+          mic.querySelector("strong").textContent = "Gravar novamente";
+          mic.querySelector("small").textContent = "Toque para substituir o áudio";
+        });
+        recorder.start();
+        mic.classList.add("is-recording");
+        mic.querySelector("strong").textContent = "Gravando... toque para parar";
+        mic.querySelector("small").textContent = "Diga nome completo, e-mail e telefone";
+        status.textContent = "Microfone ativo.";
+      } catch (error) { alert(error.message || "Não foi possível acessar o microfone."); }
+    });
+    form?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = event.currentTarget.querySelector("button[type='submit']");
+      const fields = Object.fromEntries(new FormData(event.currentTarget).entries());
+      if (!confirm(`Cadastrar ${fields.name} como lead do Golf Club Resort?`)) return;
+      try {
+        setButtonBusy(button, true, "Salvando...");
+        const result = await captureApi("/leads", { method: "POST", body: JSON.stringify({ ...fields, audioDataUrl, transcript }) });
+        renderSuccess(result.whatsappUrl, fields.name);
+      } catch (error) {
+        setButtonBusy(button, false);
+        if (error.message.includes("Sessão expirada")) { localStorage.removeItem(storageKey); return renderBrokerChoice(error.message); }
+        alert(error.message);
+      }
+    });
+  };
+  const renderSuccess = (whatsappUrl, leadName) => {
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=900x900&margin=18&data=${encodeURIComponent(whatsappUrl)}`;
+    app.innerHTML = `<main class="event-capture-page event-capture-success"><section><h1>Obrigado.</h1><p><strong>${escapeHtml(leadName)}</strong>, lead cadastrado com sucesso.</p><a class="event-capture-qr" href="${escapeHtml(whatsappUrl)}" target="_blank" rel="noopener"><img src="${escapeHtml(qrUrl)}" alt="QR Code para iniciar conversa no WhatsApp"><span>Aponte a câmera para falar com ${escapeHtml(capture.broker?.name || "o corretor")} pelo WhatsApp</span></a><button class="primary event-capture-main-button" type="button" data-next-event-lead>Cadastrar próximo lead</button></section></main>`;
+    document.querySelector("[data-next-event-lead]")?.addEventListener("click", renderLeadForm);
+  };
+  if (capture.token) renderLeadForm(); else renderBrokerChoice();
+}
+
 (async function boot() {
   try {
     if (window.location.pathname.startsWith("/autorizacao-sml/")) {
       renderSmlExternalAuthorization();
+      return;
+    }
+    if (window.location.pathname === "/captacao/aberto-golfe-64") {
+      renderGolfEventCapture();
       return;
     }
     syncRouteFromLocation();
