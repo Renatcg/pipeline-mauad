@@ -5725,6 +5725,63 @@ th {
   color: var(--muted);
 }
 
+.sml-import-modal {
+  width: min(1180px, 96vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.sml-public-page {
+  min-height: 100vh;
+  padding: 32px;
+  background: #f2f5f7;
+}
+
+.sml-public-login,
+.sml-public-success {
+  width: min(460px, 100%);
+  margin: 10vh auto 0;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, .1);
+}
+
+.sml-public-content {
+  width: min(1320px, 100%);
+  margin: 0 auto;
+}
+
+.sml-public-title {
+  margin-bottom: 18px;
+}
+
+.sml-public-title h1,
+.sml-public-login h1,
+.sml-public-success h1 {
+  margin: 0 0 8px;
+}
+
+.sml-public-totals {
+  position: sticky;
+  z-index: 5;
+  top: 0;
+  padding: 10px 0;
+  background: #f2f5f7;
+}
+
+.sml-public-confirm {
+  width: 100%;
+  margin-top: 16px;
+}
+
+@media (max-width: 720px) {
+  .sml-public-page {
+    padding: 16px;
+  }
+}
+
 .marketing-provision-tabs {
   display: flex;
   margin-bottom: 12px;

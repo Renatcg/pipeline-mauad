@@ -102,6 +102,7 @@ const state = {
   levFinanceModal: null,
   smlFinanceSearch: "",
   smlFinanceTab: "pending",
+  smlFinanceExtraction: null,
   backupSettings: null,
   dashboardStart: "",
   dashboardEnd: "",
@@ -5218,6 +5219,11 @@ function availableSettingsGroups() {
       tabs: canManageLevFinanceSettings() ? [{ id: "levFinance", label: "Financeiro Lev" }] : []
     },
     {
+      id: "smlFinance",
+      label: "Financeiro SML",
+      tabs: canManageLevFinanceSettings() ? [{ id: "smlFinance", label: "Financeiro SML" }] : []
+    },
+    {
       id: "backup",
       label: "Backup",
       tabs: canManageSystemSettings() ? [{ id: "backup", label: "Backup" }] : []
@@ -5279,7 +5285,7 @@ function settingsLayout(content) {
 function renderSettings() {
   if (["integrations", "logs", "knowledge", "backup", "structuredDb"].includes(state.settingsTab) && !canManageSystemSettings()) state.settingsTab = "users";
   if (["statuses", "tags", "projects", "availabilityStatuses", "architectureOptions", "typologyOptions", "pipelineFront", "permissions"].includes(state.settingsTab) && !canManagePipelineSettings()) state.settingsTab = "users";
-  if (state.settingsTab === "levFinance" && !canManageLevFinanceSettings()) state.settingsTab = "users";
+  if (["levFinance", "smlFinance"].includes(state.settingsTab) && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "commercial" && !canManageCommercialSettings()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) {
     const fallbackGroup = activeSettingsGroup();
@@ -5296,6 +5302,7 @@ function renderSettings() {
   if (state.settingsTab === "typologyOptions") return renderAvailabilityOptionSettings("typology");
   if (state.settingsTab === "pipelineFront") return renderPipelineFrontSettings();
   if (state.settingsTab === "levFinance") return renderLevFinanceSettings();
+  if (state.settingsTab === "smlFinance") return renderSmlFinanceSettings();
   if (state.settingsTab === "commercial") return renderCommercialSettings();
   if (state.settingsTab === "backup") return renderBackupSettings();
   if (state.settingsTab === "structuredDb") return renderStructuredDbSettings();
@@ -7520,6 +7527,39 @@ function levFinanceSearchText(item) {
   ].filter(Boolean).join(" ").toLocaleLowerCase("pt-BR");
 }
 
+function renderSmlFinanceSettings() {
+  const settings = state.smlFinance?.settings || {};
+  settingsLayout(`
+    <section class="panel">
+      <div class="panel-head"><div><h2>Financeiro SML</h2><p class="muted-copy">Configurações exclusivas da confirmação de recebíveis da Saint Michel.</p></div></div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
+      <form id="smlFinanceSettingsForm" class="form-grid editor">
+        <div class="field"><label>% comissão Lev</label><input name="commissionPercent" type="number" min="0" step="0.01" value="${escapeHtml(settings.commissionPercent || "")}" required></div>
+        <div class="field"><label>Validade do link (horas)</label><input name="authorizationExpiryHours" type="number" min="1" max="720" value="${escapeHtml(settings.authorizationExpiryHours || 48)}" required></div>
+        <div class="field"><label>E-mail do financeiro SML</label><input name="authorizationTo" type="email" value="${escapeHtml(settings.authorizationTo || "")}" placeholder="financeiro@saintmichel.com.br" required></div>
+        <div class="field"><label>E-mails Cc</label><input name="authorizationCc" value="${escapeHtml(settings.authorizationCc || "")}" placeholder="email1@empresa.com.br, email2@empresa.com.br"></div>
+        <div class="field full"><label>Assunto do convite</label><input name="authorizationSubject" value="${escapeHtml(settings.authorizationSubject || "Confirmação de vendas — Saint Michel")}" required></div>
+        <div class="field full"><label>Mensagem do convite</label><textarea name="authorizationMessage" rows="7">${escapeHtml(settings.authorizationMessage || "Olá,\n\nAcesse o link abaixo usando seu e-mail e a senha informada para confirmar as vendas autorizadas para emissão de nota.\n\nO link é temporário e expira no prazo configurado.")}</textarea></div>
+        <div class="field full"><button class="primary" type="submit">Salvar</button></div>
+      </form>
+    </section>
+  `);
+  document.querySelector("#smlFinanceSettingsForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button[type='submit']");
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const data = await api("/api/sml-finance/settings", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget).entries())) });
+      state.smlFinance = { ...(state.smlFinance || {}), settings: data.smlFinance?.settings || {} };
+      state.settingsNotice = "Configurações do Financeiro SML salvas.";
+      renderSmlFinanceSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+}
+
 function renderLevFinanceSettings() {
   const settings = state.levFinance?.settings || {};
   const emailTemplate = normalizeLevEmailTemplateSettings(settings);
@@ -8441,19 +8481,31 @@ function renderLevFinanceView() {
 function renderSmlFinanceView() {
   const finance = state.smlFinance || { settings: {}, sales: [], receipts: [], settlements: [] };
   const tabLabels = { pending: "Pendentes", awaiting: "Aguardando autorização", nf: "NF Emitida", paid: "Pagas", ignored: "Ignoradas" };
-  const tabs = Object.entries(tabLabels).map(([key, label]) => `<button class="${state.smlFinanceTab === key ? "primary" : ""}" type="button" data-sml-finance-tab="${key}">${label} <span>0</span></button>`).join("");
+  const statusTab = (sale) => { const status = levStatusKey(sale.status); if (status.includes("aguardando")) return "awaiting"; if (status.includes("nf")) return "nf"; if (status.includes("paga")) return "paid"; if (status.includes("ignorada")) return "ignored"; return "pending"; };
+  const term = state.smlFinanceSearch.trim().toLocaleLowerCase("pt-BR");
+  const sales = (finance.sales || []).filter((sale) => !term || levFinanceSearchText(sale).includes(term));
+  const grouped = Object.fromEntries(Object.keys(tabLabels).map((key) => [key, sales.filter((sale) => statusTab(sale) === key)]));
+  const activeRows = grouped[state.smlFinanceTab] || grouped.pending;
+  const tabs = Object.entries(tabLabels).map(([key, label]) => `<button class="${state.smlFinanceTab === key ? "primary" : ""}" type="button" data-sml-finance-tab="${key}">${label} <span>${grouped[key].length}</span></button>`).join("");
+  const rows = activeRows.map((sale) => `<tr><td>${escapeHtml(sale.unit)}</td><td>${escapeHtml(sale.client)}</td><td>${sale.signedAt ? escapeHtml(dateLabel(sale.signedAt)) : "—"}</td><td>${money(sale.contractValue)}</td><td>${money(sale.commissionValue)}</td><td>${escapeHtml(sale.realEstate || "")}</td><td><span class="chip">${escapeHtml(sale.status)}</span></td><td>—</td></tr>`).join("");
+  const preview = state.smlFinanceExtraction?.preview || [];
+  const previewModal = state.smlFinanceExtraction ? `<div class="modal-backdrop"><section class="modal-card sml-import-modal"><div class="panel-head"><div><h2>Prévia da importação SML</h2><p class="muted-copy">Confira os dados. Nenhum registro foi importado ainda.</p></div><button class="icon" type="button" data-close-sml-preview>×</button></div><div class="table-wrap"><table><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor unidade</th><th>Comissão Lev</th><th>Corretor</th><th>Validação</th></tr></thead><tbody>${preview.map((sale) => `<tr><td>${escapeHtml(sale.unit)}</td><td>${escapeHtml(sale.client)}</td><td>—</td><td>${money(sale.contractValue)}</td><td>${money(sale.commissionValue)}</td><td>${escapeHtml(sale.realEstate)}</td><td>${sale.duplicate ? '<span class="chip chip-warning">Já importada</span>' : '<span class="status-ok">Pronta</span>'}</td></tr>`).join("")}</tbody></table></div><div class="metrics"><div class="metric"><span>Vendas válidas</span><strong>${preview.filter((sale) => !sale.duplicate).length}</strong></div><div class="metric"><span>Valor de vendas</span><strong>${money(preview.filter((sale) => !sale.duplicate).reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0))}</strong></div><div class="metric"><span>Comissão calculada</span><strong>${money(preview.filter((sale) => !sale.duplicate).reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0))}</strong></div></div><div class="row-actions"><button class="primary" type="button" data-confirm-sml-import>Importar vendas válidas</button><button type="button" data-close-sml-preview>Cancelar</button></div></section></div>` : "";
   renderShell(`
-    ${renderViewHead("Financeiro SML", "Controle de recebíveis da Saint Michel", { actions: '<button class="primary" type="button" data-sml-finance-notice>Submeter imagem</button>' })}
-    <div class="mock-banner"><strong>Base SML isolada</strong><span>Estrutura inicial sem dados. As regras próprias de aprovisionamento serão implementadas separadamente.</span></div>
+    ${renderViewHead("Financeiro SML", "Controle de recebíveis da Saint Michel", { actions: `<input id="smlFileInput" type="file" accept=".xlsx,.xls" hidden><button type="button" data-send-sml-authorization>Enviar para confirmação SML</button><button class="primary" type="button" data-open-sml-file>Importar XLSX</button>` })}
     <section class="panel compact-panel"><input id="smlFinanceSearch" class="settings-search" placeholder="Pesquisar por unidade, cliente, imobiliária, status ou observação" value="${escapeHtml(state.smlFinanceSearch)}"></section>
-    <section class="metrics"><div class="metric"><span>${escapeHtml(tabLabels[state.smlFinanceTab] || "Pendentes")}</span><strong>0</strong></div><div class="metric"><span>Valor da aba</span><strong>${money(0)}</strong></div><div class="metric"><span>Comissão da aba</span><strong>${money(0)}</strong></div><div class="metric"><span>% comissão</span><strong>${escapeHtml(finance.settings?.commissionPercent || 0)}%</strong></div></section>
-    <section class="panel"><div class="tabs lev-finance-tabs">${tabs}</div><div class="table-wrap"><table class="access-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Comissão SML</th><th>Imobiliária</th><th>Status</th><th>Ação</th></tr></thead><tbody><tr><td colspan="8" class="empty">Nenhum registro nesta aba.</td></tr></tbody></table></div></section>
+    <section class="metrics"><div class="metric"><span>${escapeHtml(tabLabels[state.smlFinanceTab] || "Pendentes")}</span><strong>${activeRows.length}</strong></div><div class="metric"><span>Valor da aba</span><strong>${money(activeRows.reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0))}</strong></div><div class="metric"><span>Comissão da aba</span><strong>${money(activeRows.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0))}</strong></div><div class="metric"><span>% comissão</span><strong>${escapeHtml(finance.settings?.commissionPercent || 0)}%</strong></div></section>
+    <section class="panel"><div class="tabs lev-finance-tabs">${tabs}</div><div class="table-wrap"><table class="access-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor unidade</th><th>Comissão Lev</th><th>Corretor</th><th>Status</th><th>Ação</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhum registro nesta aba.</td></tr>'}</tbody></table></div></section>
     <section class="dashboard-grid finance-grid"><section class="panel"><div class="panel-head"><h2>Recebimentos / conciliação</h2></div><form class="form-grid" data-sml-finance-form><div class="field full"><label>Unidades pagas</label><textarea name="units" rows="4" placeholder="Uma unidade por linha" required></textarea></div><div class="field"><label>Valor recebido</label><input name="amount" placeholder="0,00"></div><div class="field"><label>Data do recebimento</label><input name="receivedAt" type="date" value="${new Date().toISOString().slice(0, 10)}"></div><div class="field full"><label>Observação</label><input name="note"></div><div class="field full"><button class="primary" type="submit">Registrar recebimento</button></div></form></section><section class="panel"><div class="panel-head"><h2>Histórico de recebimentos</h2></div><div class="table-wrap"><table><thead><tr><th>Unidade</th><th>Valor</th><th>Recebido em</th><th>Observação</th></tr></thead><tbody><tr><td colspan="4" class="empty">Nenhum recebimento registrado.</td></tr></tbody></table></div></section></section>
+    ${previewModal}
   `);
   document.querySelectorAll("[data-sml-finance-tab]").forEach((button) => button.addEventListener("click", () => { state.smlFinanceTab = button.dataset.smlFinanceTab || "pending"; renderSmlFinanceView(); }));
   document.querySelector("#smlFinanceSearch")?.addEventListener("input", (event) => { state.smlFinanceSearch = event.target.value; });
   document.querySelector("[data-sml-finance-form]")?.addEventListener("submit", (event) => { event.preventDefault(); alert("A estrutura SML está pronta. A gravação será conectada às regras próprias na próxima etapa."); });
-  document.querySelector("[data-sml-finance-notice]")?.addEventListener("click", () => alert("A extração SML será conectada às regras próprias na próxima etapa."));
+  document.querySelector("[data-open-sml-file]")?.addEventListener("click", () => document.querySelector("#smlFileInput")?.click());
+  document.querySelector("#smlFileInput")?.addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const fileBase64 = await fileToDataUrl(file); state.smlFinanceExtraction = await api("/api/sml-finance/import-preview", { method: "POST", body: JSON.stringify({ fileBase64 }) }); renderSmlFinanceView(); } catch (error) { alert(error.message); } });
+  document.querySelectorAll("[data-close-sml-preview]").forEach((button) => button.addEventListener("click", () => { state.smlFinanceExtraction = null; renderSmlFinanceView(); }));
+  document.querySelector("[data-confirm-sml-import]")?.addEventListener("click", async (event) => { const salesToImport = preview.filter((sale) => !sale.duplicate); if (!salesToImport.length) return alert("Não há vendas novas para importar."); if (!confirm(`Importar ${salesToImport.length} venda(s) para o Financeiro SML?`)) return; try { setButtonBusy(event.currentTarget, true, "Importando..."); await api("/api/sml-finance/import", { method: "POST", body: JSON.stringify({ sales: salesToImport }) }); state.smlFinanceExtraction = null; await loadState(); state.view = "financeSml"; renderSmlFinanceView(); } catch (error) { setButtonBusy(event.currentTarget, false); alert(error.message); } });
+  document.querySelector("[data-send-sml-authorization]")?.addEventListener("click", async (event) => { if (!confirm("Enviar as vendas pendentes para confirmação do financeiro SML?")) return; try { setButtonBusy(event.currentTarget, true, "Enviando..."); const data = await api("/api/sml-finance/send-authorization", { method: "POST" }); alert(data.sent ? `Convite enviado. O acesso expira em ${dateLabel(data.expiresAt)}.` : `Convite criado, mas o e-mail não foi enviado: ${data.reason}`); setButtonBusy(event.currentTarget, false); } catch (error) { setButtonBusy(event.currentTarget, false); alert(error.message); } });
 }
 
 function bindLevFinanceControls() {
@@ -9961,8 +10013,29 @@ function renderApp() {
   if (state.view === "knowledge") return renderKnowledgeView();
 }
 
+function renderSmlExternalAuthorization() {
+  const token = decodeURIComponent(window.location.pathname.split("/").filter(Boolean).pop() || "");
+  const session = { email: "", password: "", sales: [], authenticated: false };
+  const renderLogin = (message = "") => {
+    app.innerHTML = `<main class="sml-public-page"><section class="sml-public-login"><h1>Confirmação de vendas</h1><p>Informe o e-mail que recebeu o convite e a senha enviada na mensagem.</p>${message ? `<div class="error">${escapeHtml(message)}</div>` : ""}<form id="smlPublicLogin" class="form-grid"><div class="field full"><label>E-mail</label><input name="email" type="email" required></div><div class="field full"><label>Senha</label><input name="password" type="password" required></div><div class="field full"><button class="primary" type="submit">Acessar</button></div></form></section></main>`;
+    document.querySelector("#smlPublicLogin")?.addEventListener("submit", async (event) => { event.preventDefault(); const button = event.currentTarget.querySelector("button"); const form = new FormData(event.currentTarget); session.email = String(form.get("email") || ""); session.password = String(form.get("password") || ""); try { setButtonBusy(button, true, "Entrando..."); const data = await api(`/api/sml-finance/public/${encodeURIComponent(token)}/login`, { method: "POST", body: JSON.stringify({ email: session.email, password: session.password }) }); session.sales = data.sales || []; session.authenticated = true; renderSales(); } catch (error) { renderLogin(error.message); } });
+  };
+  const renderSales = () => {
+    app.innerHTML = `<main class="sml-public-page"><section class="sml-public-content"><div class="sml-public-title"><h1>Vendas para confirmação</h1><p>Marque somente as vendas autorizadas. Após confirmar, a operação não poderá ser desfeita.</p></div><section class="metrics sml-public-totals"><div class="metric"><span>Vendas selecionadas</span><strong data-sml-selected-count>0</strong></div><div class="metric"><span>Valor de vendas</span><strong data-sml-selected-sales>${money(0)}</strong></div><div class="metric"><span>Valor da comissão</span><strong data-sml-selected-commission>${money(0)}</strong></div></section><div class="table-wrap"><table class="access-table"><thead><tr><th>Confirmar</th><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor unidade</th><th>Comissão Lev</th><th>Corretor</th></tr></thead><tbody>${session.sales.map((sale) => `<tr><td><input type="checkbox" data-sml-public-sale="${sale.id}"></td><td>${escapeHtml(sale.unit)}</td><td>${escapeHtml(sale.client)}</td><td>—</td><td>${money(sale.contractValue)}</td><td>${money(sale.commissionValue)}</td><td>${escapeHtml(sale.realEstate || "")}</td></tr>`).join("") || '<tr><td colspan="7" class="empty">Não há vendas pendentes neste convite.</td></tr>'}</tbody></table></div><button class="primary sml-public-confirm" type="button" data-confirm-sml-public>Confirmar selecionadas</button></section></main>`;
+    const selectedSales = () => session.sales.filter((sale) => document.querySelector(`[data-sml-public-sale="${sale.id}"]`)?.checked);
+    const refresh = () => { const selected = selectedSales(); document.querySelector("[data-sml-selected-count]").textContent = selected.length; document.querySelector("[data-sml-selected-sales]").textContent = money(selected.reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0)); document.querySelector("[data-sml-selected-commission]").textContent = money(selected.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0)); };
+    document.querySelectorAll("[data-sml-public-sale]").forEach((checkbox) => checkbox.addEventListener("change", refresh));
+    document.querySelector("[data-confirm-sml-public]")?.addEventListener("click", async (event) => { const selected = selectedSales(); if (!selected.length) return alert("Selecione pelo menos uma venda."); const salesTotal = selected.reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0); const commissionTotal = selected.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0); if (!confirm(`Tem certeza de que deseja confirmar ${selected.length} venda(s)?\n\nValor total das vendas: ${money(salesTotal)}\nValor total da comissão: ${money(commissionTotal)}\n\nDepois de confirmada, esta operação não poderá ser desfeita.`)) return; try { setButtonBusy(event.currentTarget, true, "Confirmando..."); await api(`/api/sml-finance/public/${encodeURIComponent(token)}/confirm`, { method: "POST", body: JSON.stringify({ email: session.email, password: session.password, saleIds: selected.map((sale) => sale.id) }) }); app.innerHTML = '<main class="sml-public-page"><section class="sml-public-success"><h1>Vendas confirmadas</h1><p>As vendas selecionadas foram registradas com sucesso.</p></section></main>'; } catch (error) { setButtonBusy(event.currentTarget, false); alert(error.message); } });
+  };
+  renderLogin();
+}
+
 (async function boot() {
   try {
+    if (window.location.pathname.startsWith("/autorizacao-sml/")) {
+      renderSmlExternalAuthorization();
+      return;
+    }
     syncRouteFromLocation();
     if (state.view === "password-setup") {
       renderPasswordSetup();

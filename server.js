@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const XLSX = require("xlsx");
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -4740,6 +4741,7 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_settlements (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_sml_authorization_links (id text PRIMARY KEY, token_hash text NOT NULL UNIQUE, email text NOT NULL, password_hash text NOT NULL, sale_ids jsonb NOT NULL DEFAULT '[]'::jsonb, expires_at timestamptz NOT NULL, confirmed_at timestamptz, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_knowledge_articles (id text PRIMARY KEY, title text, category text, published boolean NOT NULL DEFAULT false, updated_at timestamptz, payload jsonb NOT NULL)`;
 }
 
@@ -7404,6 +7406,136 @@ async function fastStructuredSettingsRoutes(req, res, url) {
     mirrorStructuredError("fast-settings", error);
     sendJson(res, 500, { error: "Erro interno", detail: error.message });
     return true;
+  }
+}
+
+function smlSettingsPayload(value = {}) {
+  return {
+    commissionPercent: Math.max(0, Number(value.commissionPercent || 0)),
+    authorizationExpiryHours: Math.min(720, Math.max(1, Number(value.authorizationExpiryHours || 48))),
+    authorizationTo: String(value.authorizationTo || "").trim().toLowerCase(),
+    authorizationCc: String(value.authorizationCc || "").trim(),
+    authorizationSubject: String(value.authorizationSubject || "Confirmação de vendas — Saint Michel").trim(),
+    authorizationMessage: String(value.authorizationMessage || "").trim()
+  };
+}
+
+function parseSmlWorkbook(base64, commissionPercent) {
+  const workbook = XLSX.read(Buffer.from(String(base64 || "").replace(/^data:.*?;base64,/, ""), "base64"), { type: "buffer" });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  if (!sheet) throw new Error("A planilha não possui uma aba legível.");
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true });
+  const headerIndex = rows.findIndex((row) => row.some((cell) => String(cell).trim().toLowerCase() === "unidade"));
+  if (headerIndex < 0) throw new Error("Coluna Unidade não encontrada.");
+  const headers = rows[headerIndex].map((cell) => String(cell).trim().toLowerCase());
+  const index = (name) => headers.indexOf(name.toLowerCase());
+  const required = ["venda", "unidade", "cliente", "valor prop.", "corretor"];
+  if (required.some((name) => index(name) < 0)) throw new Error(`A planilha deve conter: ${required.join(", ")}.`);
+  return rows.slice(headerIndex + 1).map((row, position) => {
+    const unit = String(row[index("unidade")] || "").trim().toUpperCase();
+    const contractValue = Number(row[index("valor prop.")] || 0);
+    return {
+      id: `sml-sale-${String(row[index("venda")] || position + 1).trim()}`,
+      externalSaleId: String(row[index("venda")] || "").trim(),
+      unit,
+      client: String(row[index("cliente")] || "").trim(),
+      signedAt: "",
+      contractValue,
+      commissionPercent,
+      commissionValue: Math.round(contractValue * commissionPercent) / 100,
+      realEstate: String(row[index("corretor")] || "").trim(),
+      status: "Pendente",
+      source: "Relatório de Valores de Venda SML",
+      importedAt: new Date().toISOString()
+    };
+  }).filter((sale) => sale.unit && sale.client && sale.contractValue > 0);
+}
+
+async function fastStructuredSmlFinanceRoutes(req, res, url) {
+  if (!DATABASE_URL || !url.pathname.startsWith("/api/sml-finance/")) return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchemaOnce(sql);
+    const method = req.method;
+    const publicMatch = url.pathname.match(/^\/api\/sml-finance\/public\/([^/]+)\/(login|confirm)$/);
+    if (publicMatch) {
+      if (method !== "POST") return sendJson(res, 405, { error: "Método inválido" });
+      const body = await readBody(req);
+      const tokenHash = crypto.createHash("sha256").update(publicMatch[1]).digest("hex");
+      const links = await sql`SELECT * FROM crm_sml_authorization_links WHERE token_hash = ${tokenHash} LIMIT 1`;
+      const link = links[0];
+      if (!link || new Date(link.expires_at) <= new Date()) return sendJson(res, 410, { error: "Link inválido ou expirado" });
+      if (String(body.email || "").trim().toLowerCase() !== String(link.email).toLowerCase() || !verifyPasswordSafe(String(body.password || ""), link.password_hash)) return sendJson(res, 401, { error: "E-mail ou senha inválidos" });
+      const saleIds = Array.isArray(link.sale_ids) ? link.sale_ids : [];
+      const saleRows = await sql`SELECT payload FROM crm_sml_sales ORDER BY unit ASC`;
+      const allowedIds = new Set(saleIds.map(String));
+      const sales = saleRows.map((row) => row.payload || {}).filter((sale) => allowedIds.has(String(sale.id)) && sale.status === "Pendente");
+      if (publicMatch[2] === "login") return sendJson(res, 200, { sales, expiresAt: link.expires_at });
+      const confirmedIds = new Set(Array.isArray(body.saleIds) ? body.saleIds.map(String) : []);
+      const confirmed = sales.filter((sale) => confirmedIds.has(sale.id));
+      for (const sale of confirmed) {
+        const next = { ...sale, status: "Aguardando autorização", smlConfirmedAt: new Date().toISOString() };
+        await sql`UPDATE crm_sml_sales SET status = ${next.status}, payload = ${JSON.stringify(next)}::jsonb WHERE id = ${sale.id}`;
+      }
+      await sql`UPDATE crm_sml_authorization_links SET confirmed_at = now(), payload = ${JSON.stringify({ confirmedIds: confirmed.map((sale) => sale.id) })}::jsonb WHERE id = ${link.id}`;
+      return sendJson(res, 200, { ok: true, confirmed: confirmed.length });
+    }
+
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+    if (!canAccessLevFinance(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const settingsRows = await sql`SELECT payload FROM crm_settings WHERE key = 'smlFinanceSettings' LIMIT 1`;
+    const settings = smlSettingsPayload(settingsRows[0]?.payload || {});
+
+    if (method === "PUT" && url.pathname === "/api/sml-finance/settings") {
+      const next = smlSettingsPayload(await readBody(req));
+      await saveStructuredSetting(sql, "smlFinanceSettings", next);
+      await structuredAudit(user, "UPDATE_SML_FINANCE_SETTINGS", { commissionPercent: next.commissionPercent, authorizationExpiryHours: next.authorizationExpiryHours });
+      return sendJson(res, 200, { smlFinance: { settings: next, sales: [], receipts: [], settlements: [] } });
+    }
+    if (method === "POST" && url.pathname === "/api/sml-finance/import-preview") {
+      const body = await readBody(req);
+      const sales = parseSmlWorkbook(body.fileBase64, settings.commissionPercent);
+      const existing = await sql`SELECT id FROM crm_sml_sales`;
+      const existingIds = new Set(existing.map((row) => row.id));
+      return sendJson(res, 200, { preview: sales.map((sale) => ({ ...sale, duplicate: existingIds.has(sale.id) })), commissionPercent: settings.commissionPercent });
+    }
+    if (method === "POST" && url.pathname === "/api/sml-finance/import") {
+      const body = await readBody(req);
+      const sales = Array.isArray(body.sales) ? body.sales : [];
+      let imported = 0;
+      for (const raw of sales) {
+        const contractValue = Number(raw.contractValue || 0);
+        const sale = { ...raw, signedAt: "", contractValue, commissionPercent: settings.commissionPercent, commissionValue: Math.round(contractValue * settings.commissionPercent) / 100, status: "Pendente", importedAt: new Date().toISOString() };
+        if (!sale.id || !sale.unit || !sale.client || contractValue <= 0) continue;
+        await sql`INSERT INTO crm_sml_sales (id, unit, client, signed_at, contract_value, commission_value, realtor_company, status, nf_number, paid_at, payload) VALUES (${sale.id}, ${sale.unit}, ${sale.client}, null, ${sale.contractValue}, ${sale.commissionValue}, ${sale.realEstate || ""}, ${sale.status}, '', null, ${JSON.stringify(sale)}::jsonb) ON CONFLICT (id) DO NOTHING`;
+        imported += 1;
+      }
+      await structuredAudit(user, "IMPORT_SML_SALES", { imported });
+      return sendJson(res, 200, { ok: true, imported });
+    }
+    if (method === "POST" && url.pathname === "/api/sml-finance/send-authorization") {
+      if (!settings.authorizationTo) return sendJson(res, 400, { error: "Configure o e-mail do financeiro SML" });
+      const saleRows = await sql`SELECT payload FROM crm_sml_sales WHERE status = 'Pendente' ORDER BY unit ASC`;
+      const sales = saleRows.map((row) => row.payload || {});
+      if (!sales.length) return sendJson(res, 400, { error: "Não há vendas pendentes" });
+      const token = crypto.randomBytes(32).toString("hex");
+      const password = crypto.randomBytes(5).toString("base64url").toUpperCase();
+      const expiresAt = new Date(Date.now() + settings.authorizationExpiryHours * 3600000);
+      const id = `sml-auth-${crypto.randomUUID()}`;
+      await sql`INSERT INTO crm_sml_authorization_links (id, token_hash, email, password_hash, sale_ids, expires_at, payload) VALUES (${id}, ${crypto.createHash("sha256").update(token).digest("hex")}, ${settings.authorizationTo}, ${hashPassword(password)}, ${JSON.stringify(sales.map((sale) => sale.id))}::jsonb, ${expiresAt}, ${JSON.stringify({ createdBy: user.id })}::jsonb)`;
+      const origin = `${req.headers["x-forwarded-proto"] || "https"}://${req.headers["x-forwarded-host"] || req.headers.host}`;
+      const link = `${origin}/autorizacao-sml/${token}`;
+      const message = String(settings.authorizationMessage || "").replaceAll("\n", "<br>");
+      const email = await sendEmailWithCc(settings.authorizationTo, settings.authorizationCc, settings.authorizationSubject, `<p>${message}</p><p><a href="${link}">Acessar confirmação de vendas</a></p><p><strong>E-mail:</strong> ${settings.authorizationTo}<br><strong>Senha:</strong> ${password}</p><p>Este acesso expira em ${settings.authorizationExpiryHours} horas.</p>`);
+      await structuredAudit(user, "SEND_SML_AUTHORIZATION", { count: sales.length, expiresAt: expiresAt.toISOString(), sent: email.sent });
+      return sendJson(res, 200, { ok: true, sent: email.sent, reason: email.reason || "", expiresAt: expiresAt.toISOString() });
+    }
+    return false;
+  } catch (error) {
+    mirrorStructuredError("sml-finance", error);
+    return sendJson(res, 500, { error: error.message || "Erro no Financeiro SML" });
   }
 }
 
@@ -12347,6 +12479,7 @@ async function handleRequest(req, res) {
     if (await fastStructuredAuthRoutes(req, res, url)) return;
     if (await fastStructuredUserPermissionRoutes(req, res, url)) return;
     if (await fastStructuredSettingsRoutes(req, res, url)) return;
+    if (await fastStructuredSmlFinanceRoutes(req, res, url)) return;
     if (await fastStructuredLevFinanceRoutes(req, res, url)) return;
     if (await fastStructuredSalesReportRoutes(req, res, url)) return;
     if (await fastStructuredBackupRoutes(req, res, url)) return;
