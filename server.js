@@ -4,6 +4,8 @@ const path = require("path");
 const crypto = require("crypto");
 const XLSX = require("xlsx");
 
+process.env.TZ = "America/Sao_Paulo";
+
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "127.0.0.1";
 const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? path.join("/tmp", "pipeline-leads-data") : path.join(__dirname, "data"));
@@ -191,8 +193,8 @@ const DEFAULT_LEV_PAYMENT_SCHEDULE = [
 const DEFAULT_LEV_EMAIL_TEMPLATE_HTML = `
   <p>Prezados,</p>
   <p>Segue o demonstrativo de comissões da Lev referente às vendas confirmadas no período, conforme relação abaixo.</p>
-  <p>Solicitamos, por gentileza, o aprovisionamento dos valores para a data de <strong>{{data_pagamento}}</strong>, conforme calendário financeiro da Mauad.</p>
-  <p>Tão logo confirmado o aprovisionamento, emitiremos a(s) respectiva(s) Nota(s) Fiscal(is).</p>
+  <p>Solicitamos, por gentileza, o provisionamento dos valores para a data de <strong>{{data_pagamento}}</strong>, conforme calendário financeiro da Mauad.</p>
+  <p>Tão logo confirmado o provisionamento, emitiremos a(s) respectiva(s) Nota(s) Fiscal(is).</p>
   <p>Quaisquer dúvidas, seguimos à disposição.</p>
   <p><strong>Total geral da NF de comissões:</strong> {{total_comissoes}}</p>
   {{tabela_vendas}}
@@ -911,6 +913,17 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function saoPauloDateOnly(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(value);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 function sanitizeRichHtml(value) {
   return String(value || "")
     .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "")
@@ -919,9 +932,19 @@ function sanitizeRichHtml(value) {
     .replace(/javascript:/gi, "");
 }
 
+function normalizeProvisioningTerminology(value) {
+  return String(value || "")
+    .replace(/Aprovisionamentos/g, "Provisionamentos")
+    .replace(/aprovisionamentos/g, "provisionamentos")
+    .replace(/Aprovisionamento/g, "Provisionamento")
+    .replace(/aprovisionamento/g, "provisionamento")
+    .replace(/Aprovisionar/g, "Provisionar")
+    .replace(/aprovisionar/g, "provisionar");
+}
+
 function normalizeLevFinanceEmailTemplate(template = {}) {
   return {
-    html: sanitizeRichHtml(template.html || DEFAULT_LEV_EMAIL_TEMPLATE_HTML),
+    html: normalizeProvisioningTerminology(sanitizeRichHtml(template.html || DEFAULT_LEV_EMAIL_TEMPLATE_HTML)),
     fontFamily: String(template.fontFamily || "Arial").trim() || "Arial",
     fontSize: String(template.fontSize || "14px").trim() || "14px",
     color: String(template.color || "#101828").trim() || "#101828",
@@ -1730,7 +1753,7 @@ function provisionFridayForRequest(sentAt = new Date()) {
   else cutoffTuesday.setDate(base.getDate() + (9 - day));
   const provision = new Date(cutoffTuesday);
   provision.setDate(cutoffTuesday.getDate() + 24);
-  return provision.toISOString().slice(0, 10);
+  return saoPauloDateOnly(provision);
 }
 
 function provisionDateFromPaymentSchedule(settings = {}, sentAt = new Date()) {
@@ -2082,9 +2105,9 @@ async function sendLevProvisionEmail(db, sale) {
     : sale.provisionDate || "";
   const html = `
     <div style="font-family:Arial,sans-serif;color:#101828;line-height:1.5">
-      <h2>Solicitação de aprovisionamento - Comissão Lev</h2>
+      <h2>Solicitação de provisionamento - Comissão Lev</h2>
       <p>Prezados,</p>
-      <p>Solicitamos o aprovisionamento da comissão Lev para a venda abaixo, com previsão de pagamento em <strong>${escapeHtml(provisionLabel)}</strong>.</p>
+      <p>Solicitamos o provisionamento da comissão Lev para a venda abaixo, com previsão de pagamento em <strong>${escapeHtml(provisionLabel)}</strong>.</p>
       <table cellpadding="8" cellspacing="0" style="border-collapse:collapse;border:1px solid #d0d5dd">
         <tr><td><strong>Unidade</strong></td><td>${escapeHtml(sale.unit)}</td></tr>
         <tr><td><strong>Cliente</strong></td><td>${escapeHtml(sale.client)}</td></tr>
@@ -2097,7 +2120,7 @@ async function sendLevProvisionEmail(db, sale) {
       <p>Obrigado.</p>
     </div>
   `;
-  return sendEmailWithCc(settings.provisionTo, settings.provisionCc, `Aprovisionamento comissão Lev - ${sale.unit}`, html);
+  return sendEmailWithCc(settings.provisionTo, settings.provisionCc, `Provisionamento comissão Lev - ${sale.unit}`, html);
 }
 
 async function sendLevMauadPendingEmail(sql, db, sales = [], options = {}) {
@@ -7994,7 +8017,7 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
         .filter(Boolean);
       if (!units.length) return sendJson(res, 400, { error: "Informe ao menos uma unidade paga" });
       const amount = parseMoney(body.amount);
-      const receivedAt = String(body.receivedAt || new Date().toISOString().slice(0, 10)).trim();
+      const receivedAt = String(body.receivedAt || saoPauloDateOnly()).trim();
       for (const unit of units) {
         if (!stateDb.levFinance.paidUnits.includes(unit)) stateDb.levFinance.paidUnits.push(unit);
         const sale = stateDb.levFinance.sales.find((item) => normalizeLevUnit(item.unit) === unit) || { unit, commissionValue: amount };
@@ -8083,13 +8106,13 @@ async function fastStructuredLevFinanceRoutes(req, res, url) {
         targetSale.eligible = true;
         targetSale.status = "NF Emitida";
         targetSale.invoiceNumber = String(body.invoiceNumber || "").trim();
-        targetSale.invoiceIssuedAt = String(body.invoiceIssuedAt || new Date().toISOString().slice(0, 10)).trim();
+        targetSale.invoiceIssuedAt = String(body.invoiceIssuedAt || saoPauloDateOnly()).trim();
         targetSale.updatedAt = new Date().toISOString();
         upsertLevSettlement(stateDb, targetSale, "NF Emitida", "NF registrada no Financeiro Lev");
       } else if (action === "paid") {
         targetSale = targetSale || saleFromSettlement(stateDb, settlement);
         targetSale.status = "Paga";
-        targetSale.paidAt = String(body.paidAt || new Date().toISOString().slice(0, 10)).trim();
+        targetSale.paidAt = String(body.paidAt || saoPauloDateOnly()).trim();
         targetSale.updatedAt = new Date().toISOString();
         if (!stateDb.levFinance.paidUnits.includes(targetSale.unit)) stateDb.levFinance.paidUnits.push(targetSale.unit);
         upsertLevSettlement(stateDb, targetSale, "Paga", "Pagamento registrado no Financeiro Lev");
@@ -8283,7 +8306,7 @@ async function fastStructuredBackupRoutes(req, res, url) {
         validation,
         dataSources: { action: "structured" }
       }, {
-        "Content-Disposition": `attachment; filename="pipeline-mauad-backup-${new Date().toISOString().slice(0, 10)}.json"`
+        "Content-Disposition": `attachment; filename="pipeline-mauad-backup-${saoPauloDateOnly()}.json"`
       });
     }
 
@@ -11737,7 +11760,7 @@ async function routeApi(req, res, db) {
       .filter(Boolean);
     if (!units.length) return sendJson(res, 400, { error: "Informe ao menos uma unidade paga" });
     const amount = parseMoney(body.amount);
-    const receivedAt = String(body.receivedAt || new Date().toISOString().slice(0, 10)).trim();
+    const receivedAt = String(body.receivedAt || saoPauloDateOnly()).trim();
     for (const unit of units) {
       if (!db.levFinance.paidUnits.includes(unit)) db.levFinance.paidUnits.push(unit);
       const sale = db.levFinance.sales.find((item) => item.unit === unit) || { unit, commissionValue: amount };
@@ -11786,13 +11809,13 @@ async function routeApi(req, res, db) {
       targetSale.eligible = true;
       targetSale.status = "NF Emitida";
       targetSale.invoiceNumber = String(body.invoiceNumber || "").trim();
-      targetSale.invoiceIssuedAt = String(body.invoiceIssuedAt || new Date().toISOString().slice(0, 10)).trim();
+      targetSale.invoiceIssuedAt = String(body.invoiceIssuedAt || saoPauloDateOnly()).trim();
       targetSale.updatedAt = new Date().toISOString();
       upsertLevSettlement(db, targetSale, "NF Emitida", "NF registrada no Financeiro Lev");
     } else if (action === "paid") {
       targetSale = targetSale || saleFromSettlement(db, settlement);
       targetSale.status = "Paga";
-      targetSale.paidAt = String(body.paidAt || new Date().toISOString().slice(0, 10)).trim();
+      targetSale.paidAt = String(body.paidAt || saoPauloDateOnly()).trim();
       targetSale.updatedAt = new Date().toISOString();
       if (!db.levFinance.paidUnits.includes(targetSale.unit)) db.levFinance.paidUnits.push(targetSale.unit);
       upsertLevSettlement(db, targetSale, "Paga", "Pagamento registrado no Financeiro Lev");
@@ -12663,7 +12686,7 @@ async function routeApi(req, res, db) {
       source: DATABASE_URL ? "postgres" : "file",
       db: exported
     }, {
-      "Content-Disposition": `attachment; filename="pipeline-mauad-backup-${new Date().toISOString().slice(0, 10)}.json"`
+      "Content-Disposition": `attachment; filename="pipeline-mauad-backup-${saoPauloDateOnly()}.json"`
     });
   }
 

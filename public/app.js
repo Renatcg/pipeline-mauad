@@ -215,8 +215,8 @@ function escapeHtml(value) {
 const DEFAULT_LEV_EMAIL_TEMPLATE_HTML = `
   <p>Prezados,</p>
   <p>Segue o demonstrativo de comissões da Lev referente às vendas confirmadas no período, conforme relação abaixo.</p>
-  <p>Solicitamos, por gentileza, o aprovisionamento dos valores para a data de <strong>{{data_pagamento}}</strong>, conforme calendário financeiro da Mauad.</p>
-  <p>Tão logo confirmado o aprovisionamento, emitiremos a(s) respectiva(s) Nota(s) Fiscal(is).</p>
+  <p>Solicitamos, por gentileza, o provisionamento dos valores para a data de <strong>{{data_pagamento}}</strong>, conforme calendário financeiro da Mauad.</p>
+  <p>Tão logo confirmado o provisionamento, emitiremos a(s) respectiva(s) Nota(s) Fiscal(is).</p>
   <p>Quaisquer dúvidas, seguimos à disposição.</p>
   <p><strong>Total geral da NF de comissões:</strong> {{total_comissoes}}</p>
   {{tabela_vendas}}
@@ -242,10 +242,20 @@ function sanitizeRichHtml(value) {
     .replace(/javascript:/gi, "");
 }
 
+function normalizeProvisioningTerminology(value) {
+  return String(value || "")
+    .replace(/Aprovisionamentos/g, "Provisionamentos")
+    .replace(/aprovisionamentos/g, "provisionamentos")
+    .replace(/Aprovisionamento/g, "Provisionamento")
+    .replace(/aprovisionamento/g, "provisionamento")
+    .replace(/Aprovisionar/g, "Provisionar")
+    .replace(/aprovisionar/g, "provisionar");
+}
+
 function normalizeLevEmailTemplateSettings(settings = {}) {
   const template = settings.emailTemplate || {};
   return {
-    html: sanitizeRichHtml(template.html || DEFAULT_LEV_EMAIL_TEMPLATE_HTML),
+    html: normalizeProvisioningTerminology(sanitizeRichHtml(template.html || DEFAULT_LEV_EMAIL_TEMPLATE_HTML)),
     fontFamily: template.fontFamily || "Arial",
     fontSize: template.fontSize || "14px",
     color: template.color || "#101828",
@@ -863,25 +873,38 @@ function localDateOnly(value) {
   if (!value) return "";
   const raw = String(value);
   const isoDateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDateOnly) return `${isoDateOnly[1]}-${isoDateOnly[2]}-${isoDateOnly[3]}`;
   const date = value instanceof Date
     ? value
-    : isoDateOnly
-      ? new Date(Number(isoDateOnly[1]), Number(isoDateOnly[2]) - 1, Number(isoDateOnly[3]))
-      : new Date(value);
+    : new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return saoPauloDateOnly(date);
+}
+
+function saoPauloDateParts(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(value);
+  return Object.fromEntries(parts.map((part) => [part.type, part.value]));
+}
+
+function saoPauloDateOnly(value = new Date()) {
+  const parts = saoPauloDateParts(value);
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 function currentMonthBounds(date = new Date()) {
-  const year = date.getFullYear();
-  const month = date.getMonth();
+  const parts = saoPauloDateParts(date);
+  const year = Number(parts.year);
+  const month = Number(parts.month);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
   return {
-    start: localDateOnly(new Date(year, month, 1)),
-    end: localDateOnly(new Date(year, month + 1, 0)),
-    month: `${year}-${String(month + 1).padStart(2, "0")}`
+    start: `${year}-${String(month).padStart(2, "0")}-01`,
+    end: `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
+    month: `${year}-${String(month).padStart(2, "0")}`
   };
 }
 
@@ -5003,7 +5026,7 @@ function renderMarketingEventProvisions(action) {
   });
   const tabs = [["pending", "Pendentes"], ["confirmation", "Aguardando confirmação"], ["invoices", "NFs enviadas"], ["paid", "Pagos"]];
   const filtered = rows.filter((row) => row.status === state.marketingProvisionStatus);
-  return `<div class="tabs marketing-provision-tabs">${tabs.map(([id, label]) => `<button type="button" class="${state.marketingProvisionStatus === id ? "active" : ""}" data-marketing-provision-status="${id}">${label}</button>`).join("")}</div><div class="table-wrap"><table class="marketing-event-provisions-table"><thead><tr><th>Origem</th><th>Fornecedor</th><th>Valor</th><th>Ação</th></tr></thead><tbody>${filtered.map((row) => `<tr><td>${escapeHtml(row.label)}</td><td>${escapeHtml(row.supplier)}</td><td>${escapeHtml(brl(row.value))}</td><td><button type="button" data-marketing-mock-notice>Aprovisionar</button></td></tr>`).join("") || '<tr><td colspan="4">Nenhum aprovisionamento nesta etapa.</td></tr>'}</tbody></table></div>`;
+  return `<div class="tabs marketing-provision-tabs">${tabs.map(([id, label]) => `<button type="button" class="${state.marketingProvisionStatus === id ? "active" : ""}" data-marketing-provision-status="${id}">${label}</button>`).join("")}</div><div class="table-wrap"><table class="marketing-event-provisions-table"><thead><tr><th>Origem</th><th>Fornecedor</th><th>Valor</th><th>Ação</th></tr></thead><tbody>${filtered.map((row) => `<tr><td>${escapeHtml(row.label)}</td><td>${escapeHtml(row.supplier)}</td><td>${escapeHtml(brl(row.value))}</td><td><button type="button" data-marketing-mock-notice>Provisionar</button></td></tr>`).join("") || '<tr><td colspan="4">Nenhum provisionamento nesta etapa.</td></tr>'}</tbody></table></div>`;
 }
 
 function renderMarketingActivityModal(action, activities) {
@@ -5024,7 +5047,7 @@ function renderMarketingEventEditorMock(actions) {
       <form class="marketing-event-fields"><div class="field event-name"><label>Nome do evento</label><input value="${escapeHtml(action.name)}"></div><div class="field event-location"><label>Local</label><input value="${escapeHtml(action.location)}"></div><div class="field"><label>Início</label><input type="date" value="${escapeHtml(action.eventStart)}"></div><div class="field"><label>Fim</label><input type="date" value="${escapeHtml(action.eventEnd)}"></div><div class="field event-project"><label>Empreendimento</label><select>${(state.projects || []).map((project) => `<option ${project === action.project ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}</select></div><div class="field"><label>Nome do contato</label><input value="${escapeHtml(action.contactName)}"></div><div class="field event-contact-email"><label>E-mail do contato</label><input type="email" value="${escapeHtml(action.contactEmail)}"></div><div class="field"><label>Telefone/WhatsApp</label><input value="${escapeHtml(action.contactPhone)}"></div><div class="field"><label>Valor do Patrocínio</label><input value="${escapeHtml(brl(action.sponsorshipValue))}"></div><div class="field event-assets"><label>Assets recebidos</label><input value="${escapeHtml(action.assets)}"></div><div class="field event-attachments"><label>Anexos</label><div class="marketing-attachments">${action.attachments.map((file) => `<span>📎 ${escapeHtml(file)}</span>`).join("")}<button type="button" data-marketing-mock-notice>+</button></div></div></form>
     </section>
     <section class="panel marketing-event-workspace">
-      <div class="marketing-event-tabbar"><div class="tabs"><button type="button" class="${activityTab ? "active" : ""}" data-marketing-detail-tab="activities">Atividades</button><button type="button" class="${state.marketingEventDetailTab === "items" ? "active" : ""}" data-marketing-detail-tab="items">Itens</button><button type="button" class="${state.marketingEventDetailTab === "provisions" ? "active" : ""}" data-marketing-detail-tab="provisions">Aprovisionamentos</button></div>${activityTab ? '<button class="primary" type="button" data-add-marketing-activity>Adicionar atividade</button>' : state.marketingEventDetailTab === "items" ? '<button class="primary" type="button" data-marketing-mock-notice>Adicionar item</button>' : ""}</div>
+      <div class="marketing-event-tabbar"><div class="tabs"><button type="button" class="${activityTab ? "active" : ""}" data-marketing-detail-tab="activities">Atividades</button><button type="button" class="${state.marketingEventDetailTab === "items" ? "active" : ""}" data-marketing-detail-tab="items">Itens</button><button type="button" class="${state.marketingEventDetailTab === "provisions" ? "active" : ""}" data-marketing-detail-tab="provisions">Provisionamentos</button></div>${activityTab ? '<button class="primary" type="button" data-add-marketing-activity>Adicionar atividade</button>' : state.marketingEventDetailTab === "items" ? '<button class="primary" type="button" data-marketing-mock-notice>Adicionar item</button>' : ""}</div>
       ${activityTab ? renderMarketingActivityGantt(action, activities) : state.marketingEventDetailTab === "items" ? renderMarketingItems(action) : renderMarketingEventProvisions(action)}
     </section>
     ${renderMarketingActivityModal(action, activities)}
@@ -5044,7 +5067,7 @@ function renderMarketingProvisionMock() {
   });
   return `
     <section class="panel marketing-panel">
-      <div class="panel-head"><div><h2>Aprovisionamento</h2><p class="muted-copy">Prévia do fluxo entre Marketing, Financeiro Mauad e fornecedor. Nenhum e-mail será enviado nesta versão.</p></div></div>
+      <div class="panel-head"><div><h2>Provisionamento</h2><p class="muted-copy">Prévia do fluxo entre Marketing, Financeiro Mauad e fornecedor. Nenhum e-mail será enviado nesta versão.</p></div></div>
       <div class="marketing-provision-list">
         ${provisions.map((row) => `<article class="marketing-provision-card"><div><span>${escapeHtml(row.action.project)} · ${escapeHtml(row.label)}</span><h3>${escapeHtml(row.action.name)}</h3><p>${escapeHtml(row.supplier)} · ${escapeHtml(brl(row.value))}</p></div><dl><div><dt>Solicitação</dt><dd>${escapeHtml(dateLabel(row.requestedAt))}</dd></div><div><dt>Pagamento previsto</dt><dd>${escapeHtml(dateLabel(marketingPaymentDateFor(row.requestedAt)))}</dd></div></dl><div class="row-actions"><button type="button" data-marketing-email="finance:${row.action.id}">Prévia Financeiro</button><button type="button" data-marketing-email="supplier:${row.action.id}">Prévia Fornecedor</button></div></article>`).join("")}
       </div>
@@ -5060,7 +5083,7 @@ function renderMarketingEmailMock() {
   if (!action || !quote) return "";
   const paymentDate = dateLabel(marketingPaymentDate());
   const finance = audience === "finance";
-  return `<div class="modal-backdrop" data-close-marketing-email><section class="modal-card marketing-email-modal"><div class="panel-head"><div><span class="mock-chip">Prévia — não será enviada</span><h2>${finance ? "Aprovisionamento Financeiro Mauad" : "Orientações ao fornecedor"}</h2></div><button class="icon" type="button" data-close-marketing-email>×</button></div><div class="email-preview-fields"><div><span>Assunto</span><strong>${finance ? "Solicitação de aprovisionamento" : "Contratação e orientações para pagamento"} — ${escapeHtml(action.name)}</strong></div><div><span>Pagamento previsto</span><strong>${escapeHtml(paymentDate)}</strong></div></div><div class="email-preview-body"><p>Prezados,</p>${finance ? `<p>Solicitamos o aprovisionamento de <strong>${escapeHtml(brl(quote.value))}</strong> para a ação ${escapeHtml(action.name)}, do empreendimento ${escapeHtml(action.project)}, com pagamento previsto em ${escapeHtml(paymentDate)}.</p><p>Fornecedor selecionado: ${escapeHtml(quote.supplier)}.</p>` : `<p>Confirmamos a seleção da ${escapeHtml(quote.supplier)} para a ação ${escapeHtml(action.name)}, no valor de ${escapeHtml(brl(quote.value))}.</p><p>Para recebimento, encaminhe a documentação cadastral e a Nota Fiscal conforme as orientações da Mauad. A previsão de pagamento é ${escapeHtml(paymentDate)}, condicionada ao envio correto dos documentos.</p>`}<p>Atenciosamente,<br>Marketing Mauad</p></div><button class="primary full-width" type="button" data-close-marketing-email>Fechar prévia</button></section></div>`;
+  return `<div class="modal-backdrop" data-close-marketing-email><section class="modal-card marketing-email-modal"><div class="panel-head"><div><span class="mock-chip">Prévia — não será enviada</span><h2>${finance ? "Provisionamento Financeiro Mauad" : "Orientações ao fornecedor"}</h2></div><button class="icon" type="button" data-close-marketing-email>×</button></div><div class="email-preview-fields"><div><span>Assunto</span><strong>${finance ? "Solicitação de provisionamento" : "Contratação e orientações para pagamento"} — ${escapeHtml(action.name)}</strong></div><div><span>Pagamento previsto</span><strong>${escapeHtml(paymentDate)}</strong></div></div><div class="email-preview-body"><p>Prezados,</p>${finance ? `<p>Solicitamos o provisionamento de <strong>${escapeHtml(brl(quote.value))}</strong> para a ação ${escapeHtml(action.name)}, do empreendimento ${escapeHtml(action.project)}, com pagamento previsto em ${escapeHtml(paymentDate)}.</p><p>Fornecedor selecionado: ${escapeHtml(quote.supplier)}.</p>` : `<p>Confirmamos a seleção da ${escapeHtml(quote.supplier)} para a ação ${escapeHtml(action.name)}, no valor de ${escapeHtml(brl(quote.value))}.</p><p>Para recebimento, encaminhe a documentação cadastral e a Nota Fiscal conforme as orientações da Mauad. A previsão de pagamento é ${escapeHtml(paymentDate)}, condicionada ao envio correto dos documentos.</p>`}<p>Atenciosamente,<br>Marketing Mauad</p></div><button class="primary full-width" type="button" data-close-marketing-email>Fechar prévia</button></section></div>`;
 }
 
 function renderMarketingViewAtScroll() {
@@ -5090,7 +5113,7 @@ function openMarketingQuoteActionMenu(anchor, menuKey, isWinner, point) {
     renderMarketingViewAtScroll();
   });
   menu.querySelector("[data-page-set-winner]")?.addEventListener("click", () => {
-    if (!confirm("Confirmar este fornecedor como vencedor? Uma pendência será criada na aba Aprovisionamentos.")) return;
+    if (!confirm("Confirmar este fornecedor como vencedor? Uma pendência será criada na aba Provisionamentos.")) return;
     state.marketingItemWinnerSelections[`${state.marketingEditingActionId}:${itemId}`] = quoteId;
     menu.remove();
     renderMarketingViewAtScroll();
@@ -5100,7 +5123,7 @@ function openMarketingQuoteActionMenu(anchor, menuKey, isWinner, point) {
     if (!reason?.trim()) return;
     delete state.marketingItemWinnerSelections[`${state.marketingEditingActionId}:${itemId}`];
     menu.remove();
-    alert("Fornecedor desmarcado. O aprovisionamento pendente foi excluído.");
+    alert("Fornecedor desmarcado. O provisionamento pendente foi excluído.");
     renderMarketingViewAtScroll();
   });
   setTimeout(() => document.addEventListener("click", (event) => { if (!menu.contains(event.target) && event.target !== anchor) menu.remove(); }, { once: true }), 0);
@@ -5116,7 +5139,7 @@ function renderMarketingView() {
     ["recurrences", "Recorrências"]
   ];
   renderShell(`
-    ${renderViewHead("Marketing", "Gerenciador de orçamento, ações e aprovisionamento")}
+    ${renderViewHead("Marketing", "Gerenciador de orçamento, ações e provisionamento")}
     <div class="mock-banner"><strong>Protótipo navegável</strong><span>Os dados são demonstrativos e nenhuma alteração ou e-mail é gravado.</span></div>
     <div class="tabs marketing-tabs">${tabs.map(([id, label]) => `<button type="button" class="${state.marketingTab === id ? "active" : ""}" data-marketing-tab="${id}">${label}</button>`).join("")}</div>
     ${state.marketingTab === "budget" ? renderMarketingBudgetMock() : state.marketingTab === "actions" ? renderMarketingActionsMock() : ""}
@@ -5138,7 +5161,7 @@ function renderMarketingView() {
   document.querySelectorAll("[data-edit-marketing-quote]").forEach((button) => button.addEventListener("click", () => { const [itemId, quoteId] = button.dataset.editMarketingQuote.split(":"); state.marketingEditingItemId = itemId; state.marketingItemModalMode = "quote"; state.marketingEditingQuoteId = quoteId; state.marketingOpenQuoteMenu = ""; renderMarketingView(); }));
   document.querySelectorAll("[data-set-marketing-winner]").forEach((button) => button.addEventListener("click", () => {
     const [itemId, quoteId] = button.dataset.setMarketingWinner.split(":");
-    if (!confirm("Confirmar este fornecedor como vencedor? Uma pendência será criada na aba Aprovisionamentos.")) return;
+    if (!confirm("Confirmar este fornecedor como vencedor? Uma pendência será criada na aba Provisionamentos.")) return;
     state.marketingItemWinnerSelections[`${state.marketingEditingActionId}:${itemId}`] = quoteId;
     renderMarketingView();
   }));
@@ -5147,7 +5170,7 @@ function renderMarketingView() {
     const reason = prompt("Informe o motivo para retirar o fornecedor vencedor:");
     if (!reason?.trim()) return;
     delete state.marketingItemWinnerSelections[`${state.marketingEditingActionId}:${itemId}`];
-    alert("Fornecedor desmarcado. O aprovisionamento pendente foi excluído.");
+    alert("Fornecedor desmarcado. O provisionamento pendente foi excluído.");
     renderMarketingView();
   }));
   document.querySelectorAll("[data-open-marketing-attachment]").forEach((button) => button.addEventListener("click", () => alert(`Abrindo anexo demonstrativo: ${button.dataset.openMarketingAttachment}`)));
@@ -7563,8 +7586,11 @@ function money(value) {
 
 function dateLabel(value) {
   if (!value) return "";
-  const date = new Date(value.includes("/") ? value.replace(/(\d{2})\/(\d{2})\/(\d{2,4}).*/, "$2/$1/$3") : value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("pt-BR");
+  const raw = String(value);
+  const isoDateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDateOnly) return `${isoDateOnly[3]}/${isoDateOnly[2]}/${isoDateOnly[1]}`;
+  const date = new Date(raw.includes("/") ? raw.replace(/(\d{2})\/(\d{2})\/(\d{2,4}).*/, "$2/$1/$3") : raw);
+  return Number.isNaN(date.getTime()) ? raw : date.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
 }
 
 function dateTimeLabel(value) {
@@ -7572,14 +7598,29 @@ function dateTimeLabel(value) {
   const raw = String(value);
   const brDate = raw.match(/^(\d{2})\/(\d{2})\/(\d{2,4})(?:[,\s]+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
   const isoDate = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?/);
-  const date = brDate
-    ? new Date(Number(brDate[3].length === 2 ? `20${brDate[3]}` : brDate[3]), Number(brDate[2]) - 1, Number(brDate[1]), Number(brDate[4] || 0), Number(brDate[5] || 0), Number(brDate[6] || 0))
-    : isoDate
-      ? new Date(Number(isoDate[1]), Number(isoDate[2]) - 1, Number(isoDate[3]), Number(isoDate[4] || 0), Number(isoDate[5] || 0), Number(isoDate[6] || 0))
-    : new Date(raw);
-  if (Number.isNaN(date.getTime())) return raw;
+  const hasExplicitTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const sourceParts = brDate || (!hasExplicitTimezone ? isoDate : null);
   const pad = (number) => String(number).padStart(2, "0");
-  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${String(date.getFullYear()).slice(-2)} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  if (sourceParts) {
+    const year = brDate ? String(sourceParts[3].length === 2 ? `20${sourceParts[3]}` : sourceParts[3]) : sourceParts[1];
+    const month = brDate ? sourceParts[2] : sourceParts[2];
+    const day = brDate ? sourceParts[1] : sourceParts[3];
+    const hour = brDate ? sourceParts[4] : sourceParts[4];
+    const minute = brDate ? sourceParts[5] : sourceParts[5];
+    const second = brDate ? sourceParts[6] : sourceParts[6];
+    return `${pad(day)}/${pad(month)}/${year.slice(-2)} ${pad(hour || 0)}:${pad(minute || 0)}:${pad(second || 0)}`;
+  }
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  }).replace(",", "");
 }
 
 function levSettlementClass(status) {
@@ -7657,7 +7698,7 @@ function renderLevFinanceSettings() {
   `;
   const samplePreview = renderLevEmailTemplateHtml(settings, {
     data_pagamento: "21/08/2026",
-    data_envio: new Date().toLocaleDateString("pt-BR"),
+    data_envio: new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }),
     total_comissoes: money(2250),
     quantidade_vendas: "1",
     empreendimentos: "Golf Club Resort",
@@ -7735,7 +7776,7 @@ function renderLevFinanceSettings() {
           <div class="panel-head compact-head">
             <div>
               <h3>Calendário de pagamento Mauad</h3>
-              <small>Define a data de pagamento usada no e-mail de aprovisionamento.</small>
+              <small>Define a data de pagamento usada no e-mail de provisionamento.</small>
             </div>
             <button type="button" id="addLevScheduleRow">Adicionar faixa</button>
           </div>
@@ -7777,7 +7818,7 @@ function renderLevFinanceSettings() {
   const templateFontColor = document.querySelector("#levEmailFontColor");
   const previewVariables = {
     data_pagamento: "21/08/2026",
-    data_envio: new Date().toLocaleDateString("pt-BR"),
+    data_envio: new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }),
     total_comissoes: money(2250),
     quantidade_vendas: "1",
     empreendimentos: "Golf Club Resort",
@@ -8234,7 +8275,7 @@ function renderBackupSettings() {
     try {
       setButtonBusy(button, true, "Gerando...");
       const data = await api("/api/admin/export-db");
-      const filename = `pipeline-mauad-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      const filename = `pipeline-mauad-backup-${saoPauloDateOnly()}.json`;
       downloadJsonFile(filename, data);
       setButtonBusy(button, false);
     } catch (error) {
@@ -8503,7 +8544,7 @@ function renderLevMauadEmailPreviewModal(pendingSales = []) {
   }).join("");
   const emailBodyHtml = sales.length ? renderLevEmailTemplateHtml(settings, {
     data_pagamento: escapeHtml(scheduledPaymentDateLabel),
-    data_envio: new Date().toLocaleDateString("pt-BR"),
+    data_envio: new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }),
     total_comissoes: money(totalCommission),
     quantidade_vendas: String(sales.length),
     empreendimentos: escapeHtml([...groups.keys()].join(", ") || "-"),
@@ -8605,10 +8646,10 @@ function renderLevFinanceModal() {
   ` : "";
   const invoiceFields = modal.type === "invoice" ? `
     <div class="field"><label>Número da NF</label><input name="invoiceNumber" value="${escapeHtml(record.invoiceNumber || "")}" required></div>
-    <div class="field"><label>Data de emissão</label><input name="invoiceIssuedAt" type="date" value="${escapeHtml(record.invoiceIssuedAt || new Date().toISOString().slice(0, 10))}" required></div>
+    <div class="field"><label>Data de emissão</label><input name="invoiceIssuedAt" type="date" value="${escapeHtml(record.invoiceIssuedAt || saoPauloDateOnly())}" required></div>
   ` : "";
   const paidFields = modal.type === "paid" ? `
-    <div class="field"><label>Data de pagamento</label><input name="paidAt" type="date" value="${escapeHtml(record.paidAt || new Date().toISOString().slice(0, 10))}" required></div>
+    <div class="field"><label>Data de pagamento</label><input name="paidAt" type="date" value="${escapeHtml(record.paidAt || saoPauloDateOnly())}" required></div>
   ` : "";
   const ignoreFields = modal.type === "ignore" ? `
     <div class="field full"><label>Motivo</label><textarea name="ignoreReason" rows="4" placeholder="Informe por que este registro será ignorado" required>${escapeHtml(record.ignoreReason || "")}</textarea></div>
@@ -8718,7 +8759,7 @@ function renderLevFinanceView() {
         <form id="levReceiptForm" class="form-grid">
           <div class="field full"><label>Unidades pagas</label><textarea name="units" rows="4" placeholder="Uma unidade por linha. Ex.: GCR060107" required></textarea></div>
           <div class="field"><label>Valor recebido</label><input name="amount" placeholder="450.000,00"></div>
-          <div class="field"><label>Data do recebimento</label><input name="receivedAt" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
+          <div class="field"><label>Data do recebimento</label><input name="receivedAt" type="date" value="${saoPauloDateOnly()}"></div>
           <div class="field full"><label>Observação</label><input name="note" placeholder="Ex.: histórico inicial ou conciliação"></div>
           <div class="field full"><button class="primary" type="submit">Registrar recebimento</button></div>
         </form>
@@ -8758,7 +8799,7 @@ function renderSmlFinanceView() {
     <section class="panel compact-panel"><input id="smlFinanceSearch" class="settings-search" placeholder="Pesquisar por unidade, cliente, imobiliária, status ou observação" value="${escapeHtml(state.smlFinanceSearch)}"></section>
     <section class="metrics"><div class="metric"><span>${escapeHtml(tabLabels[state.smlFinanceTab] || "Pendentes")}</span><strong>${activeRows.length}</strong></div><div class="metric"><span>Valor da aba</span><strong>${money(activeRows.reduce((sum, sale) => sum + Number(sale.contractValue || 0), 0))}</strong></div><div class="metric"><span>Comissão da aba</span><strong>${money(activeRows.reduce((sum, sale) => sum + Number(sale.commissionValue || 0), 0))}</strong></div><div class="metric"><span>% comissão</span><strong>${escapeHtml(finance.settings?.commissionPercent || 0)}%</strong></div></section>
     <section class="panel"><div class="tabs lev-finance-tabs">${tabs}</div><div class="table-wrap"><table class="access-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor unidade</th><th>Sinal</th><th>Financiamento</th><th>Comissão Lev</th><th>Corretor</th><th>Zero</th><th>Status</th><th>Ação</th></tr></thead><tbody>${rows || '<tr><td colspan="11" class="empty">Nenhum registro nesta aba.</td></tr>'}</tbody></table></div></section>
-    <section class="dashboard-grid finance-grid"><section class="panel"><div class="panel-head"><h2>Recebimentos / conciliação</h2></div><form class="form-grid" data-sml-finance-form><div class="field full"><label>Unidades pagas</label><textarea name="units" rows="4" placeholder="Uma unidade por linha" required></textarea></div><div class="field"><label>Valor recebido</label><input name="amount" placeholder="0,00"></div><div class="field"><label>Data do recebimento</label><input name="receivedAt" type="date" value="${new Date().toISOString().slice(0, 10)}"></div><div class="field full"><label>Observação</label><input name="note"></div><div class="field full"><button class="primary" type="submit">Registrar recebimento</button></div></form></section><section class="panel"><div class="panel-head"><h2>Histórico de recebimentos</h2></div><div class="table-wrap"><table><thead><tr><th>Unidade</th><th>Valor</th><th>Recebido em</th><th>Observação</th></tr></thead><tbody><tr><td colspan="4" class="empty">Nenhum recebimento registrado.</td></tr></tbody></table></div></section></section>
+    <section class="dashboard-grid finance-grid"><section class="panel"><div class="panel-head"><h2>Recebimentos / conciliação</h2></div><form class="form-grid" data-sml-finance-form><div class="field full"><label>Unidades pagas</label><textarea name="units" rows="4" placeholder="Uma unidade por linha" required></textarea></div><div class="field"><label>Valor recebido</label><input name="amount" placeholder="0,00"></div><div class="field"><label>Data do recebimento</label><input name="receivedAt" type="date" value="${saoPauloDateOnly()}"></div><div class="field full"><label>Observação</label><input name="note"></div><div class="field full"><button class="primary" type="submit">Registrar recebimento</button></div></form></section><section class="panel"><div class="panel-head"><h2>Histórico de recebimentos</h2></div><div class="table-wrap"><table><thead><tr><th>Unidade</th><th>Valor</th><th>Recebido em</th><th>Observação</th></tr></thead><tbody><tr><td colspan="4" class="empty">Nenhum recebimento registrado.</td></tr></tbody></table></div></section></section>
     ${previewModal}
   `);
   document.querySelectorAll("[data-sml-finance-tab]").forEach((button) => button.addEventListener("click", () => { state.smlFinanceTab = button.dataset.smlFinanceTab || "pending"; renderSmlFinanceView(); }));
