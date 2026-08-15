@@ -109,6 +109,10 @@ const state = {
   salesReportMode: "chart",
   marketingTab: "actions",
   marketingSelectedActionId: "action-1",
+  marketingEditingActionId: "",
+  marketingEventDetailTab: "activities",
+  marketingActivityModalOpen: false,
+  marketingAddedActivities: {},
   marketingQuoteSelections: { "action-1": "quote-2" },
   marketingApprovedActions: [],
   marketingEmailPreview: "",
@@ -4695,9 +4699,28 @@ function marketingMockActions() {
     {
       id: "action-1",
       name: "Evento de relacionamento com corretores",
+      eventDate: "2026-09-18",
       project: firstProject,
       period: "18/09/2026",
+      location: "Casa de Eventos Lagoa, Rio de Janeiro",
+      eventContact: "Mariana Lopes · (21) 99999-1122",
+      floorCost: 12500,
+      assets: "KV aprovado, convite digital, lista de corretores e apresentação comercial",
+      attachments: ["proposta-local.pdf", "planta-evento.pdf"],
       purpose: "Apresentação de produto e relacionamento com imobiliárias parceiras.",
+      activities: [
+        { id: "act-1", name: "Definição do conceito", duration: 4, start: "2026-08-17", end: "2026-08-20", predecessorId: "", linkType: "T-I" },
+        { id: "act-2", name: "Produção dos assets", duration: 8, start: "2026-08-21", end: "2026-08-28", predecessorId: "act-1", linkType: "T-I" },
+        { id: "act-3", name: "Confirmação de fornecedores", duration: 6, start: "2026-08-24", end: "2026-08-29", predecessorId: "act-1", linkType: "T-I" },
+        { id: "act-4", name: "Convites e confirmações", duration: 14, start: "2026-09-01", end: "2026-09-14", predecessorId: "act-2", linkType: "T-I" },
+        { id: "act-5", name: "Montagem e realização", duration: 2, start: "2026-09-17", end: "2026-09-18", predecessorId: "act-3", linkType: "T-I" }
+      ],
+      items: [
+        { id: "item-1", type: "Serviço", description: "Locação do espaço e mobiliário", quantity: 1, unit: "pacote" },
+        { id: "item-2", type: "Serviço", description: "Buffet para convidados", quantity: 120, unit: "pessoas" },
+        { id: "item-3", type: "Produto", description: "Kits de boas-vindas", quantity: 120, unit: "unidades" },
+        { id: "item-4", type: "Serviço", description: "Sonorização e iluminação", quantity: 1, unit: "diária" }
+      ],
       quotes: [
         { id: "quote-1", supplier: "Experiência Eventos", scope: "Espaço, buffet e equipe", value: 28600, terms: "50% na contratação" },
         { id: "quote-2", supplier: "Casa Sete Produções", scope: "Produção completa do evento", value: 25300, terms: "30% + saldo após evento" },
@@ -4707,9 +4730,25 @@ function marketingMockActions() {
     {
       id: "action-2",
       name: "Ação de lançamento regional",
+      eventDate: "2026-10-10",
       project: secondProject,
       period: "10/10/2026 a 11/10/2026",
+      location: "Praça Central, Petrópolis",
+      eventContact: "Rafael Nunes · (24) 98888-4400",
+      floorCost: 7800,
+      assets: "Material de PDV, uniformes, landing page e mídia regional",
+      attachments: ["briefing-acao.pdf"],
       purpose: "Ativação regional para geração de visitas ao empreendimento.",
+      activities: [
+        { id: "act-6", name: "Licenciamento do local", duration: 10, start: "2026-09-08", end: "2026-09-17", predecessorId: "", linkType: "T-I" },
+        { id: "act-7", name: "Produção de materiais", duration: 12, start: "2026-09-18", end: "2026-09-29", predecessorId: "act-6", linkType: "T-I" },
+        { id: "act-8", name: "Operação da ação", duration: 2, start: "2026-10-10", end: "2026-10-11", predecessorId: "act-7", linkType: "T-I" }
+      ],
+      items: [
+        { id: "item-5", type: "Serviço", description: "Equipe de promotores", quantity: 8, unit: "pessoas" },
+        { id: "item-6", type: "Produto", description: "Banners e sinalização", quantity: 12, unit: "unidades" },
+        { id: "item-7", type: "Serviço", description: "Estrutura promocional", quantity: 1, unit: "pacote" }
+      ],
       quotes: [
         { id: "quote-4", supplier: "Ponto Promo", scope: "Promotores, estrutura e materiais", value: 18400, terms: "Pagamento em 21 dias" },
         { id: "quote-5", supplier: "Movimento MKT", scope: "Operação completa e relatório", value: 19750, terms: "Pagamento em 30 dias" }
@@ -4749,26 +4788,56 @@ function renderMarketingBudgetMock() {
 }
 
 function renderMarketingActionsMock() {
-  const actions = marketingMockActions();
-  const selected = actions.find((item) => item.id === state.marketingSelectedActionId) || actions[0];
-  const selectedQuoteId = state.marketingQuoteSelections[selected.id] || "";
-  const approved = state.marketingApprovedActions.includes(selected.id);
+  const actions = marketingMockActions().sort((a, b) => String(b.eventDate).localeCompare(String(a.eventDate)));
+  if (state.marketingEditingActionId) return renderMarketingEventEditorMock(actions);
   return `
-    <section class="marketing-action-layout">
-      <div class="marketing-action-list">
-        <div class="panel-head"><div><h2>Ações e eventos</h2><p class="muted-copy">Orçamentos preparados para análise e aprovação.</p></div><button class="primary" type="button" data-marketing-mock-notice>Nova ação</button></div>
-        ${actions.map((action) => `<button type="button" class="marketing-action-card ${selected.id === action.id ? "active" : ""}" data-marketing-action="${action.id}"><strong>${escapeHtml(action.name)}</strong><span>${escapeHtml(action.project)} · ${escapeHtml(action.period)}</span><em>${state.marketingApprovedActions.includes(action.id) ? "Aprovada" : "Em cotação"}</em></button>`).join("")}
-      </div>
-      <section class="panel marketing-action-detail">
-        <div class="panel-head"><div><span class="mock-chip">Mockup</span><h2>${escapeHtml(selected.name)}</h2><p class="muted-copy">${escapeHtml(selected.project)} · ${escapeHtml(selected.period)}</p></div></div>
-        <p>${escapeHtml(selected.purpose)}</p>
-        <h3>Quadro de cotações</h3>
-        <div class="table-wrap"><table><thead><tr><th>Escolha</th><th>Fornecedor</th><th>Escopo</th><th>Valor</th><th>Condição</th></tr></thead><tbody>
-          ${selected.quotes.map((quote) => `<tr class="${selectedQuoteId === quote.id ? "selected-row" : ""}"><td><input type="radio" name="marketingWinner" value="${quote.id}" ${selectedQuoteId === quote.id ? "checked" : ""}></td><td><strong>${escapeHtml(quote.supplier)}</strong></td><td>${escapeHtml(quote.scope)}</td><td>${escapeHtml(brl(quote.value))}</td><td>${escapeHtml(quote.terms)}</td></tr>`).join("")}
-        </tbody></table></div>
-        <div class="marketing-approval-bar"><div><span>Fornecedor selecionado</span><strong>${escapeHtml(selected.quotes.find((quote) => quote.id === selectedQuoteId)?.supplier || "Nenhum")}</strong></div><button class="primary" type="button" data-marketing-approve ${!selectedQuoteId || approved ? "disabled" : ""}>${approved ? "Ação aprovada" : "Aprovar fornecedor"}</button></div>
-      </section>
+    <section class="panel marketing-panel">
+      <div class="panel-head"><div><h2>Ações e eventos</h2><p class="muted-copy">Eventos ordenados da data mais recente para a mais antiga.</p></div><button class="primary" type="button" data-marketing-mock-notice>Nova ação</button></div>
+      <div class="table-wrap"><table class="marketing-events-table"><thead><tr><th>Data</th><th>Evento</th><th>Empreendimento</th><th>Local</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+        ${actions.map((action) => `<tr><td><strong>${escapeHtml(dateLabel(action.eventDate))}</strong></td><td>${escapeHtml(action.name)}</td><td>${escapeHtml(action.project)}</td><td>${escapeHtml(action.location)}</td><td><span class="status-ok">Em planejamento</span></td><td>${renderSettingsActionMenu(`marketing-event-${action.id}`, [`<button type="button" data-edit-marketing-event="${action.id}">Editar evento</button>`])}</td></tr>`).join("")}
+      </tbody></table></div>
     </section>
+  `;
+}
+
+function marketingActivitiesForAction(action) {
+  return [...(action.activities || []), ...(state.marketingAddedActivities[action.id] || [])];
+}
+
+function renderMarketingActivityGantt(activities = []) {
+  const timestamps = activities.flatMap((activity) => [new Date(`${activity.start}T00:00:00`).getTime(), new Date(`${activity.end}T00:00:00`).getTime()]).filter(Number.isFinite);
+  const min = Math.min(...timestamps);
+  const max = Math.max(...timestamps);
+  const span = Math.max(86400000, max - min + 86400000);
+  return `<div class="marketing-gantt"><div class="marketing-gantt-head"><span>Atividade</span><strong>Linha do tempo</strong></div>${activities.map((activity) => {
+    const start = new Date(`${activity.start}T00:00:00`).getTime();
+    const end = new Date(`${activity.end}T00:00:00`).getTime();
+    const left = ((start - min) / span) * 100;
+    const width = Math.max(4, ((end - start + 86400000) / span) * 100);
+    return `<div class="marketing-gantt-row"><div><strong>${escapeHtml(activity.name)}</strong><span>${escapeHtml(dateLabel(activity.start))} — ${escapeHtml(dateLabel(activity.end))}</span></div><div class="marketing-gantt-track"><i style="--gantt-left:${left}%;--gantt-width:${width}%"></i></div></div>`;
+  }).join("") || '<div class="empty">Nenhuma atividade cadastrada.</div>'}</div>`;
+}
+
+function renderMarketingActivityModal(action, activities) {
+  if (!state.marketingActivityModalOpen) return "";
+  return `<div class="modal-backdrop" data-close-marketing-activity><section class="modal-card marketing-activity-modal"><div class="panel-head"><div><span class="mock-chip">Mockup</span><h2>Adicionar atividade</h2><p class="muted-copy">${escapeHtml(action.name)}</p></div><button class="icon" type="button" data-close-marketing-activity>×</button></div><form id="marketingActivityForm" class="form-grid"><div class="field full"><label>Nome</label><input name="name" required></div><div class="field"><label>Duração (dias)</label><input name="duration" type="number" min="1" required></div><div class="field"><label>Data de início</label><input name="start" type="date" required></div><div class="field"><label>Data de fim</label><input name="end" type="date" required></div><div class="field"><label>Atividade predecessora</label><select name="predecessorId"><option value="">Sem predecessora</option>${activities.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select></div><div class="field"><label>Tipo de ligação</label><select name="linkType"><option value="T-T">T-T</option><option value="T-I" selected>T-I</option><option value="I-T">I-T</option><option value="I-I">I-I</option></select></div><div class="field full"><div class="row-actions"><button class="primary" type="submit">Adicionar atividade</button><button type="button" data-close-marketing-activity>Cancelar</button></div></div></form></section></div>`;
+}
+
+function renderMarketingEventEditorMock(actions) {
+  const action = actions.find((item) => item.id === state.marketingEditingActionId) || actions[0];
+  const activities = marketingActivitiesForAction(action);
+  const activityTab = state.marketingEventDetailTab !== "items";
+  return `
+    <button type="button" class="secondary marketing-back-button" data-close-marketing-event>← Voltar para eventos</button>
+    <section class="panel marketing-event-editor">
+      <div class="panel-head"><div><span class="mock-chip">Edição demonstrativa</span><h2>${escapeHtml(action.name)}</h2></div><button class="primary" type="button" data-save-marketing-event>Salvar evento</button></div>
+      <form class="form-grid marketing-event-fields"><div class="field full"><label>Nome do evento</label><input value="${escapeHtml(action.name)}"></div><div class="field"><label>Local</label><input value="${escapeHtml(action.location)}"></div><div class="field"><label>Período do evento</label><input value="${escapeHtml(action.period)}"></div><div class="field"><label>Empreendimento</label><select>${(state.projects || []).map((project) => `<option ${project === action.project ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}</select></div><div class="field"><label>Contato no evento</label><input value="${escapeHtml(action.eventContact)}"></div><div class="field"><label>Valor do “chão”</label><input value="${escapeHtml(brl(action.floorCost))}"></div><div class="field full"><label>Assets recebidos</label><textarea>${escapeHtml(action.assets)}</textarea></div><div class="field full"><label>Anexos</label><div class="marketing-attachments">${action.attachments.map((file) => `<span>📎 ${escapeHtml(file)}</span>`).join("")}<button type="button" data-marketing-mock-notice>Adicionar anexo</button></div></div></form>
+    </section>
+    <section class="panel marketing-event-workspace">
+      <div class="tabs"><button type="button" class="${activityTab ? "active" : ""}" data-marketing-detail-tab="activities">Atividades</button><button type="button" class="${!activityTab ? "active" : ""}" data-marketing-detail-tab="items">Itens</button></div>
+      ${activityTab ? `<div class="panel-head"><div><h3>Plano de atividades</h3><p class="muted-copy">Cronograma e relações de precedência.</p></div><button class="primary" type="button" data-add-marketing-activity>Adicionar atividade</button></div>${renderMarketingActivityGantt(activities)}` : `<div class="panel-head"><div><h3>Itens a serem orçados</h3><p class="muted-copy">Produtos a comprar e serviços a contratar.</p></div></div><div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Descrição</th><th>Quantidade</th><th>Unidade</th></tr></thead><tbody>${action.items.map((item) => `<tr><td><span class="chip">${escapeHtml(item.type)}</span></td><td>${escapeHtml(item.description)}</td><td>${item.quantity}</td><td>${escapeHtml(item.unit)}</td></tr>`).join("")}</tbody></table></div>`}
+    </section>
+    ${renderMarketingActivityModal(action, activities)}
   `;
 }
 
@@ -4812,10 +4881,23 @@ function renderMarketingView() {
     ${state.marketingTab === "budget" ? renderMarketingBudgetMock() : state.marketingTab === "provision" ? renderMarketingProvisionMock() : renderMarketingActionsMock()}
     ${renderMarketingEmailMock()}
   `);
-  document.querySelectorAll("[data-marketing-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingTab = button.dataset.marketingTab; renderMarketingView(); }));
-  document.querySelectorAll("[data-marketing-action]").forEach((button) => button.addEventListener("click", () => { state.marketingSelectedActionId = button.dataset.marketingAction; renderMarketingView(); }));
-  document.querySelectorAll('input[name="marketingWinner"]').forEach((radio) => radio.addEventListener("change", () => { state.marketingQuoteSelections[state.marketingSelectedActionId] = radio.value; renderMarketingView(); }));
-  document.querySelector("[data-marketing-approve]")?.addEventListener("click", () => { if (!state.marketingApprovedActions.includes(state.marketingSelectedActionId)) state.marketingApprovedActions.push(state.marketingSelectedActionId); renderMarketingView(); });
+  document.querySelectorAll("[data-marketing-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingTab = button.dataset.marketingTab; state.marketingEditingActionId = ""; state.marketingActivityModalOpen = false; renderMarketingView(); }));
+  bindSettingsActionMenus();
+  document.querySelectorAll("[data-edit-marketing-event]").forEach((button) => button.addEventListener("click", () => { state.marketingEditingActionId = button.dataset.editMarketingEvent; state.marketingEventDetailTab = "activities"; renderMarketingView(); }));
+  document.querySelector("[data-close-marketing-event]")?.addEventListener("click", () => { state.marketingEditingActionId = ""; state.marketingActivityModalOpen = false; renderMarketingView(); });
+  document.querySelectorAll("[data-marketing-detail-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingEventDetailTab = button.dataset.marketingDetailTab; renderMarketingView(); }));
+  document.querySelector("[data-add-marketing-activity]")?.addEventListener("click", () => { state.marketingActivityModalOpen = true; renderMarketingView(); });
+  document.querySelectorAll("[data-close-marketing-activity]").forEach((element) => element.addEventListener("click", (event) => { if (event.target !== element && element.classList.contains("modal-backdrop")) return; state.marketingActivityModalOpen = false; renderMarketingView(); }));
+  document.querySelector("#marketingActivityForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const actionId = state.marketingEditingActionId;
+    const next = { id: `mock-activity-${Date.now()}`, name: form.get("name"), duration: Number(form.get("duration") || 1), start: form.get("start"), end: form.get("end"), predecessorId: form.get("predecessorId"), linkType: form.get("linkType") };
+    state.marketingAddedActivities[actionId] = [...(state.marketingAddedActivities[actionId] || []), next];
+    state.marketingActivityModalOpen = false;
+    renderMarketingView();
+  });
+  document.querySelector("[data-save-marketing-event]")?.addEventListener("click", () => alert("Mockup salvo apenas durante esta sessão. A persistência será criada na próxima etapa."));
   document.querySelectorAll("[data-marketing-email]").forEach((button) => button.addEventListener("click", () => { state.marketingEmailPreview = button.dataset.marketingEmail; renderMarketingView(); }));
   document.querySelectorAll("[data-close-marketing-email]").forEach((element) => element.addEventListener("click", (event) => { if (event.target !== element && element.classList.contains("modal-backdrop")) return; state.marketingEmailPreview = ""; renderMarketingView(); }));
   document.querySelector("[data-marketing-mock-notice]")?.addEventListener("click", () => alert("No produto final, este botão abrirá o cadastro de uma nova ação ou evento."));
