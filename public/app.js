@@ -7649,8 +7649,162 @@ function levFinanceSearchText(item) {
   ].filter(Boolean).join(" ").toLocaleLowerCase("pt-BR");
 }
 
+function richMessageEditorMarkup({ id, template = {}, variables = [], previewHtml = "" }) {
+  const fontFamily = template.fontFamily || "Arial";
+  const fontSize = template.fontSize || "14px";
+  const color = template.color || "#17202a";
+  const lineHeight = template.lineHeight || "1.5";
+  const variableButtons = variables.map((variable) => `<button type="button" data-rich-variable="${escapeHtml(variable.key)}">${escapeHtml(variable.label)}</button>`).join("");
+  return `<div id="${id}" class="email-template-builder" data-rich-message-editor>
+    <section class="email-template-editor-pane">
+      <div class="email-template-toolbar capture-email-toolbar" aria-label="Ferramentas de formatação">
+        <div class="capture-toolbar-row">
+          <select data-rich-font-family title="Fonte">${["Arial", "Georgia", "Times New Roman", "Verdana", "Tahoma", "Courier New"].map((font) => `<option value="${escapeHtml(font)}" ${font === fontFamily ? "selected" : ""}>${escapeHtml(font)}</option>`).join("")}</select>
+          <select data-rich-font-size title="Tamanho">${["8px", "9px", "10px", "11px", "12px", "13px", "14px", "15px", "16px", "18px", "20px", "22px", "24px", "28px", "32px", "36px", "40px", "48px", "56px", "64px"].map((size) => `<option value="${size}" ${size === fontSize ? "selected" : ""}>${size}</option>`).join("")}</select>
+          <select data-rich-line-height title="Espaçamento entre linhas">${["1", "1.15", "1.3", "1.5", "1.6", "1.8", "2"].map((value) => `<option value="${value}" ${value === lineHeight ? "selected" : ""}>${value}</option>`).join("")}</select>
+          <input data-rich-font-color type="color" value="${escapeHtml(color)}" title="Cor da fonte"><span class="toolbar-separator"></span>
+          <button type="button" data-rich-command="bold" title="Negrito"><strong>B</strong></button><button type="button" data-rich-command="italic" title="Itálico"><em>I</em></button><button type="button" data-rich-command="underline" title="Sublinhado"><u>U</u></button><span class="toolbar-separator"></span>
+          <button type="button" data-rich-command="insertUnorderedList" title="Marcadores" aria-label="Marcadores">•≡</button><button type="button" data-rich-command="insertOrderedList" title="Lista numerada" aria-label="Lista numerada">1≡</button><button type="button" data-rich-command="outdent" title="Diminuir recuo" aria-label="Diminuir recuo">⇤</button><button type="button" data-rich-command="indent" title="Aumentar recuo" aria-label="Aumentar recuo">⇥</button>
+          <span class="toolbar-separator"></span><button type="button" data-rich-insert-image title="Inserir imagem no cursor" aria-label="Inserir imagem"><svg viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14" rx="2"/><circle cx="7" cy="7.5" r="1.5"/><path d="m4.5 15 4-4 2.5 2.5 2-2 2.5 3.5"/></svg></button><input data-rich-image-input type="file" accept="image/jpeg,image/png,image/webp" hidden>
+        </div>
+        <div class="capture-toolbar-row capture-align-row">
+          <button type="button" data-rich-command="justifyLeft" title="Alinhar à esquerda" aria-label="Alinhar à esquerda"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h9M3 12h14M3 16h9"/></svg></button><button type="button" data-rich-command="justifyCenter" title="Centralizar" aria-label="Centralizar"><svg viewBox="0 0 20 20"><path d="M3 4h14M5.5 8h9M3 12h14M5.5 16h9"/></svg></button><button type="button" data-rich-command="justifyRight" title="Alinhar à direita" aria-label="Alinhar à direita"><svg viewBox="0 0 20 20"><path d="M3 4h14M8 8h9M3 12h14M8 16h9"/></svg></button><button type="button" data-rich-command="justifyFull" title="Justificar" aria-label="Justificar"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h14M3 12h14M3 16h14"/></svg></button>
+        </div>
+      </div>
+      ${variableButtons ? `<div class="template-variable-bar"><span>Variáveis</span>${variableButtons}</div>` : ""}
+      <div data-rich-editor class="rich-email-editor" contenteditable="true" style="font-family:${escapeHtml(fontFamily)};font-size:${escapeHtml(fontSize)};color:${escapeHtml(color)};line-height:${escapeHtml(lineHeight)}">${sanitizeRichHtml(template.html || "")}</div>
+    </section>
+    <section class="email-template-preview-pane"><div class="preview-title">Prévia</div><div data-rich-preview class="email-preview-body template-preview-body">${previewHtml}</div></section>
+  </div>`;
+}
+
+function bindRichMessageEditor(id, renderPreview) {
+  const root = document.querySelector(`#${id}`);
+  const editor = root?.querySelector("[data-rich-editor]");
+  const preview = root?.querySelector("[data-rich-preview]");
+  const family = root?.querySelector("[data-rich-font-family]");
+  const size = root?.querySelector("[data-rich-font-size]");
+  const spacing = root?.querySelector("[data-rich-line-height]");
+  const color = root?.querySelector("[data-rich-font-color]");
+  let savedRange = null;
+  const rememberSelection = () => {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || !editor) return;
+    const range = selection.getRangeAt(0);
+    if (editor.contains(range.commonAncestorContainer)) savedRange = range.cloneRange();
+  };
+  const restoreSelection = () => {
+    if (!savedRange) return false;
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(savedRange);
+    return true;
+  };
+  const getValue = () => ({
+    html: sanitizeRichHtml(editor?.innerHTML || ""),
+    fontFamily: family?.value || "Arial",
+    fontSize: size?.value || "14px",
+    color: color?.value || "#17202a",
+    lineHeight: spacing?.value || "1.5"
+  });
+  const refresh = () => {
+    if (!editor || !preview) return;
+    const value = getValue();
+    editor.style.fontFamily = value.fontFamily;
+    editor.style.fontSize = value.fontSize;
+    editor.style.color = value.color;
+    editor.style.lineHeight = value.lineHeight;
+    preview.innerHTML = renderPreview(value);
+  };
+  const applySelectedStyle = (property, value) => {
+    if (!editor || !restoreSelection()) return;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!range || range.collapsed) return;
+    const span = document.createElement("span");
+    span.style[property] = value;
+    try { range.surroundContents(span); } catch { span.appendChild(range.extractContents()); range.insertNode(span); }
+    const nextRange = document.createRange();
+    nextRange.selectNodeContents(span);
+    selection.removeAllRanges();
+    selection.addRange(nextRange);
+    savedRange = nextRange.cloneRange();
+    refresh();
+  };
+  const applyLineHeight = (value) => {
+    if (!editor || !restoreSelection()) return;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!range) return;
+    const blockSelector = "p,div,li,h1,h2,h3,h4,h5,h6,blockquote";
+    const blocks = [...editor.querySelectorAll(blockSelector)].filter((block) => { try { return range.intersectsNode(block); } catch { return false; } });
+    if (!blocks.length) {
+      const node = range.commonAncestorContainer.nodeType === Node.TEXT_NODE ? range.commonAncestorContainer.parentElement : range.commonAncestorContainer;
+      const block = node?.closest?.(blockSelector);
+      if (block && editor.contains(block)) blocks.push(block);
+    }
+    blocks.forEach((block) => { block.style.lineHeight = value; });
+    restoreSelection();
+    refresh();
+  };
+  editor?.addEventListener("input", refresh);
+  editor?.addEventListener("keyup", rememberSelection);
+  editor?.addEventListener("mouseup", rememberSelection);
+  root?.addEventListener("focusout", rememberSelection);
+  family?.addEventListener("change", () => applySelectedStyle("fontFamily", family.value));
+  size?.addEventListener("change", () => applySelectedStyle("fontSize", size.value));
+  spacing?.addEventListener("change", () => applyLineHeight(spacing.value));
+  color?.addEventListener("change", () => applySelectedStyle("color", color.value));
+  root?.querySelectorAll("[data-rich-command]").forEach((button) => {
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => { restoreSelection(); editor?.focus(); document.execCommand(button.dataset.richCommand, false, null); rememberSelection(); refresh(); });
+  });
+  root?.querySelectorAll("[data-rich-variable]").forEach((button) => {
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => { restoreSelection(); editor?.focus(); document.execCommand("insertText", false, `{{${button.dataset.richVariable}}}`); rememberSelection(); refresh(); });
+  });
+  const imageInput = root?.querySelector("[data-rich-image-input]");
+  const imageButton = root?.querySelector("[data-rich-insert-image]");
+  imageButton?.addEventListener("mousedown", (event) => { event.preventDefault(); rememberSelection(); });
+  imageButton?.addEventListener("click", () => imageInput?.click());
+  imageInput?.addEventListener("change", async () => {
+    const file = imageInput.files?.[0];
+    if (!file || !editor) return;
+    try {
+      if (editor.querySelectorAll("img[src^='data:image/']").length >= 3) throw new Error("A mensagem pode ter no máximo 3 imagens.");
+      const imageDataUrl = await readOptimizedEmailImage(file);
+      const embeddedSize = [...editor.querySelectorAll("img[src^='data:image/']")].reduce((total, item) => total + String(item.getAttribute("src") || "").length, 0);
+      if (embeddedSize + imageDataUrl.length > 2600000) throw new Error("As imagens da mensagem ficaram muito pesadas. Remova uma imagem ou use arquivos menores.");
+      restoreSelection();
+      const selection = window.getSelection();
+      const range = selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer) ? selection.getRangeAt(0) : null;
+      const wrapper = document.createElement("div");
+      wrapper.style.cssText = "margin:14px 0;text-align:center";
+      wrapper.innerHTML = `<img src="${imageDataUrl}" alt="Imagem da mensagem" style="display:block;width:100%;max-width:100%;height:auto;margin:0 auto;border:0">`;
+      if (range) { range.deleteContents(); range.insertNode(wrapper); } else editor.appendChild(wrapper);
+      const nextRange = document.createRange();
+      nextRange.setStartAfter(wrapper);
+      nextRange.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(nextRange);
+      savedRange = nextRange.cloneRange();
+      refresh();
+    } catch (error) { alert(error.message); } finally { imageInput.value = ""; }
+  });
+  refresh();
+  return { getValue, refresh };
+}
+
 function renderSmlFinanceSettings() {
   const settings = state.smlFinance?.settings || {};
+  const fallbackMessage = settings.authorizationMessage || "Olá,\n\nAcesse o link abaixo usando seu e-mail e a senha informada para confirmar as vendas autorizadas para emissão de nota.\n\nO link é temporário e expira no prazo configurado.";
+  const template = settings.authorizationEmailTemplate || { html: escapeHtml(fallbackMessage).replaceAll("\n", "<br>"), fontFamily: "Arial", fontSize: "14px", color: "#101828", lineHeight: "1.5" };
+  const previewVariables = { link_confirmacao: '<a href="#">Acessar confirmação de vendas</a>', email_acesso: settings.authorizationTo || "financeiro@saintmichel.com.br", senha_acesso: "A7K9P2", horas_validade: String(settings.authorizationExpiryHours || 48) };
+  const renderSmlPreview = (value) => {
+    let html = value.html;
+    Object.entries(previewVariables).forEach(([key, replacement]) => { html = html.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "gi"), replacement); });
+    return `<div style="font-family:${escapeHtml(value.fontFamily)};font-size:${escapeHtml(value.fontSize)};color:${escapeHtml(value.color)};line-height:${escapeHtml(value.lineHeight)}">${sanitizeRichHtml(html)}</div>`;
+  };
   settingsLayout(`
     <section class="panel">
       <div class="panel-head"><div><h2>Financeiro SML</h2><p class="muted-copy">Configurações exclusivas da confirmação de recebíveis da Saint Michel.</p></div></div>
@@ -7661,17 +7815,19 @@ function renderSmlFinanceSettings() {
         <div class="field"><label>E-mail do financeiro SML</label><input name="authorizationTo" type="email" value="${escapeHtml(settings.authorizationTo || "")}" placeholder="financeiro@saintmichel.com.br" required></div>
         <div class="field"><label>E-mails Cc</label><input name="authorizationCc" value="${escapeHtml(settings.authorizationCc || "")}" placeholder="email1@empresa.com.br, email2@empresa.com.br"></div>
         <div class="field full"><label>Assunto do convite</label><input name="authorizationSubject" value="${escapeHtml(settings.authorizationSubject || "Confirmação de vendas — Saint Michel")}" required></div>
-        <div class="field full"><label>Mensagem do convite</label><textarea name="authorizationMessage" rows="7">${escapeHtml(settings.authorizationMessage || "Olá,\n\nAcesse o link abaixo usando seu e-mail e a senha informada para confirmar as vendas autorizadas para emissão de nota.\n\nO link é temporário e expira no prazo configurado.")}</textarea></div>
+        <div class="field full"><label>Mensagem do convite</label>${richMessageEditorMarkup({ id: "smlAuthorizationEditor", template, variables: [{ key: "link_confirmacao", label: "Link de confirmação" }, { key: "email_acesso", label: "E-mail de acesso" }, { key: "senha_acesso", label: "Senha" }, { key: "horas_validade", label: "Validade (horas)" }], previewHtml: renderSmlPreview(template) })}</div>
         <div class="field full"><button class="primary" type="submit">Salvar</button></div>
       </form>
     </section>
   `);
+  bindSettingsCommon();
+  const messageEditor = bindRichMessageEditor("smlAuthorizationEditor", renderSmlPreview);
   document.querySelector("#smlFinanceSettingsForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector("button[type='submit']");
     try {
       setButtonBusy(button, true, "Salvando...");
-      const data = await api("/api/sml-finance/settings", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget).entries())) });
+      const data = await api("/api/sml-finance/settings", { method: "PUT", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), authorizationEmailTemplate: messageEditor.getValue() }) });
       state.smlFinance = { ...(state.smlFinance || {}), settings: data.smlFinance?.settings || {} };
       state.settingsNotice = "Configurações do Financeiro SML salvas.";
       renderSmlFinanceSettings();
@@ -7686,9 +7842,6 @@ function renderLevFinanceSettings() {
   const settings = state.levFinance?.settings || {};
   const emailTemplate = normalizeLevEmailTemplateSettings(settings);
   const paymentSchedule = Array.isArray(settings.paymentSchedule) ? settings.paymentSchedule : [];
-  const variableButtons = LEV_EMAIL_TEMPLATE_VARIABLES.map((variable) => `
-    <button type="button" class="template-variable-button" data-lev-email-variable="${escapeHtml(variable.key)}">${escapeHtml(variable.label)}</button>
-  `).join("");
   const sampleTable = `
     <section class="email-preview-project">
       <h3>Golf Club Resort</h3>
@@ -7730,49 +7883,7 @@ function renderLevFinanceSettings() {
               <small>Edite o texto visualmente e insira variáveis no ponto do cursor.</small>
             </div>
           </div>
-          <div class="email-template-builder">
-            <section class="email-template-editor-pane">
-              <div class="email-template-toolbar capture-email-toolbar lev-email-toolbar" aria-label="Ferramentas de formatação">
-                <div class="capture-toolbar-row">
-                <select id="levEmailFontFamily" title="Fonte">
-                  ${["Arial", "Georgia", "Times New Roman", "Verdana", "Tahoma", "Courier New"].map((font) => `<option value="${escapeHtml(font)}" ${font === emailTemplate.fontFamily ? "selected" : ""}>${escapeHtml(font)}</option>`).join("")}
-                </select>
-                <select id="levEmailFontSize" title="Tamanho">
-                  ${["8px", "9px", "10px", "11px", "12px", "13px", "14px", "15px", "16px", "18px", "20px", "22px", "24px", "28px", "32px", "36px", "40px", "48px", "56px", "64px"].map((size) => `<option value="${escapeHtml(size)}" ${size === emailTemplate.fontSize ? "selected" : ""}>${escapeHtml(size)}</option>`).join("")}
-                </select>
-                <select id="levEmailLineHeight" title="Espaçamento entre linhas">
-                  ${["1", "1.15", "1.3", "1.5", "1.8", "2"].map((lineHeight) => `<option value="${escapeHtml(lineHeight)}" ${lineHeight === emailTemplate.lineHeight ? "selected" : ""}>${escapeHtml(lineHeight)}</option>`).join("")}
-                </select>
-                <input id="levEmailFontColor" type="color" value="${escapeHtml(emailTemplate.color)}" title="Cor da fonte">
-                <span class="toolbar-separator" aria-hidden="true"></span>
-                <button type="button" data-lev-email-command="bold" title="Negrito"><strong>B</strong></button>
-                <button type="button" data-lev-email-command="italic" title="Itálico"><em>I</em></button>
-                <button type="button" data-lev-email-command="underline" title="Sublinhado"><u>U</u></button>
-                <span class="toolbar-separator" aria-hidden="true"></span>
-                <button type="button" data-lev-email-command="insertUnorderedList" title="Marcadores" aria-label="Marcadores">•≡</button>
-                <button type="button" data-lev-email-list="decimal" title="Lista numerada" aria-label="Lista numerada">1≡</button>
-                <button type="button" data-lev-email-list="lower-alpha" title="Lista com letras" aria-label="Lista com letras">a≡</button>
-                <span class="toolbar-separator" aria-hidden="true"></span>
-                <button type="button" data-lev-email-command="outdent" title="Diminuir recuo" aria-label="Diminuir recuo">⇤</button>
-                <button type="button" data-lev-email-command="indent" title="Aumentar recuo" aria-label="Aumentar recuo">⇥</button>
-                </div><div class="capture-toolbar-row capture-align-row">
-                <button type="button" data-lev-email-command="justifyLeft" title="Alinhar à esquerda" aria-label="Alinhar à esquerda"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h9M3 12h14M3 16h9"/></svg></button>
-                <button type="button" data-lev-email-command="justifyCenter" title="Centralizar" aria-label="Centralizar"><svg viewBox="0 0 20 20"><path d="M3 4h14M5.5 8h9M3 12h14M5.5 16h9"/></svg></button>
-                <button type="button" data-lev-email-command="justifyRight" title="Alinhar à direita" aria-label="Alinhar à direita"><svg viewBox="0 0 20 20"><path d="M3 4h14M8 8h9M3 12h14M8 16h9"/></svg></button>
-                <button type="button" data-lev-email-command="justifyFull" title="Justificar" aria-label="Justificar"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h14M3 12h14M3 16h14"/></svg></button>
-                </div>
-              </div>
-              <div class="template-variable-bar">
-                <span>Variáveis</span>
-                ${variableButtons}
-              </div>
-              <div id="levEmailTemplateEditor" class="rich-email-editor" contenteditable="true" style="font-family:${escapeHtml(emailTemplate.fontFamily)};font-size:${escapeHtml(emailTemplate.fontSize)};color:${escapeHtml(emailTemplate.color)};line-height:${escapeHtml(emailTemplate.lineHeight)}">${emailTemplate.html}</div>
-            </section>
-            <section class="email-template-preview-pane">
-              <div class="preview-title">Prévia</div>
-              <div id="levEmailTemplatePreview" class="email-preview-body template-preview-body">${samplePreview}</div>
-            </section>
-          </div>
+          ${richMessageEditorMarkup({ id: "levEmailEditor", template: emailTemplate, variables: LEV_EMAIL_TEMPLATE_VARIABLES, previewHtml: samplePreview })}
         </div>
         <div class="field full">
           <div class="panel-head compact-head">
@@ -7812,12 +7923,6 @@ function renderLevFinanceSettings() {
     if (!button) return;
     button.closest("[data-lev-schedule-row]")?.remove();
   });
-  const templateEditor = document.querySelector("#levEmailTemplateEditor");
-  const templatePreview = document.querySelector("#levEmailTemplatePreview");
-  const templateFontFamily = document.querySelector("#levEmailFontFamily");
-  const templateFontSize = document.querySelector("#levEmailFontSize");
-  const templateLineHeight = document.querySelector("#levEmailLineHeight");
-  const templateFontColor = document.querySelector("#levEmailFontColor");
   const previewVariables = {
     data_pagamento: "21/08/2026",
     data_envio: new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }),
@@ -7827,58 +7932,7 @@ function renderLevFinanceSettings() {
     tabela_vendas: sampleTable,
     lista_vendas: sampleTable
   };
-  const refreshTemplatePreview = () => {
-    if (!templateEditor || !templatePreview) return;
-    const nextSettings = {
-      emailTemplate: {
-        html: sanitizeRichHtml(templateEditor.innerHTML),
-        fontFamily: templateFontFamily?.value || "Arial",
-        fontSize: templateFontSize?.value || "14px",
-        color: templateFontColor?.value || "#101828",
-        lineHeight: templateLineHeight?.value || "1.5"
-      }
-    };
-    templateEditor.style.fontFamily = nextSettings.emailTemplate.fontFamily;
-    templateEditor.style.fontSize = nextSettings.emailTemplate.fontSize;
-    templateEditor.style.color = nextSettings.emailTemplate.color;
-    templateEditor.style.lineHeight = nextSettings.emailTemplate.lineHeight;
-    templatePreview.innerHTML = renderLevEmailTemplateHtml(nextSettings, previewVariables);
-  };
-  templateEditor?.addEventListener("input", refreshTemplatePreview);
-  [templateFontFamily, templateFontSize, templateLineHeight, templateFontColor].forEach((control) => {
-    control?.addEventListener("change", refreshTemplatePreview);
-    control?.addEventListener("input", refreshTemplatePreview);
-  });
-  document.querySelectorAll("[data-lev-email-command]").forEach((button) => {
-    button.addEventListener("click", () => {
-      templateEditor?.focus();
-      document.execCommand(button.dataset.levEmailCommand, false, null);
-      refreshTemplatePreview();
-    });
-  });
-  document.querySelectorAll("[data-lev-email-list]").forEach((button) => {
-    button.addEventListener("click", () => {
-      templateEditor?.focus();
-      document.execCommand("insertOrderedList", false, null);
-      const selection = window.getSelection();
-      let node = selection?.anchorNode;
-      if (node?.nodeType === Node.TEXT_NODE) node = node.parentElement;
-      const list = node?.closest?.("ol") || templateEditor?.querySelector("ol:last-of-type");
-      if (list) {
-        const listStyle = button.dataset.levEmailList || "decimal";
-        list.style.listStyleType = listStyle;
-        list.setAttribute("type", listStyle === "lower-alpha" ? "a" : "1");
-      }
-      refreshTemplatePreview();
-    });
-  });
-  document.querySelectorAll("[data-lev-email-variable]").forEach((button) => {
-    button.addEventListener("click", () => {
-      templateEditor?.focus();
-      document.execCommand("insertText", false, `{{${button.dataset.levEmailVariable}}}`);
-      refreshTemplatePreview();
-    });
-  });
+  const messageEditor = bindRichMessageEditor("levEmailEditor", (value) => renderLevEmailTemplateHtml({ emailTemplate: value }, previewVariables));
   document.querySelector("#levFinanceSettingsForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector("button[type='submit']");
@@ -7890,13 +7944,7 @@ function renderLevFinanceSettings() {
     })).filter((item) => item.start && item.end && item.paymentDate);
     const payload = {
       ...Object.fromEntries(form.entries()),
-      emailTemplate: {
-        html: sanitizeRichHtml(document.querySelector("#levEmailTemplateEditor")?.innerHTML || DEFAULT_LEV_EMAIL_TEMPLATE_HTML),
-        fontFamily: document.querySelector("#levEmailFontFamily")?.value || "Arial",
-        fontSize: document.querySelector("#levEmailFontSize")?.value || "14px",
-        color: document.querySelector("#levEmailFontColor")?.value || "#101828",
-        lineHeight: document.querySelector("#levEmailLineHeight")?.value || "1.5"
-      },
+      emailTemplate: messageEditor.getValue(),
       paymentSchedule: paymentSchedulePayload
     };
     try {
@@ -7970,11 +8018,8 @@ function renderEventCaptureMessageSettings() {
   const legacyImage = template.imageDataUrl ? `<div style="margin:14px 0;text-align:center"><img src="${escapeHtml(template.imageDataUrl)}" alt="Imagem da mensagem" style="display:block;width:100%;max-width:100%;height:auto;margin:0 auto"></div>` : "";
   const baseHtml = sanitizeRichHtml(template.html || DEFAULT_EVENT_CAPTURE_EMAIL_HTML).replace(/max-width\s*:\s*720px/gi, "max-width:100%");
   const html = template.imagePosition === "bottom" ? `${baseHtml}${legacyImage}` : `${legacyImage}${baseHtml}`;
-  const fontFamily = template.fontFamily || "Arial";
-  const fontSize = template.fontSize || "14px";
-  const color = template.color || "#17202a";
-  const lineHeight = template.lineHeight || "1.6";
-  const renderPreview = (source) => sanitizeRichHtml(source).replace(/\{\{\s*nome_lead\s*\}\}/gi, "Renato Guimarães").replace(/\{\{\s*nome_corretor\s*\}\}/gi, "Corretor Mauad");
+  const normalizedTemplate = { html, fontFamily: template.fontFamily || "Arial", fontSize: template.fontSize || "14px", color: template.color || "#17202a", lineHeight: template.lineHeight || "1.6" };
+  const renderPreview = (value) => `<div style="font-family:${escapeHtml(value.fontFamily)};font-size:${escapeHtml(value.fontSize)};color:${escapeHtml(value.color)};line-height:${escapeHtml(value.lineHeight)}">${sanitizeRichHtml(value.html).replace(/\{\{\s*nome_lead\s*\}\}/gi, "Renato Guimarães").replace(/\{\{\s*nome_corretor\s*\}\}/gi, "Corretor Mauad")}</div>`;
   settingsLayout(`
     <section class="panel">
       <div class="panel-head"><div><h2>Mensagem de captação</h2><p class="muted-copy">Configura o e-mail enviado aos leads captados no evento.</p></div></div>
@@ -7982,157 +8027,20 @@ function renderEventCaptureMessageSettings() {
       <form id="eventCaptureSettingsForm" class="form-grid editor">
         <div class="field"><label>Nome do remetente</label><input name="senderName" value="${escapeHtml(settings.senderName || "Comercial Mauad")}" required><small>O endereço continuará sendo comercial@golfclubresort.com.br.</small></div>
         <div class="field"><label>Assunto do e-mail</label><input name="subject" value="${escapeHtml(settings.subject || "Obrigado por nos visitar no 64º Aberto de Golfe")}" required></div>
-        <div class="field full"><label>Mensagem do e-mail de agradecimento</label><div class="email-template-builder">
-          <section class="email-template-editor-pane">
-            <div class="email-template-toolbar capture-email-toolbar" aria-label="Ferramentas de formatação">
-              <div class="capture-toolbar-row">
-              <select id="captureEmailFontFamily" title="Fonte">${["Arial", "Georgia", "Times New Roman", "Verdana", "Tahoma", "Courier New"].map((font) => `<option value="${escapeHtml(font)}" ${font === fontFamily ? "selected" : ""}>${escapeHtml(font)}</option>`).join("")}</select>
-              <select id="captureEmailFontSize" title="Tamanho">${["8px", "9px", "10px", "11px", "12px", "13px", "14px", "15px", "16px", "18px", "20px", "22px", "24px", "28px", "32px", "36px", "40px", "48px", "56px", "64px"].map((size) => `<option value="${size}" ${size === fontSize ? "selected" : ""}>${size}</option>`).join("")}</select>
-              <select id="captureEmailLineHeight" title="Espaçamento entre linhas">${["1", "1.15", "1.3", "1.5", "1.6", "1.8", "2"].map((value) => `<option value="${value}" ${value === lineHeight ? "selected" : ""}>${value}</option>`).join("")}</select>
-              <input id="captureEmailFontColor" type="color" value="${escapeHtml(color)}" title="Cor da fonte"><span class="toolbar-separator"></span>
-              <button type="button" data-capture-email-command="bold" title="Negrito"><strong>B</strong></button><button type="button" data-capture-email-command="italic" title="Itálico"><em>I</em></button><button type="button" data-capture-email-command="underline" title="Sublinhado"><u>U</u></button><span class="toolbar-separator"></span>
-              <button type="button" data-capture-email-command="insertUnorderedList" title="Marcadores" aria-label="Marcadores">•≡</button><button type="button" data-capture-email-command="insertOrderedList" title="Lista numerada" aria-label="Lista numerada">1≡</button><button type="button" data-capture-email-command="outdent" title="Diminuir recuo" aria-label="Diminuir recuo">⇤</button><button type="button" data-capture-email-command="indent" title="Aumentar recuo" aria-label="Aumentar recuo">⇥</button>
-              <span class="toolbar-separator"></span><button type="button" id="insertCaptureEmailImage" title="Inserir imagem no cursor" aria-label="Inserir imagem"><svg viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14" rx="2"/><circle cx="7" cy="7.5" r="1.5"/><path d="m4.5 15 4-4 2.5 2.5 2-2 2.5 3.5"/></svg></button><input id="captureEmailImage" type="file" accept="image/jpeg,image/png,image/webp" hidden>
-              </div><div class="capture-toolbar-row capture-align-row">
-              <button type="button" data-capture-email-command="justifyLeft" title="Alinhar à esquerda" aria-label="Alinhar à esquerda"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h9M3 12h14M3 16h9"/></svg></button><button type="button" data-capture-email-command="justifyCenter" title="Centralizar" aria-label="Centralizar"><svg viewBox="0 0 20 20"><path d="M3 4h14M5.5 8h9M3 12h14M5.5 16h9"/></svg></button><button type="button" data-capture-email-command="justifyRight" title="Alinhar à direita" aria-label="Alinhar à direita"><svg viewBox="0 0 20 20"><path d="M3 4h14M8 8h9M3 12h14M8 16h9"/></svg></button><button type="button" data-capture-email-command="justifyFull" title="Justificar" aria-label="Justificar"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h14M3 12h14M3 16h14"/></svg></button>
-              </div>
-            </div>
-            <div class="template-variable-bar"><span>Variáveis</span><button type="button" data-capture-email-variable="nome_lead">Nome do lead</button><button type="button" data-capture-email-variable="nome_corretor">Nome do corretor</button></div>
-            <div id="captureEmailTemplateEditor" class="rich-email-editor" contenteditable="true" style="font-family:${escapeHtml(fontFamily)};font-size:${escapeHtml(fontSize)};color:${escapeHtml(color)};line-height:${escapeHtml(lineHeight)}">${html}</div>
-          </section>
-          <section class="email-template-preview-pane"><div class="preview-title">Prévia</div><div id="captureEmailTemplatePreview" class="email-preview-body template-preview-body" style="font-family:${escapeHtml(fontFamily)};font-size:${escapeHtml(fontSize)};color:${escapeHtml(color)};line-height:${escapeHtml(lineHeight)}">${renderPreview(html)}</div></section>
-        </div></div>
+        <div class="field full"><label>Mensagem do e-mail de agradecimento</label>${richMessageEditorMarkup({ id: "captureEmailEditor", template: normalizedTemplate, variables: [{ key: "nome_lead", label: "Nome do lead" }, { key: "nome_corretor", label: "Nome do corretor" }], previewHtml: renderPreview(normalizedTemplate) })}</div>
         <div class="field full"><div class="row-actions"><button class="primary" type="submit">Salvar mensagem</button></div></div>
       </form>
     </section>
   `);
   bindSettingsCommon();
-  const editor = document.querySelector("#captureEmailTemplateEditor");
-  const preview = document.querySelector("#captureEmailTemplatePreview");
-  const family = document.querySelector("#captureEmailFontFamily");
-  const size = document.querySelector("#captureEmailFontSize");
-  const spacing = document.querySelector("#captureEmailLineHeight");
-  const fontColor = document.querySelector("#captureEmailFontColor");
-  const imageInput = document.querySelector("#captureEmailImage");
-  const insertImageButton = document.querySelector("#insertCaptureEmailImage");
-  let savedRange = null;
-  const rememberSelection = () => {
-    const selection = window.getSelection();
-    if (!selection?.rangeCount || !editor) return;
-    const range = selection.getRangeAt(0);
-    if (editor.contains(range.commonAncestorContainer)) savedRange = range.cloneRange();
-  };
-  const restoreSelection = () => {
-    if (!savedRange) return false;
-    const selection = window.getSelection();
-    selection.removeAllRanges();
-    selection.addRange(savedRange);
-    return true;
-  };
-  const refresh = () => { if (editor && preview) preview.innerHTML = renderPreview(editor.innerHTML); };
-  insertImageButton?.addEventListener("mousedown", (event) => event.preventDefault());
-  insertImageButton?.addEventListener("click", () => imageInput?.click());
-  imageInput?.addEventListener("change", async () => {
-    const file = imageInput.files?.[0];
-    if (!file) return;
-    try {
-      if (editor.querySelectorAll("img[src^='data:image/']").length >= 3) throw new Error("A mensagem pode ter no máximo 3 imagens.");
-      const imageDataUrl = await readOptimizedEmailImage(file);
-      const embeddedImageSize = [...editor.querySelectorAll("img[src^='data:image/']")].reduce((total, item) => total + String(item.getAttribute("src") || "").length, 0);
-      if (embeddedImageSize + imageDataUrl.length > 2600000) throw new Error("As imagens da mensagem ficaram muito pesadas. Remova uma imagem ou use arquivos menores.");
-      restoreSelection();
-      const selection = window.getSelection();
-      const range = selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer) ? selection.getRangeAt(0) : null;
-      const wrapper = document.createElement("div");
-      wrapper.style.margin = "14px 0";
-      wrapper.style.textAlign = "center";
-      const image = document.createElement("img");
-      image.src = imageDataUrl;
-      image.alt = "Imagem da mensagem";
-      image.style.display = "block";
-      image.style.width = "100%";
-      image.style.maxWidth = "100%";
-      image.style.height = "auto";
-      image.style.margin = "0 auto";
-      wrapper.appendChild(image);
-      if (range) {
-        range.deleteContents();
-        range.insertNode(wrapper);
-      } else {
-        editor.appendChild(wrapper);
-      }
-      const nextRange = document.createRange();
-      nextRange.setStartAfter(wrapper);
-      nextRange.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(nextRange);
-      savedRange = nextRange.cloneRange();
-      refresh();
-    } catch (error) {
-      alert(error.message);
-    } finally { imageInput.value = ""; }
-  });
-  const applySelectedStyle = (property, value) => {
-    if (!editor || !restoreSelection()) return;
-    const selection = window.getSelection();
-    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-    if (!range || range.collapsed) return;
-    const span = document.createElement("span");
-    span.style[property] = value;
-    try {
-      range.surroundContents(span);
-    } catch {
-      span.appendChild(range.extractContents());
-      range.insertNode(span);
-    }
-    const nextRange = document.createRange();
-    nextRange.selectNodeContents(span);
-    selection.removeAllRanges();
-    selection.addRange(nextRange);
-    savedRange = nextRange.cloneRange();
-    refresh();
-  };
-  const applySelectedLineHeight = (value) => {
-    if (!editor || !restoreSelection()) return;
-    const selection = window.getSelection();
-    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-    if (!range) return;
-    const blockSelector = "p,div,li,h1,h2,h3,h4,h5,h6,blockquote";
-    const blocks = [...editor.querySelectorAll(blockSelector)].filter((block) => {
-      try { return range.intersectsNode(block); } catch { return false; }
-    });
-    if (!blocks.length) {
-      let node = range.commonAncestorContainer.nodeType === Node.TEXT_NODE ? range.commonAncestorContainer.parentElement : range.commonAncestorContainer;
-      const block = node?.closest?.(blockSelector);
-      if (block && editor.contains(block)) blocks.push(block);
-    }
-    blocks.forEach((block) => { block.style.lineHeight = value; });
-    restoreSelection();
-    refresh();
-  };
-  editor?.addEventListener("input", refresh);
-  editor?.addEventListener("keyup", rememberSelection);
-  editor?.addEventListener("mouseup", rememberSelection);
-  document.addEventListener("selectionchange", rememberSelection);
-  family?.addEventListener("change", () => applySelectedStyle("fontFamily", family.value));
-  size?.addEventListener("change", () => applySelectedStyle("fontSize", size.value));
-  spacing?.addEventListener("change", () => applySelectedLineHeight(spacing.value));
-  fontColor?.addEventListener("change", () => applySelectedStyle("color", fontColor.value));
-  document.querySelectorAll("[data-capture-email-command]").forEach((button) => {
-    button.addEventListener("mousedown", (event) => event.preventDefault());
-    button.addEventListener("click", () => { restoreSelection(); document.execCommand(button.dataset.captureEmailCommand, false, null); rememberSelection(); refresh(); });
-  });
-  document.querySelectorAll("[data-capture-email-variable]").forEach((button) => {
-    button.addEventListener("mousedown", (event) => event.preventDefault());
-    button.addEventListener("click", () => { restoreSelection(); document.execCommand("insertText", false, `{{${button.dataset.captureEmailVariable}}}`); rememberSelection(); refresh(); });
-  });
+  const messageEditor = bindRichMessageEditor("captureEmailEditor", renderPreview);
   document.querySelector("#eventCaptureSettingsForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector("button[type='submit']");
     try {
       setButtonBusy(button, true, "Salvando...");
       const formData = new FormData(event.currentTarget);
-      const data = await api("/api/event-capture-settings", { method: "PUT", body: JSON.stringify({ senderName: formData.get("senderName"), subject: formData.get("subject"), emailTemplate: { html: sanitizeRichHtml(editor?.innerHTML || DEFAULT_EVENT_CAPTURE_EMAIL_HTML), fontFamily, fontSize, color, lineHeight } }) });
+      const data = await api("/api/event-capture-settings", { method: "PUT", body: JSON.stringify({ senderName: formData.get("senderName"), subject: formData.get("subject"), emailTemplate: messageEditor.getValue() }) });
       state.eventCaptureSettings = data.eventCaptureSettings || {};
       state.settingsNotice = "Mensagem de captação salva.";
       renderSettings();

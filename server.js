@@ -952,6 +952,23 @@ function normalizeLevFinanceEmailTemplate(template = {}) {
   };
 }
 
+function prepareInlineEmailImages(html, filenamePrefix = "imagem-email") {
+  const attachments = [];
+  const convertedHtml = sanitizeRichHtml(html).replace(/(\bsrc\s*=\s*["'])data:(image\/(?:png|jpe?g|webp|gif));base64,([a-z0-9+/=\s]+)(["'])/gi, (match, prefix, mimeType, content, suffix) => {
+    const contentId = `${filenamePrefix}-${attachments.length + 1}`;
+    const extension = mimeType.includes("png") ? "png" : mimeType.includes("webp") ? "webp" : mimeType.includes("gif") ? "gif" : "jpg";
+    attachments.push({
+      filename: `${filenamePrefix}-${attachments.length + 1}.${extension}`,
+      content: content.replace(/\s/g, ""),
+      content_type: mimeType.toLowerCase(),
+      content_id: contentId,
+      content_disposition: "inline"
+    });
+    return `${prefix}cid:${contentId}${suffix}`;
+  });
+  return { html: convertedHtml, attachments };
+}
+
 function renderLevFinanceEmailTemplate(settings = {}, variables = {}) {
   const template = normalizeLevFinanceEmailTemplate(settings.emailTemplate || {});
   const sourceHtml = template.html || DEFAULT_LEV_EMAIL_TEMPLATE_HTML;
@@ -968,6 +985,10 @@ function renderLevFinanceEmailTemplate(settings = {}, variables = {}) {
       ${sanitizeRichHtml(html)}
     </div>
   `;
+}
+
+function prepareLevFinanceEmailTemplate(settings = {}, variables = {}) {
+  return prepareInlineEmailImages(renderLevFinanceEmailTemplate(settings, variables), "imagem-financeiro-lev");
 }
 
 function buildDefaultDb() {
@@ -2167,7 +2188,7 @@ async function sendLevMauadPendingEmail(sql, db, sales = [], options = {}) {
   const scheduledPaymentDateLabel = scheduledPaymentDate
     ? new Date(`${scheduledPaymentDate}T00:00:00`).toLocaleDateString("pt-BR")
     : "";
-  const emailBodyHtml = renderLevFinanceEmailTemplate(settings, {
+  const emailContent = prepareLevFinanceEmailTemplate(settings, {
     data_pagamento: escapeHtml(scheduledPaymentDateLabel || scheduledPaymentDate || "-"),
     data_envio: new Date(options.sentAt || new Date()).toLocaleDateString("pt-BR"),
     total_comissoes: escapeHtml(formatCurrency(totalCommission)),
@@ -2179,7 +2200,7 @@ async function sendLevMauadPendingEmail(sql, db, sales = [], options = {}) {
   const html = `
     <div style="font-family:Arial,sans-serif;color:#101828;line-height:1.5">
       <h2>Solicitação de autorização - Comissões Lev</h2>
-      ${emailBodyHtml}
+      ${emailContent.html}
     </div>
   `;
   return sendEmailWithCcFrom(
@@ -2188,7 +2209,7 @@ async function sendLevMauadPendingEmail(sql, db, sales = [], options = {}) {
     cc,
     `${options.subjectPrefix || ""}Autorização de comissões Lev - vendas confirmadas`,
     html,
-    options.emailOptions || {}
+    { ...(options.emailOptions || {}), attachments: [...(options.emailOptions?.attachments || []), ...emailContent.attachments] }
   );
 }
 
@@ -5951,22 +5972,10 @@ function prepareEventCaptureEmail(settings = {}, variables = {}) {
     : "";
   html = normalized.emailTemplate.imagePosition === "bottom" ? `${html}${legacyImageHtml}` : `${legacyImageHtml}${html}`;
   html = html.replace(/max-width\s*:\s*720px/gi, "max-width:100%");
-  const attachments = [];
-  html = sanitizeRichHtml(html).replace(/(\bsrc\s*=\s*["'])data:(image\/(?:png|jpe?g|webp|gif));base64,([a-z0-9+/=\s]+)(["'])/gi, (match, prefix, mimeType, content, suffix) => {
-    const contentId = `event-capture-message-image-${attachments.length + 1}`;
-    const extension = mimeType.includes("png") ? "png" : mimeType.includes("webp") ? "webp" : mimeType.includes("gif") ? "gif" : "jpg";
-    attachments.push({
-      filename: `imagem-captacao-${attachments.length + 1}.${extension}`,
-      content: content.replace(/\s/g, ""),
-      content_type: mimeType.toLowerCase(),
-      content_id: contentId,
-      content_disposition: "inline"
-    });
-    return `${prefix}cid:${contentId}${suffix}`;
-  });
+  const inlineContent = prepareInlineEmailImages(html, "imagem-captacao");
   return {
-    html: `<div style="font-family:${escapeHtml(normalized.emailTemplate.fontFamily)};font-size:${escapeHtml(normalized.emailTemplate.fontSize)};color:${escapeHtml(normalized.emailTemplate.color)};line-height:${escapeHtml(normalized.emailTemplate.lineHeight)}">${html}</div>`,
-    attachments
+    html: `<div style="font-family:${escapeHtml(normalized.emailTemplate.fontFamily)};font-size:${escapeHtml(normalized.emailTemplate.fontSize)};color:${escapeHtml(normalized.emailTemplate.color)};line-height:${escapeHtml(normalized.emailTemplate.lineHeight)}">${inlineContent.html}</div>`,
+    attachments: inlineContent.attachments
   };
 }
 
@@ -7524,13 +7533,35 @@ async function fastStructuredSettingsRoutes(req, res, url) {
 }
 
 function smlSettingsPayload(value = {}) {
+  const legacyMessage = String(value.authorizationMessage || "Olá,\n\nAcesse o link abaixo usando seu e-mail e a senha informada para confirmar as vendas autorizadas para emissão de nota.\n\nO link é temporário e expira no prazo configurado.").trim();
+  const template = value.authorizationEmailTemplate || {};
   return {
     commissionPercent: Math.max(0, Number(value.commissionPercent || 0)),
     authorizationExpiryHours: Math.min(720, Math.max(1, Number(value.authorizationExpiryHours || 48))),
     authorizationTo: String(value.authorizationTo || "").trim().toLowerCase(),
     authorizationCc: String(value.authorizationCc || "").trim(),
     authorizationSubject: String(value.authorizationSubject || "Confirmação de vendas — Saint Michel").trim(),
-    authorizationMessage: String(value.authorizationMessage || "").trim()
+    authorizationMessage: legacyMessage,
+    authorizationEmailTemplate: {
+      html: sanitizeRichHtml(template.html || legacyMessage.split(/\n{2,}/).map((paragraph) => `<p>${escapeHtml(paragraph).replaceAll("\n", "<br>")}</p>`).join("")),
+      fontFamily: String(template.fontFamily || "Arial").trim() || "Arial",
+      fontSize: String(template.fontSize || "14px").trim() || "14px",
+      color: String(template.color || "#101828").trim() || "#101828",
+      lineHeight: String(template.lineHeight || "1.5").trim() || "1.5"
+    }
+  };
+}
+
+function prepareSmlAuthorizationEmail(settings, variables = {}) {
+  const template = settings.authorizationEmailTemplate || {};
+  let html = String(template.html || "");
+  Object.entries(variables).forEach(([key, value]) => {
+    html = html.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "gi"), String(value ?? ""));
+  });
+  const content = prepareInlineEmailImages(html, "imagem-convite-sml");
+  return {
+    html: `<div style="font-family:${escapeHtml(template.fontFamily || "Arial")};font-size:${escapeHtml(template.fontSize || "14px")};color:${escapeHtml(template.color || "#101828")};line-height:${escapeHtml(template.lineHeight || "1.5")}">${content.html}</div>`,
+    attachments: content.attachments
   };
 }
 
@@ -7696,9 +7727,17 @@ async function fastStructuredSmlFinanceRoutes(req, res, url) {
       await sql`INSERT INTO crm_sml_authorization_links (id, token_hash, email, password_hash, sale_ids, expires_at, payload) VALUES (${id}, ${crypto.createHash("sha256").update(token).digest("hex")}, ${targetEmail}, ${hashPassword(password)}, ${JSON.stringify(sales.map((sale) => sale.id))}::jsonb, ${expiresAt}, ${JSON.stringify({ createdBy: user.id, test: isTest })}::jsonb)`;
       const origin = `${req.headers["x-forwarded-proto"] || "https"}://${req.headers["x-forwarded-host"] || req.headers.host}`;
       const link = `${origin}/autorizacao-sml/${token}`;
-      const message = String(settings.authorizationMessage || "").replaceAll("\n", "<br>");
       const subject = `${isTest ? "[TESTE] " : ""}${settings.authorizationSubject}`;
-      const email = await sendEmailWithCcFrom(LEV_FINANCE_EMAIL_FROM, targetEmail, isTest ? "" : settings.authorizationCc, subject, `<p>${isTest ? "<strong>Este é um teste. Nenhuma confirmação alterará as vendas.</strong></p>" : ""}<p>${message}</p><p><a href="${link}">Acessar confirmação de vendas</a></p><p><strong>E-mail:</strong> ${targetEmail}<br><strong>Senha:</strong> ${password}</p><p>Este acesso expira em ${settings.authorizationExpiryHours} horas.</p>`);
+      const accessBlock = `<p><a href="${link}">Acessar confirmação de vendas</a></p><p><strong>E-mail:</strong> ${escapeHtml(targetEmail)}<br><strong>Senha:</strong> ${escapeHtml(password)}</p><p>Este acesso expira em ${settings.authorizationExpiryHours} horas.</p>`;
+      const emailContent = prepareSmlAuthorizationEmail(settings, {
+        link_confirmacao: `<a href="${link}">Acessar confirmação de vendas</a>`,
+        email_acesso: escapeHtml(targetEmail),
+        senha_acesso: escapeHtml(password),
+        horas_validade: String(settings.authorizationExpiryHours)
+      });
+      const templateSource = settings.authorizationEmailTemplate?.html || "";
+      const hasAccessVariables = ["link_confirmacao", "email_acesso", "senha_acesso", "horas_validade"].every((key) => new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "i").test(templateSource));
+      const email = await sendEmailWithCcFrom(LEV_FINANCE_EMAIL_FROM, targetEmail, isTest ? "" : settings.authorizationCc, subject, `${isTest ? "<p><strong>Este é um teste. Nenhuma confirmação alterará as vendas.</strong></p>" : ""}${emailContent.html}${hasAccessVariables ? "" : accessBlock}`, { attachments: emailContent.attachments });
       await structuredAudit(user, isTest ? "SEND_SML_AUTHORIZATION_TEST" : "SEND_SML_AUTHORIZATION", { count: sales.length, expiresAt: expiresAt.toISOString(), sent: email.sent, to: targetEmail });
       return sendJson(res, 200, { ok: true, sent: email.sent, reason: email.reason || "", expiresAt: expiresAt.toISOString(), to: targetEmail, test: isTest });
     }
