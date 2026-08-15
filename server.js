@@ -73,7 +73,7 @@ function defaultScreenPermission(role, screen) {
     "Gerente Financeiro": ["marketing", "finance", "financeSml", "settings", "knowledge"],
     "Auxiliar Financeiro": ["finance", "financeSml", "settings", "knowledge"],
     "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"],
-    "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"]
+    "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "settings", "knowledge"]
   };
   const actionAccess = {
     "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "finance", "financeSml", "settings", "knowledge"],
@@ -83,7 +83,7 @@ function defaultScreenPermission(role, screen) {
     "Gerente Financeiro": ["marketing", "finance", "financeSml", "settings", "knowledge"],
     "Auxiliar Financeiro": ["finance", "financeSml", "knowledge"],
     "Gestor de Tráfego": ["knowledge"],
-    "Coordenador de Marketing": ["marketing", "knowledge"]
+    "Coordenador de Marketing": ["marketing", "settings", "knowledge"]
   };
   const canAccess = (viewAccess[role] || []).includes(screen.view);
   return permissionCell(canAccess, canAccess && (actionAccess[role] || []).includes(screen.view));
@@ -4686,6 +4686,13 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_meta_forms (id text PRIMARY KEY, name text, project text, archived boolean NOT NULL DEFAULT false, ad_url text, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_settings (key text PRIMARY KEY, payload jsonb NOT NULL DEFAULT '{}'::jsonb, updated_at timestamptz NOT NULL DEFAULT now())`;
   await sql`CREATE TABLE IF NOT EXISTS crm_permissions (owner_type text NOT NULL, owner_id text NOT NULL, resource_id text NOT NULL, can_access boolean NOT NULL DEFAULT false, can_act boolean NOT NULL DEFAULT false, PRIMARY KEY (owner_type, owner_id, resource_id))`;
+  await sql`INSERT INTO crm_permissions (owner_type, owner_id, resource_id, can_access, can_act) VALUES
+    ('role', 'Admin TI', 'base:64 OPEN', true, true),
+    ('role', 'Head Comercial', 'base:64 OPEN', true, true),
+    ('role', 'Supervisor Comercial', 'base:64 OPEN', true, true),
+    ('role', 'Diretoria', 'base:64 OPEN', true, false),
+    ('role', 'Corretor', 'base:64 OPEN', true, true)
+    ON CONFLICT (owner_type, owner_id, resource_id) DO NOTHING`;
   await sql`CREATE TABLE IF NOT EXISTS crm_audit_logs (id text PRIMARY KEY, at timestamptz, actor text, actor_name text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_access_logs (id text PRIMARY KEY, at timestamptz, actor text, actor_name text, role text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, ip text, user_agent text, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_integration_logs (id text PRIMARY KEY, at timestamptz, provider text, action text, details jsonb NOT NULL DEFAULT '{}'::jsonb, payload jsonb NOT NULL)`;
@@ -4756,6 +4763,7 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_settlements (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_authorization_links (id text PRIMARY KEY, token_hash text NOT NULL UNIQUE, email text NOT NULL, password_hash text NOT NULL, sale_ids jsonb NOT NULL DEFAULT '[]'::jsonb, expires_at timestamptz NOT NULL, confirmed_at timestamptz, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_knowledge_articles (id text PRIMARY KEY, title text, category text, published boolean NOT NULL DEFAULT false, updated_at timestamptz, payload jsonb NOT NULL)`;
+  await invalidateStructuredConfigCache();
 }
 
 async function ensureStructuredSchemaOnce(sql) {
