@@ -7732,12 +7732,13 @@ function renderLevFinanceSettings() {
           </div>
           <div class="email-template-builder">
             <section class="email-template-editor-pane">
-              <div class="email-template-toolbar" aria-label="Ferramentas de formatação">
+              <div class="email-template-toolbar capture-email-toolbar lev-email-toolbar" aria-label="Ferramentas de formatação">
+                <div class="capture-toolbar-row">
                 <select id="levEmailFontFamily" title="Fonte">
                   ${["Arial", "Georgia", "Times New Roman", "Verdana", "Tahoma", "Courier New"].map((font) => `<option value="${escapeHtml(font)}" ${font === emailTemplate.fontFamily ? "selected" : ""}>${escapeHtml(font)}</option>`).join("")}
                 </select>
                 <select id="levEmailFontSize" title="Tamanho">
-                  ${["12px", "13px", "14px", "15px", "16px", "18px", "20px"].map((size) => `<option value="${escapeHtml(size)}" ${size === emailTemplate.fontSize ? "selected" : ""}>${escapeHtml(size)}</option>`).join("")}
+                  ${["8px", "9px", "10px", "11px", "12px", "13px", "14px", "15px", "16px", "18px", "20px", "22px", "24px", "28px", "32px", "36px", "40px", "48px", "56px", "64px"].map((size) => `<option value="${escapeHtml(size)}" ${size === emailTemplate.fontSize ? "selected" : ""}>${escapeHtml(size)}</option>`).join("")}
                 </select>
                 <select id="levEmailLineHeight" title="Espaçamento entre linhas">
                   ${["1", "1.15", "1.3", "1.5", "1.8", "2"].map((lineHeight) => `<option value="${escapeHtml(lineHeight)}" ${lineHeight === emailTemplate.lineHeight ? "selected" : ""}>${escapeHtml(lineHeight)}</option>`).join("")}
@@ -7748,17 +7749,18 @@ function renderLevFinanceSettings() {
                 <button type="button" data-lev-email-command="italic" title="Itálico"><em>I</em></button>
                 <button type="button" data-lev-email-command="underline" title="Sublinhado"><u>U</u></button>
                 <span class="toolbar-separator" aria-hidden="true"></span>
-                <button type="button" data-lev-email-command="insertUnorderedList" title="Marcadores">•</button>
-                <button type="button" data-lev-email-list="decimal" title="Lista numerada">1.</button>
-                <button type="button" data-lev-email-list="lower-alpha" title="Lista com letras">a.</button>
+                <button type="button" data-lev-email-command="insertUnorderedList" title="Marcadores" aria-label="Marcadores">•≡</button>
+                <button type="button" data-lev-email-list="decimal" title="Lista numerada" aria-label="Lista numerada">1≡</button>
+                <button type="button" data-lev-email-list="lower-alpha" title="Lista com letras" aria-label="Lista com letras">a≡</button>
                 <span class="toolbar-separator" aria-hidden="true"></span>
-                <button type="button" data-lev-email-command="outdent" title="Diminuir recuo">&lt;</button>
-                <button type="button" data-lev-email-command="indent" title="Aumentar recuo">&gt;</button>
-                <span class="toolbar-separator" aria-hidden="true"></span>
-                <button type="button" data-lev-email-command="justifyLeft" title="Alinhar à esquerda">Esq</button>
-                <button type="button" data-lev-email-command="justifyCenter" title="Centralizar">C</button>
-                <button type="button" data-lev-email-command="justifyRight" title="Alinhar à direita">Dir</button>
-                <button type="button" data-lev-email-command="justifyFull" title="Justificar">Just</button>
+                <button type="button" data-lev-email-command="outdent" title="Diminuir recuo" aria-label="Diminuir recuo">⇤</button>
+                <button type="button" data-lev-email-command="indent" title="Aumentar recuo" aria-label="Aumentar recuo">⇥</button>
+                </div><div class="capture-toolbar-row capture-align-row">
+                <button type="button" data-lev-email-command="justifyLeft" title="Alinhar à esquerda" aria-label="Alinhar à esquerda"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h9M3 12h14M3 16h9"/></svg></button>
+                <button type="button" data-lev-email-command="justifyCenter" title="Centralizar" aria-label="Centralizar"><svg viewBox="0 0 20 20"><path d="M3 4h14M5.5 8h9M3 12h14M5.5 16h9"/></svg></button>
+                <button type="button" data-lev-email-command="justifyRight" title="Alinhar à direita" aria-label="Alinhar à direita"><svg viewBox="0 0 20 20"><path d="M3 4h14M8 8h9M3 12h14M8 16h9"/></svg></button>
+                <button type="button" data-lev-email-command="justifyFull" title="Justificar" aria-label="Justificar"><svg viewBox="0 0 20 20"><path d="M3 4h14M3 8h14M3 12h14M3 16h14"/></svg></button>
+                </div>
               </div>
               <div class="template-variable-bar">
                 <span>Variáveis</span>
