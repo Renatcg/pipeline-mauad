@@ -4738,7 +4738,9 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_settlements (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
-  await sql`CREATE TABLE IF NOT EXISTS crm_sml_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_sml_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, signal_value numeric, financing_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`ALTER TABLE crm_sml_sales ADD COLUMN IF NOT EXISTS signal_value numeric`;
+  await sql`ALTER TABLE crm_sml_sales ADD COLUMN IF NOT EXISTS financing_value numeric`;
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS crm_sml_sales_unit_unique ON crm_sml_sales (upper(unit))`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_settlements (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
@@ -7430,7 +7432,7 @@ function parseSmlWorkbook(base64, commissionPercent) {
   if (headerIndex < 0) throw new Error("Coluna Unidade não encontrada.");
   const headers = rows[headerIndex].map((cell) => String(cell).trim().toLowerCase());
   const index = (name) => headers.indexOf(name.toLowerCase());
-  const required = ["venda", "unidade", "cliente", "valor prop.", "corretor"];
+  const required = ["venda", "unidade", "cliente", "valor prop.", "sinal", "financiamento", "corretor"];
   if (required.some((name) => index(name) < 0)) throw new Error(`A planilha deve conter: ${required.join(", ")}.`);
   return rows.slice(headerIndex + 1).map((row, position) => {
     const unit = String(row[index("unidade")] || "").trim().toUpperCase();
@@ -7442,6 +7444,8 @@ function parseSmlWorkbook(base64, commissionPercent) {
       client: String(row[index("cliente")] || "").trim(),
       signedAt: "",
       contractValue,
+      signalValue: Number(row[index("sinal")]) || 0,
+      financingValue: Number(row[index("financiamento")]) || 0,
       commissionPercent,
       commissionValue: Math.round(contractValue * commissionPercent) / 100,
       realEstate: String(row[index("corretor")] || "").trim(),
@@ -7530,7 +7534,7 @@ async function fastStructuredSmlFinanceRoutes(req, res, url) {
         const contractValue = Number(raw.contractValue || 0);
         const sale = { ...raw, signedAt: "", contractValue, commissionPercent: settings.commissionPercent, commissionValue: Math.round(contractValue * settings.commissionPercent) / 100, status: "Pendente", importedAt: new Date().toISOString() };
         if (!sale.id || !sale.unit || !sale.client || contractValue <= 0) continue;
-        await sql`INSERT INTO crm_sml_sales (id, unit, client, signed_at, contract_value, commission_value, realtor_company, status, nf_number, paid_at, payload) VALUES (${sale.id}, ${sale.unit}, ${sale.client}, null, ${sale.contractValue}, ${sale.commissionValue}, ${sale.realEstate || ""}, ${sale.status}, '', null, ${JSON.stringify(sale)}::jsonb) ON CONFLICT (id) DO NOTHING`;
+        await sql`INSERT INTO crm_sml_sales (id, unit, client, signed_at, contract_value, signal_value, financing_value, commission_value, realtor_company, status, nf_number, paid_at, payload) VALUES (${sale.id}, ${sale.unit}, ${sale.client}, null, ${sale.contractValue}, ${Number(sale.signalValue || 0)}, ${Number(sale.financingValue || 0)}, ${sale.commissionValue}, ${sale.realEstate || ""}, ${sale.status}, '', null, ${JSON.stringify(sale)}::jsonb) ON CONFLICT (id) DO NOTHING`;
         imported += 1;
       }
       await structuredAudit(user, "IMPORT_SML_SALES", { imported });
