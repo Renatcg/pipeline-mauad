@@ -4680,6 +4680,9 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE INDEX IF NOT EXISTS crm_units_project_idx ON crm_units (project, block, floor, stack)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_tag_definitions (id text PRIMARY KEY, name text, color text, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_base_sources (name text PRIMARY KEY)`;
+  await sql`INSERT INTO crm_base_sources (name) VALUES ('64 OPEN') ON CONFLICT DO NOTHING`;
+  await sql`UPDATE crm_leads SET source = '64 OPEN', payload = jsonb_set(payload, '{source}', to_jsonb('64 OPEN'::text), true), updated_at = now() WHERE source = '64º Aberto de Golfe' OR payload->>'source' = '64º Aberto de Golfe'`;
+  await sql`DELETE FROM crm_base_sources WHERE name = '64º Aberto de Golfe'`;
   await sql`CREATE TABLE IF NOT EXISTS crm_meta_forms (id text PRIMARY KEY, name text, project text, archived boolean NOT NULL DEFAULT false, ad_url text, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_settings (key text PRIMARY KEY, payload jsonb NOT NULL DEFAULT '{}'::jsonb, updated_at timestamptz NOT NULL DEFAULT now())`;
   await sql`CREATE TABLE IF NOT EXISTS crm_permissions (owner_type text NOT NULL, owner_id text NOT NULL, resource_id text NOT NULL, can_access boolean NOT NULL DEFAULT false, can_act boolean NOT NULL DEFAULT false, PRIMARY KEY (owner_type, owner_id, resource_id))`;
@@ -5881,6 +5884,7 @@ function normalizeEventCaptureSettings(settings = {}) {
   const template = settings.emailTemplate || {};
   return {
     senderName: String(settings.senderName || "Comercial Mauad").trim() || "Comercial Mauad",
+    subject: String(settings.subject || "Obrigado por nos visitar no 64º Aberto de Golfe").trim() || "Obrigado por nos visitar no 64º Aberto de Golfe",
     emailTemplate: {
       html: sanitizeRichHtml(template.html || DEFAULT_EVENT_CAPTURE_EMAIL_HTML),
       fontFamily: String(template.fontFamily || "Arial").trim() || "Arial",
@@ -6912,7 +6916,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       if (!canManageEventCaptureSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
       const eventCaptureSettings = normalizeEventCaptureSettings(await readBody(req));
       await saveStructuredSetting(sql, "eventCaptureSettings", eventCaptureSettings);
-      await structuredAudit(user, "UPDATE_EVENT_CAPTURE_SETTINGS", { senderName: eventCaptureSettings.senderName });
+      await structuredAudit(user, "UPDATE_EVENT_CAPTURE_SETTINGS", { senderName: eventCaptureSettings.senderName, subject: eventCaptureSettings.subject });
       return sendJson(res, 200, { eventCaptureSettings, dataSources: { action: "structured" } });
     }
 
@@ -7747,7 +7751,7 @@ async function fastStructuredEventCaptureRoutes(req, res, url) {
         name,
         email,
         phone,
-        source: "64º Aberto de Golfe",
+        source: "64 OPEN",
         status,
         inPipeline: true,
         assignedTo: broker.id,
@@ -7780,7 +7784,7 @@ async function fastStructuredEventCaptureRoutes(req, res, url) {
       const captureSettingsRows = await sql`SELECT payload FROM crm_settings WHERE key = 'eventCaptureSettings' LIMIT 1`;
       const captureSettings = normalizeEventCaptureSettings(captureSettingsRows[0]?.payload || {});
       const emailHtml = renderEventCaptureEmail(captureSettings, { nome_lead: name, nome_corretor: broker.name || "corretor" });
-      const emailResult = await sendEmailWithCcFrom(`${captureSettings.senderName} <comercial@golfclubresort.com.br>`, email, "", "Obrigado por nos visitar no 64º Aberto de Golfe", emailHtml, { apiKey: RESEND_API_KEY_GOLF, apiKeyLabel: "RESEND_API_KEY_GOLF" });
+      const emailResult = await sendEmailWithCcFrom(`${captureSettings.senderName} <comercial@golfclubresort.com.br>`, email, "", captureSettings.subject, emailHtml, { apiKey: RESEND_API_KEY_GOLF, apiKeyLabel: "RESEND_API_KEY_GOLF" });
       comments.push({
         id: `comment-${crypto.randomUUID()}`,
         leadId: lead.id,
@@ -7795,7 +7799,7 @@ async function fastStructuredEventCaptureRoutes(req, res, url) {
         await sql`INSERT INTO crm_lead_comments (id, lead_id, author_user_id, author_name, comment_text, from_user, deleted, created_at, payload) VALUES (${comment.id}, ${lead.id}, ${broker.id}, ${broker.name || ""}, ${comment.text}, false, false, ${dbDate(comment.createdAt)}, ${JSON.stringify(comment)}::jsonb)`;
       }
       const actor = { id: broker.id, username: broker.username || "", name: broker.name || "", role: broker.role || "Corretor" };
-      await recordStructuredLeadStatusMovement(sql, { actor, lead, fromStatus: "", toStatus: status, movementType: "create", source: "64º Aberto de Golfe", screen: "event_capture", statusAt: now });
+      await recordStructuredLeadStatusMovement(sql, { actor, lead, fromStatus: "", toStatus: status, movementType: "create", source: "64 OPEN", screen: "event_capture", statusAt: now });
       await structuredAudit(actor, "CREATE_EVENT_LEAD", { leadId: lead.id, event: "64º Aberto de Golfe", emailSent: emailResult.sent });
       await structuredFup(actor, lead, "CREATE_LEAD", { source: lead.source, assignedTo: lead.assignedName, project: lead.desiredProject });
       const whatsappText = `Olá, ${broker.name || "corretor"}. Sou ${name} e nos encontramos no 64º Aberto de Golfe, em Teresópolis.`;

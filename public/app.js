@@ -7867,7 +7867,8 @@ function renderEventCaptureMessageSettings() {
       <div class="panel-head"><div><h2>Mensagem de captação</h2><p class="muted-copy">Configura o e-mail enviado aos leads captados no evento.</p></div></div>
       ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
       <form id="eventCaptureSettingsForm" class="form-grid editor">
-        <div class="field full"><label>Nome do remetente</label><input name="senderName" value="${escapeHtml(settings.senderName || "Comercial Mauad")}" required><small>O endereço continuará sendo comercial@golfclubresort.com.br.</small></div>
+        <div class="field"><label>Nome do remetente</label><input name="senderName" value="${escapeHtml(settings.senderName || "Comercial Mauad")}" required><small>O endereço continuará sendo comercial@golfclubresort.com.br.</small></div>
+        <div class="field"><label>Assunto do e-mail</label><input name="subject" value="${escapeHtml(settings.subject || "Obrigado por nos visitar no 64º Aberto de Golfe")}" required></div>
         <div class="field full"><label>Mensagem do e-mail de agradecimento</label><div class="email-template-builder">
           <section class="email-template-editor-pane">
             <div class="email-template-toolbar" aria-label="Ferramentas de formatação">
@@ -7905,7 +7906,8 @@ function renderEventCaptureMessageSettings() {
     const button = event.currentTarget.querySelector("button[type='submit']");
     try {
       setButtonBusy(button, true, "Salvando...");
-      const data = await api("/api/event-capture-settings", { method: "PUT", body: JSON.stringify({ senderName: new FormData(event.currentTarget).get("senderName"), emailTemplate: { html: sanitizeRichHtml(editor?.innerHTML || DEFAULT_EVENT_CAPTURE_EMAIL_HTML), fontFamily: family?.value, fontSize: size?.value, color: fontColor?.value, lineHeight: spacing?.value } }) });
+      const formData = new FormData(event.currentTarget);
+      const data = await api("/api/event-capture-settings", { method: "PUT", body: JSON.stringify({ senderName: formData.get("senderName"), subject: formData.get("subject"), emailTemplate: { html: sanitizeRichHtml(editor?.innerHTML || DEFAULT_EVENT_CAPTURE_EMAIL_HTML), fontFamily: family?.value, fontSize: size?.value, color: fontColor?.value, lineHeight: spacing?.value } }) });
       state.eventCaptureSettings = data.eventCaptureSettings || {};
       state.settingsNotice = "Mensagem de captação salva.";
       renderSettings();
