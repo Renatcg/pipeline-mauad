@@ -5731,6 +5731,42 @@ th {
   overflow: auto;
 }
 
+.sml-duplicate-box {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid #e5a900;
+  border-radius: 10px;
+  background: #fff9e8;
+}
+
+.sml-duplicate-box.is-blocked {
+  border-color: #e57373;
+  background: #fff1f1;
+}
+
+.sml-duplicate-box h3 {
+  margin: 0;
+}
+
+.sml-duplicate-box > div,
+.sml-duplicate-box fieldset {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid rgba(100, 116, 139, .25);
+  border-radius: 8px;
+}
+
+.sml-duplicate-box label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
+}
+
 .sml-public-page {
   min-height: 100vh;
   padding: 32px;

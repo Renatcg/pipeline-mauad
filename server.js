@@ -4739,6 +4739,7 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_settlements (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS crm_sml_sales_unit_unique ON crm_sml_sales (upper(unit))`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_settlements (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_sml_authorization_links (id text PRIMARY KEY, token_hash text NOT NULL UNIQUE, email text NOT NULL, password_hash text NOT NULL, sale_ids jsonb NOT NULL DEFAULT '[]'::jsonb, expires_at timestamptz NOT NULL, confirmed_at timestamptz, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
@@ -7497,13 +7498,33 @@ async function fastStructuredSmlFinanceRoutes(req, res, url) {
     if (method === "POST" && url.pathname === "/api/sml-finance/import-preview") {
       const body = await readBody(req);
       const sales = parseSmlWorkbook(body.fileBase64, settings.commissionPercent);
-      const existing = await sql`SELECT id FROM crm_sml_sales`;
-      const existingIds = new Set(existing.map((row) => row.id));
-      return sendJson(res, 200, { preview: sales.map((sale) => ({ ...sale, duplicate: existingIds.has(sale.id) })), commissionPercent: settings.commissionPercent });
+      const existing = await sql`SELECT id, unit, payload FROM crm_sml_sales`;
+      const existingByUnit = new Map(existing.map((row) => [String(row.unit || "").trim().toUpperCase(), row.payload || { id: row.id, unit: row.unit }]));
+      const byUnit = new Map();
+      for (const sale of sales) {
+        const unit = String(sale.unit || "").trim().toUpperCase();
+        if (!byUnit.has(unit)) byUnit.set(unit, []);
+        byUnit.get(unit).push(sale);
+      }
+      const preview = sales.map((sale) => {
+        const unit = String(sale.unit || "").trim().toUpperCase();
+        const databaseConflict = existingByUnit.get(unit) || null;
+        const fileConflicts = byUnit.get(unit) || [];
+        return { ...sale, duplicate: Boolean(databaseConflict), databaseConflict, fileConflict: fileConflicts.length > 1, fileConflictIds: fileConflicts.map((item) => item.id) };
+      });
+      const fileConflicts = [...byUnit.entries()].filter(([, items]) => items.length > 1).map(([unit, items]) => ({ unit, sales: items }));
+      return sendJson(res, 200, { preview, fileConflicts, databaseConflicts: preview.filter((sale) => sale.databaseConflict).map((sale) => ({ incoming: sale, existing: sale.databaseConflict })), commissionPercent: settings.commissionPercent });
     }
     if (method === "POST" && url.pathname === "/api/sml-finance/import") {
       const body = await readBody(req);
       const sales = Array.isArray(body.sales) ? body.sales : [];
+      const units = sales.map((sale) => String(sale.unit || "").trim().toUpperCase()).filter(Boolean);
+      const repeatedUnits = [...new Set(units.filter((unit, index) => units.indexOf(unit) !== index))];
+      if (repeatedUnits.length) return sendJson(res, 409, { error: `Há unidades repetidas na importação: ${repeatedUnits.join(", ")}` });
+      const existingUnits = await sql`SELECT unit, payload FROM crm_sml_sales`;
+      const existingByUnit = new Map(existingUnits.map((row) => [String(row.unit || "").trim().toUpperCase(), row.payload || { unit: row.unit }]));
+      const databaseConflicts = units.filter((unit) => existingByUnit.has(unit)).map((unit) => ({ unit, existing: existingByUnit.get(unit) }));
+      if (databaseConflicts.length) return sendJson(res, 409, { error: `As unidades ${databaseConflicts.map((item) => item.unit).join(", ")} já existem no Financeiro SML.`, conflicts: databaseConflicts });
       let imported = 0;
       for (const raw of sales) {
         const contractValue = Number(raw.contractValue || 0);
