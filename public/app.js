@@ -1164,6 +1164,20 @@ function baseSourceAliases(source) {
   return [...new Set(aliases.filter(Boolean))];
 }
 
+function canonicalBaseSource(source) {
+  const value = String(source || "").trim();
+  const normalized = value.toLocaleUpperCase("pt-BR");
+  if (!value || normalized === "MANUAL") return "";
+  return {
+    "RD STATION": "RD Station",
+    "VINHOS NA SERRA": "Vinhos na Serra",
+    "PIPELINE MAUAD": "Pipeline GDrive",
+    "PIPELINE GDRIVE": "Pipeline GDrive",
+    "STAND": "Stand",
+    "LISTA RMEIRELLES": "Lista RMeirelles"
+  }[normalized] || value;
+}
+
 function leadMatchesBaseSource(lead, source) {
   if (source === "TODOS") return true;
   const selected = baseSourceAliases(source);
@@ -1172,9 +1186,10 @@ function leadMatchesBaseSource(lead, source) {
 
 function baseSources() {
   const allowed = new Set(state.accessibleBaseSources || []);
-  let sources = (state.user?.role === "Admin TI" ? (state.baseAccessSources || state.accessibleBaseSources || []) : [...allowed])
+  let sources = [...new Set((state.user?.role === "Admin TI" ? (state.baseAccessSources || state.accessibleBaseSources || []) : [...allowed])
+    .map(canonicalBaseSource)
     .filter(Boolean)
-    .sort();
+    .sort())];
   for (const source of MANUAL_BASE_SOURCES) {
     if ((state.user?.role === "Admin TI" || allowed.has(source)) && !sources.includes(source)) sources.push(source);
   }
