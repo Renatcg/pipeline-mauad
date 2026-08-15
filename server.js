@@ -7740,9 +7740,25 @@ async function transcribeEventCaptureAudio(audioDataUrl) {
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: OPENAI_MODEL,
-      instructions: "Extraia nome completo, email e telefone de uma transcrição em português. Não invente dados. Responda somente JSON com as chaves name, email e phone.",
+      instructions: "Extraia nome completo, email e telefone de uma transcrição em português. Não invente dados. Quando uma informação não estiver presente, use uma string vazia.",
       input: transcript,
-      text: { format: { type: "json_object" } },
+      text: {
+        format: {
+          type: "json_schema",
+          name: "event_capture_fields",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              email: { type: "string" },
+              phone: { type: "string" }
+            },
+            required: ["name", "email", "phone"],
+            additionalProperties: false
+          }
+        }
+      },
       max_output_tokens: 300
     })
   });
