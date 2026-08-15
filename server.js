@@ -7588,7 +7588,7 @@ async function fastStructuredSmlFinanceRoutes(req, res, url) {
       const link = `${origin}/autorizacao-sml/${token}`;
       const message = String(settings.authorizationMessage || "").replaceAll("\n", "<br>");
       const subject = `${isTest ? "[TESTE] " : ""}${settings.authorizationSubject}`;
-      const email = await sendEmailWithCc(targetEmail, isTest ? "" : settings.authorizationCc, subject, `<p>${isTest ? "<strong>Este é um teste. Nenhuma confirmação alterará as vendas.</strong></p>" : ""}<p>${message}</p><p><a href="${link}">Acessar confirmação de vendas</a></p><p><strong>E-mail:</strong> ${targetEmail}<br><strong>Senha:</strong> ${password}</p><p>Este acesso expira em ${settings.authorizationExpiryHours} horas.</p>`);
+      const email = await sendEmailWithCcFrom(LEV_FINANCE_EMAIL_FROM, targetEmail, isTest ? "" : settings.authorizationCc, subject, `<p>${isTest ? "<strong>Este é um teste. Nenhuma confirmação alterará as vendas.</strong></p>" : ""}<p>${message}</p><p><a href="${link}">Acessar confirmação de vendas</a></p><p><strong>E-mail:</strong> ${targetEmail}<br><strong>Senha:</strong> ${password}</p><p>Este acesso expira em ${settings.authorizationExpiryHours} horas.</p>`);
       await structuredAudit(user, isTest ? "SEND_SML_AUTHORIZATION_TEST" : "SEND_SML_AUTHORIZATION", { count: sales.length, expiresAt: expiresAt.toISOString(), sent: email.sent, to: targetEmail });
       return sendJson(res, 200, { ok: true, sent: email.sent, reason: email.reason || "", expiresAt: expiresAt.toISOString(), to: targetEmail, test: isTest });
     }
