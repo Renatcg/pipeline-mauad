@@ -5994,8 +5994,9 @@ th {
 @media (max-width: 720px) {
   .event-capture-page { padding: 14px; }
   .event-capture-card { margin: 0 auto; border-radius: 16px; }
-  .event-capture-qr { width: 88vw; max-width: 88vw; }
-  .event-capture-success > section { min-height: calc(100vh - 28px); }
+  .event-capture-success { padding-right: 20px; padding-left: 20px; }
+  .event-capture-qr { width: calc(100vw - 40px); max-width: calc(100vw - 40px); }
+  .event-capture-success > section { min-height: calc(100vh - 40px); }
 }
 
 @media (max-width: 720px) {
