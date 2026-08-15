@@ -55,6 +55,7 @@ const state = {
   metaConversionEvents: [],
   samEvents: [],
   levFinance: null,
+  smlFinance: null,
   commercialSettings: {},
   pipelineFrontSettings: { mobileFiltersCollapsed: true, mobileFooterStyle: "floating", mobileFooterTheme: "dark" },
   levMauadEmailPreview: false,
@@ -99,6 +100,8 @@ const state = {
   levFinanceTab: "pending",
   levFinanceExtraction: null,
   levFinanceModal: null,
+  smlFinanceSearch: "",
+  smlFinanceTab: "pending",
   backupSettings: null,
   dashboardStart: "",
   dashboardEnd: "",
@@ -157,13 +160,13 @@ const state = {
 };
 
 const profileAccess = {
-  "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "finance", "settings", "knowledge"],
+  "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "finance", "financeSml", "settings", "knowledge"],
   "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "settings", "knowledge"],
   "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
   Diretoria: ["dashboard", "salesReport", "marketing", "sheet", "odysseia", "kanban", "knowledge"],
   Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
-  "Gerente Financeiro": ["marketing", "finance", "settings", "knowledge"],
-  "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
+  "Gerente Financeiro": ["marketing", "finance", "financeSml", "settings", "knowledge"],
+  "Auxiliar Financeiro": ["finance", "financeSml", "settings", "knowledge"],
   "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"],
   "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"]
 };
@@ -177,6 +180,7 @@ const routeByView = {
   salesReport: "/relatorio-comercial",
   marketing: "/marketing",
   finance: "/financeiro-lev",
+  financeSml: "/financeiro-sml",
   settings: "/configuracoes",
   knowledge: "/ajuda"
 };
@@ -191,6 +195,7 @@ const viewByRoute = {
   "/relatorio-comercial": "salesReport",
   "/marketing": "marketing",
   "/financeiro-lev": "finance",
+  "/financeiro-sml": "financeSml",
   "/configuracoes": "settings",
   "/ajuda": "knowledge"
 };
@@ -426,6 +431,7 @@ function allowedViews() {
     salesReport: "screen:salesReport",
     marketing: "screen:marketing",
     finance: "screen:finance",
+    financeSml: "screen:financeSml",
     settings: "screen:settings",
     knowledge: "screen:knowledge"
   };
@@ -439,6 +445,7 @@ function allowedViews() {
   return views.filter((view) => {
     if (view === "salesReport") return canAccessCommercialSalesReport();
     if (view === "finance") return canAccessLevFinance();
+    if (view === "financeSml") return canAccessSmlFinance();
     if (view === "odysseia") return canAccessBases();
     return true;
   });
@@ -507,6 +514,10 @@ function canEditUserEmail() {
 function canAccessLevFinance() {
   return (state.user?.role === "Admin TI" && String(state.user?.username || "").toLowerCase() === "admin")
     || ["Gerente Financeiro", "Auxiliar Financeiro"].includes(state.user?.role);
+}
+
+function canAccessSmlFinance() {
+  return canAccessLevFinance();
 }
 
 function canAccessCommercialSalesReport() {
@@ -753,6 +764,7 @@ function currentViewLabel() {
     salesReport: "Relatório Comercial",
     marketing: "Marketing",
     finance: "Financeiro Lev",
+    financeSml: "Financeiro SML",
     settings: "Configurações",
     knowledge: "Ajuda",
     lead: "Detalhe do lead"
@@ -1498,6 +1510,7 @@ async function loadState() {
   state.accessLog = data.accessLog || [];
   state.fupLeadLog = data.fupLeadLog || [];
   state.levFinance = data.levFinance || null;
+  state.smlFinance = data.smlFinance || { settings: {}, sales: [], receipts: [], paidUnits: [], settlements: [] };
   state.commercialSettings = data.commercialSettings || {};
   state.pipelineFrontSettings = data.pipelineFrontSettings || { mobileFiltersCollapsed: true, mobileFooterStyle: "floating", mobileFooterTheme: "dark" };
   resetInactivityTimer();
@@ -1681,6 +1694,7 @@ function renderShell(content) {
             ${navButton("salesReport", "▥", "Relatório Comercial")}
             ${navButton("marketing", "◎", "Marketing")}
             ${navButton("finance", "▣", "Financeiro Lev")}
+            ${navButton("financeSml", "▣", "Financeiro SML")}
             ${navButton("settings", "⚙", "Configurações")}
             ${navButton("knowledge", "?", "Ajuda")}
             <button id="logout" class="logout-nav" type="button">Sair</button>
@@ -5351,6 +5365,7 @@ function permissionResources() {
     { id: "screen:salesReport", label: "Relatório Comercial", type: "screen" },
     { id: "screen:marketing", label: "Marketing", type: "screen" },
     { id: "screen:finance", label: "Financeiro Lev", type: "screen" },
+    { id: "screen:financeSml", label: "Financeiro SML", type: "screen" },
     { id: "screen:settings", label: "Configurações", type: "screen" },
     { id: "screen:knowledge", label: "Ajuda", type: "screen" },
     ...(state.baseAccessSources || []).map((source) => ({ id: `base:${source}`, label: baseSourceLabel(source), type: "base" }))
@@ -8423,6 +8438,24 @@ function renderLevFinanceView() {
   bindLevFinanceControls();
 }
 
+function renderSmlFinanceView() {
+  const finance = state.smlFinance || { settings: {}, sales: [], receipts: [], settlements: [] };
+  const tabLabels = { pending: "Pendentes", awaiting: "Aguardando autorização", nf: "NF Emitida", paid: "Pagas", ignored: "Ignoradas" };
+  const tabs = Object.entries(tabLabels).map(([key, label]) => `<button class="${state.smlFinanceTab === key ? "primary" : ""}" type="button" data-sml-finance-tab="${key}">${label} <span>0</span></button>`).join("");
+  renderShell(`
+    ${renderViewHead("Financeiro SML", "Controle de recebíveis da Saint Michel", { actions: '<button class="primary" type="button" data-sml-finance-notice>Submeter imagem</button>' })}
+    <div class="mock-banner"><strong>Base SML isolada</strong><span>Estrutura inicial sem dados. As regras próprias de aprovisionamento serão implementadas separadamente.</span></div>
+    <section class="panel compact-panel"><input id="smlFinanceSearch" class="settings-search" placeholder="Pesquisar por unidade, cliente, imobiliária, status ou observação" value="${escapeHtml(state.smlFinanceSearch)}"></section>
+    <section class="metrics"><div class="metric"><span>${escapeHtml(tabLabels[state.smlFinanceTab] || "Pendentes")}</span><strong>0</strong></div><div class="metric"><span>Valor da aba</span><strong>${money(0)}</strong></div><div class="metric"><span>Comissão da aba</span><strong>${money(0)}</strong></div><div class="metric"><span>% comissão</span><strong>${escapeHtml(finance.settings?.commissionPercent || 0)}%</strong></div></section>
+    <section class="panel"><div class="tabs lev-finance-tabs">${tabs}</div><div class="table-wrap"><table class="access-table"><thead><tr><th>Unidade</th><th>Cliente</th><th>Assinatura</th><th>Valor contrato</th><th>Comissão SML</th><th>Imobiliária</th><th>Status</th><th>Ação</th></tr></thead><tbody><tr><td colspan="8" class="empty">Nenhum registro nesta aba.</td></tr></tbody></table></div></section>
+    <section class="dashboard-grid finance-grid"><section class="panel"><div class="panel-head"><h2>Recebimentos / conciliação</h2></div><form class="form-grid" data-sml-finance-form><div class="field full"><label>Unidades pagas</label><textarea name="units" rows="4" placeholder="Uma unidade por linha" required></textarea></div><div class="field"><label>Valor recebido</label><input name="amount" placeholder="0,00"></div><div class="field"><label>Data do recebimento</label><input name="receivedAt" type="date" value="${new Date().toISOString().slice(0, 10)}"></div><div class="field full"><label>Observação</label><input name="note"></div><div class="field full"><button class="primary" type="submit">Registrar recebimento</button></div></form></section><section class="panel"><div class="panel-head"><h2>Histórico de recebimentos</h2></div><div class="table-wrap"><table><thead><tr><th>Unidade</th><th>Valor</th><th>Recebido em</th><th>Observação</th></tr></thead><tbody><tr><td colspan="4" class="empty">Nenhum recebimento registrado.</td></tr></tbody></table></div></section></section>
+  `);
+  document.querySelectorAll("[data-sml-finance-tab]").forEach((button) => button.addEventListener("click", () => { state.smlFinanceTab = button.dataset.smlFinanceTab || "pending"; renderSmlFinanceView(); }));
+  document.querySelector("#smlFinanceSearch")?.addEventListener("input", (event) => { state.smlFinanceSearch = event.target.value; });
+  document.querySelector("[data-sml-finance-form]")?.addEventListener("submit", (event) => { event.preventDefault(); alert("A estrutura SML está pronta. A gravação será conectada às regras próprias na próxima etapa."); });
+  document.querySelector("[data-sml-finance-notice]")?.addEventListener("click", () => alert("A extração SML será conectada às regras próprias na próxima etapa."));
+}
+
 function bindLevFinanceControls() {
   bindSettingsActionMenus();
   document.querySelectorAll("[data-lev-finance-tab]").forEach((button) => {
@@ -9923,6 +9956,7 @@ function renderApp() {
   if (state.view === "salesReport") return renderSalesReportView();
   if (state.view === "marketing") return renderMarketingView();
   if (state.view === "finance") return renderLevFinanceView();
+  if (state.view === "financeSml") return renderSmlFinanceView();
   if (state.view === "settings") return renderSettings();
   if (state.view === "knowledge") return renderKnowledgeView();
 }

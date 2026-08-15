@@ -32,6 +32,7 @@ const PERMISSION_SCREENS = [
   { id: "screen:salesReport", label: "Relatório Comercial", view: "salesReport" },
   { id: "screen:marketing", label: "Marketing", view: "marketing" },
   { id: "screen:finance", label: "Financeiro Lev", view: "finance" },
+  { id: "screen:financeSml", label: "Financeiro SML", view: "financeSml" },
   { id: "screen:settings", label: "Configurações", view: "settings" },
   { id: "screen:knowledge", label: "Ajuda", view: "knowledge" }
 ];
@@ -62,23 +63,23 @@ function basePermissionId(source) {
 
 function defaultScreenPermission(role, screen) {
   const viewAccess = {
-    "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "finance", "settings", "knowledge"],
+    "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "finance", "financeSml", "settings", "knowledge"],
     "Head Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "settings", "knowledge"],
     "Supervisor Comercial": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "knowledge"],
     Diretoria: ["dashboard", "salesReport", "marketing", "sheet", "odysseia", "kanban", "knowledge"],
     Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
-    "Gerente Financeiro": ["marketing", "finance", "settings", "knowledge"],
-    "Auxiliar Financeiro": ["finance", "settings", "knowledge"],
+    "Gerente Financeiro": ["marketing", "finance", "financeSml", "settings", "knowledge"],
+    "Auxiliar Financeiro": ["finance", "financeSml", "settings", "knowledge"],
     "Gestor de Tráfego": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"],
     "Coordenador de Marketing": ["kanban", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "knowledge"]
   };
   const actionAccess = {
-    "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "finance", "settings", "knowledge"],
+    "Admin TI": ["kanban", "availability", "sheet", "odysseia", "dashboard", "salesReport", "marketing", "finance", "financeSml", "settings", "knowledge"],
     "Head Comercial": ["kanban", "sheet", "odysseia", "marketing", "settings", "knowledge"],
     "Supervisor Comercial": ["kanban", "sheet", "odysseia", "knowledge"],
     Corretor: ["kanban", "sheet", "odysseia", "knowledge"],
-    "Gerente Financeiro": ["marketing", "finance", "settings", "knowledge"],
-    "Auxiliar Financeiro": ["finance", "knowledge"],
+    "Gerente Financeiro": ["marketing", "finance", "financeSml", "settings", "knowledge"],
+    "Auxiliar Financeiro": ["finance", "financeSml", "knowledge"],
     "Gestor de Tráfego": ["knowledge"],
     "Coordenador de Marketing": ["marketing", "knowledge"]
   };
@@ -4736,6 +4737,9 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_lev_settlements (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_sml_sales (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_sml_receipts (id text PRIMARY KEY, unit text, amount numeric, paid_at timestamptz, payload jsonb NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_sml_settlements (id text PRIMARY KEY, unit text, client text, signed_at timestamptz, contract_value numeric, commission_value numeric, realtor_company text, status text, nf_number text, paid_at timestamptz, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_knowledge_articles (id text PRIMARY KEY, title text, category text, published boolean NOT NULL DEFAULT false, updated_at timestamptz, payload jsonb NOT NULL)`;
 }
 
@@ -7987,6 +7991,9 @@ async function fastStructuredStateResponse(req, res, url) {
       saleRows,
       receiptRows,
       settlementRows,
+      smlSaleRows,
+      smlReceiptRows,
+      smlSettlementRows,
       presenceRows
     ] = await Promise.all([
       cachedStructuredConfigState(sql),
@@ -7999,6 +8006,9 @@ async function fastStructuredStateResponse(req, res, url) {
       (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? sql`SELECT payload FROM crm_lev_sales ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       canAccessLevFinance(user) ? sql`SELECT payload FROM crm_lev_receipts ORDER BY paid_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? sql`SELECT payload FROM crm_lev_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
+      canAccessLevFinance(user) ? sql`SELECT payload FROM crm_sml_sales ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
+      canAccessLevFinance(user) ? sql`SELECT payload FROM crm_sml_receipts ORDER BY paid_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
+      canAccessLevFinance(user) ? sql`SELECT payload FROM crm_sml_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC` : Promise.resolve([]),
       sql`SELECT payload FROM crm_access_logs ORDER BY at DESC NULLS LAST LIMIT 2000`
     ]);
     const {
@@ -8042,6 +8052,13 @@ async function fastStructuredStateResponse(req, res, url) {
         receipts: receiptRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit),
         paidUnits: [],
         settlements: settlementRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit)
+      },
+      smlFinance: {
+        settings: settings.smlFinanceSettings || {},
+        sales: smlSaleRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit),
+        receipts: smlReceiptRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit),
+        paidUnits: [],
+        settlements: smlSettlementRows.map((row) => row.payload || {}).filter((item) => item.id || item.unit)
       }
     };
     ensurePermissions(stateDb);
@@ -8086,7 +8103,8 @@ async function fastStructuredStateResponse(req, res, url) {
       commercialSettings: stateDb.commercialSettings,
       pipelineFrontSettings: stateDb.pipelineFrontSettings,
       backupSettings: canManageSettings(user) ? normalizeBackupSettings(settings.backupSettings || {}) : null,
-      levFinance: (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? publicLevFinance(stateDb) : null
+      levFinance: (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? publicLevFinance(stateDb) : null,
+      smlFinance: canAccessLevFinance(user) ? stateDb.smlFinance : null
     });
   } catch (error) {
     mirrorStructuredError("state", error);
