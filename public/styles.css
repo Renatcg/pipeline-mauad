@@ -5414,8 +5414,9 @@ th {
   min-width: 0;
 }
 
-.marketing-gantt-row > div:first-child strong {
+.marketing-gantt-row > div:first-child span {
   overflow: hidden;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5464,7 +5465,7 @@ th {
 }
 
 .marketing-items-qc-wrap {
-  padding-bottom: 110px;
+  overflow: visible;
 }
 
 .marketing-items-qc {
@@ -5492,7 +5493,7 @@ th {
   padding: 5px 7px;
   border: 1px solid transparent;
   border-radius: 999px;
-  font-weight: 800;
+  font-weight: 400;
   white-space: nowrap;
 }
 
@@ -5571,7 +5572,7 @@ th {
 .marketing-supplier-hover {
   position: absolute;
   z-index: 30;
-  bottom: calc(100% + 8px);
+  bottom: 100%;
   left: 0;
   display: none;
   width: 260px;
@@ -5580,6 +5581,29 @@ th {
   border-radius: 10px;
   background: #fff;
   box-shadow: 0 16px 34px rgba(15, 23, 42, .2);
+}
+
+.marketing-activity-context {
+  position: fixed;
+  z-index: 1000;
+  width: 160px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, .2);
+}
+
+.marketing-activity-context button {
+  width: 100%;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.marketing-activity-context button:hover {
+  background: #f0f5f8;
 }
 
 .marketing-quote-cell:hover .marketing-supplier-hover {

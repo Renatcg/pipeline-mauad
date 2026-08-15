@@ -112,6 +112,8 @@ const state = {
   marketingEditingActionId: "",
   marketingEventDetailTab: "activities",
   marketingActivityModalOpen: false,
+  marketingEditingActivityId: "",
+  marketingActivityEdits: {},
   marketingAddedActivities: {},
   marketingEditingItemId: "",
   marketingItemModalMode: "",
@@ -4838,7 +4840,8 @@ function marketingActivitiesForAction(action) {
     { id: `milestone-${action.id}-start`, name: "Início do evento", start: action.eventStart, end: action.eventStart, duration: 1, milestone: true },
     { id: `milestone-${action.id}-end`, name: "Fim do evento", start: action.eventEnd, end: action.eventEnd, duration: 1, milestone: true }
   ];
-  return [...(action.activities || []), ...(state.marketingAddedActivities[action.id] || []), ...milestones];
+  const editable = [...(action.activities || []), ...(state.marketingAddedActivities[action.id] || [])].map((activity) => ({ ...activity, ...(state.marketingActivityEdits[activity.id] || {}) }));
+  return [...editable, ...milestones];
 }
 
 function marketingActivityCost(action, activityId) {
@@ -4862,7 +4865,7 @@ function renderMarketingActivityGantt(action, activities = []) {
     const left = Math.max(0, Math.round((start - first) / dayMs) * 44);
     const barWidth = Math.max(44, (Math.round((end - start) / dayMs) + 1) * 44);
     const cost = marketingActivityCost(action, activity.id);
-    return `<div class="marketing-gantt-row ${activity.milestone ? "is-milestone" : ""}" ${cost ? `title="Custo da atividade: ${escapeHtml(brl(cost))}"` : ""}><div><strong>${escapeHtml(activity.name)}</strong></div><div class="marketing-gantt-track"><i style="--gantt-left:${left}px;--gantt-width:${barWidth}px"></i></div></div>`;
+    return `<div class="marketing-gantt-row ${activity.milestone ? "is-milestone" : ""}" ${activity.milestone ? "" : `data-marketing-activity-row="${activity.id}"`} ${cost ? `title="Custo da atividade: ${escapeHtml(brl(cost))}"` : ""}><div><span>${escapeHtml(activity.name)}</span></div><div class="marketing-gantt-track"><i style="--gantt-left:${left}px;--gantt-width:${barWidth}px"></i></div></div>`;
   }).join("") || '<div class="empty">Nenhuma atividade cadastrada.</div>'}</div></div>`;
 }
 
@@ -4910,7 +4913,9 @@ function renderMarketingEventProvisions(action) {
 
 function renderMarketingActivityModal(action, activities) {
   if (!state.marketingActivityModalOpen) return "";
-  return `<div class="modal-backdrop" data-close-marketing-activity><section class="modal-card marketing-activity-modal"><div class="panel-head"><div><span class="mock-chip">Mockup</span><h2>Adicionar atividade</h2><p class="muted-copy">${escapeHtml(action.name)}</p></div><button class="icon" type="button" data-close-marketing-activity>×</button></div><form id="marketingActivityForm" class="form-grid"><div class="field full"><label>Nome</label><input name="name" required></div><div class="field"><label>Duração (dias)</label><input name="duration" type="number" min="1" required></div><div class="field"><label>Data de início</label><input name="start" type="date" required></div><div class="field"><label>Data de fim</label><input name="end" type="date" required></div><div class="field"><label>Atividade predecessora</label><select name="predecessorId"><option value="">Sem predecessora</option>${activities.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select></div><div class="field"><label>Tipo de ligação</label><select name="linkType"><option value="T-T">T-T</option><option value="T-I" selected>T-I</option><option value="I-T">I-T</option><option value="I-I">I-I</option></select></div><div class="field full"><div class="row-actions"><button class="primary" type="submit">Adicionar atividade</button><button type="button" data-close-marketing-activity>Cancelar</button></div></div></form></section></div>`;
+  const editing = activities.find((item) => item.id === state.marketingEditingActivityId);
+  const options = activities.filter((item) => !item.milestone && item.id !== editing?.id);
+  return `<div class="modal-backdrop" data-close-marketing-activity><section class="modal-card marketing-activity-modal"><div class="panel-head"><div><span class="mock-chip">Mockup</span><h2>${editing ? "Editar atividade" : "Adicionar atividade"}</h2><p class="muted-copy">${escapeHtml(action.name)}</p></div><button class="icon" type="button" data-close-marketing-activity>×</button></div><form id="marketingActivityForm" class="form-grid"><div class="field full"><label>Nome</label><input name="name" value="${escapeHtml(editing?.name || "")}" required></div><div class="field"><label>Duração (dias)</label><input name="duration" type="number" min="1" value="${editing?.duration || ""}" required></div><div class="field"><label>Data de início</label><input name="start" type="date" value="${editing?.start || ""}" required></div><div class="field"><label>Data de fim</label><input name="end" type="date" value="${editing?.end || ""}" required></div><div class="field"><label>Atividade predecessora</label><select name="predecessorId"><option value="">Sem predecessora</option>${options.map((item) => `<option value="${item.id}" ${editing?.predecessorId === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></div><div class="field"><label>Tipo de ligação</label><select name="linkType">${["T-T", "T-I", "I-T", "I-I"].map((type) => `<option value="${type}" ${(editing?.linkType || "T-I") === type ? "selected" : ""}>${type}</option>`).join("")}</select></div><div class="field full"><div class="row-actions"><button class="primary" type="submit">${editing ? "Salvar atividade" : "Adicionar atividade"}</button><button type="button" data-close-marketing-activity>Cancelar</button></div></div></form></section></div>`;
 }
 
 function renderMarketingEventEditorMock(actions) {
@@ -5020,15 +5025,29 @@ function renderMarketingView() {
     state.marketingEditingItemId = ""; state.marketingItemModalMode = ""; state.marketingEditingQuoteId = "";
     renderMarketingView();
   });
-  document.querySelector("[data-add-marketing-activity]")?.addEventListener("click", () => { state.marketingActivityModalOpen = true; renderMarketingView(); });
-  document.querySelectorAll("[data-close-marketing-activity]").forEach((element) => element.addEventListener("click", (event) => { if (event.target !== element && element.classList.contains("modal-backdrop")) return; state.marketingActivityModalOpen = false; renderMarketingView(); }));
+  document.querySelector("[data-add-marketing-activity]")?.addEventListener("click", () => { state.marketingEditingActivityId = ""; state.marketingActivityModalOpen = true; renderMarketingView(); });
+  document.querySelectorAll("[data-marketing-activity-row]").forEach((row) => row.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    document.querySelector(".marketing-activity-context")?.remove();
+    const menu = document.createElement("div");
+    menu.className = "marketing-activity-context";
+    menu.style.left = `${Math.min(event.clientX, window.innerWidth - 170)}px`;
+    menu.style.top = `${Math.min(event.clientY, window.innerHeight - 60)}px`;
+    menu.innerHTML = '<button type="button">Editar atividade</button>';
+    document.body.appendChild(menu);
+    menu.querySelector("button")?.addEventListener("click", () => { state.marketingEditingActivityId = row.dataset.marketingActivityRow; state.marketingActivityModalOpen = true; menu.remove(); renderMarketingView(); });
+    setTimeout(() => document.addEventListener("click", () => menu.remove(), { once: true }), 0);
+  }));
+  document.querySelectorAll("[data-close-marketing-activity]").forEach((element) => element.addEventListener("click", (event) => { if (event.target !== element && element.classList.contains("modal-backdrop")) return; state.marketingActivityModalOpen = false; state.marketingEditingActivityId = ""; renderMarketingView(); }));
   document.querySelector("#marketingActivityForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const actionId = state.marketingEditingActionId;
-    const next = { id: `mock-activity-${Date.now()}`, name: form.get("name"), duration: Number(form.get("duration") || 1), start: form.get("start"), end: form.get("end"), predecessorId: form.get("predecessorId"), linkType: form.get("linkType") };
-    state.marketingAddedActivities[actionId] = [...(state.marketingAddedActivities[actionId] || []), next];
+    const values = { name: form.get("name"), duration: Number(form.get("duration") || 1), start: form.get("start"), end: form.get("end"), predecessorId: form.get("predecessorId"), linkType: form.get("linkType") };
+    if (state.marketingEditingActivityId) state.marketingActivityEdits[state.marketingEditingActivityId] = values;
+    else state.marketingAddedActivities[actionId] = [...(state.marketingAddedActivities[actionId] || []), { id: `mock-activity-${Date.now()}`, ...values }];
     state.marketingActivityModalOpen = false;
+    state.marketingEditingActivityId = "";
     renderMarketingView();
   });
   document.querySelector("[data-save-marketing-event]")?.addEventListener("click", () => alert("Mockup salvo apenas durante esta sessão. A persistência será criada na próxima etapa."));
