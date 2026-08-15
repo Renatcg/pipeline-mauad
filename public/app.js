@@ -349,6 +349,33 @@ async function readOptimizedVisualMapImage(file) {
   }
 }
 
+async function readOptimizedEmailImage(file) {
+  if (!file?.type?.startsWith("image/")) throw new Error("Selecione uma imagem válida.");
+  if (/\.(heic|heif)$/i.test(String(file.name || "")) || /heic|heif/i.test(file.type)) throw new Error("Envie a imagem em JPG, PNG ou WebP.");
+  const sourceUrl = window.URL?.createObjectURL ? URL.createObjectURL(file) : await readFileAsDataUrl(file);
+  try {
+    const image = await loadImageFromSource(sourceUrl);
+    const sourceWidth = image.width || image.naturalWidth;
+    const sourceHeight = image.height || image.naturalHeight;
+    if (!sourceWidth || !sourceHeight) throw new Error("Imagem sem dimensão válida.");
+    const scale = Math.min(1, 1200 / sourceWidth, 1200 / sourceHeight);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+    canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    for (const quality of [0.84, 0.74, 0.64, 0.54]) {
+      const dataUrl = canvas.toDataURL("image/jpeg", quality);
+      if (dataUrl.length <= 1500000) return dataUrl;
+    }
+    throw new Error("A imagem é muito grande. Escolha uma imagem menor.");
+  } finally {
+    if (window.URL?.revokeObjectURL && sourceUrl.startsWith("blob:")) URL.revokeObjectURL(sourceUrl);
+  }
+}
+
 function loadImageFromSource(source) {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -7876,7 +7903,13 @@ function renderEventCaptureMessageSettings() {
   const fontSize = template.fontSize || "14px";
   const color = template.color || "#17202a";
   const lineHeight = template.lineHeight || "1.6";
-  const renderPreview = (source) => sanitizeRichHtml(source).replace(/\{\{\s*nome_lead\s*\}\}/gi, "Renato Guimarães").replace(/\{\{\s*nome_corretor\s*\}\}/gi, "Corretor Mauad");
+  let imageDataUrl = template.imageDataUrl || "";
+  let imagePosition = template.imagePosition === "bottom" ? "bottom" : "top";
+  const renderPreview = (source) => {
+    const content = sanitizeRichHtml(source).replace(/\{\{\s*nome_lead\s*\}\}/gi, "Renato Guimarães").replace(/\{\{\s*nome_corretor\s*\}\}/gi, "Corretor Mauad");
+    const image = imageDataUrl ? `<div class="capture-email-image-preview"><img src="${escapeHtml(imageDataUrl)}" alt="Imagem da mensagem"></div>` : "";
+    return imagePosition === "bottom" ? `${content}${image}` : `${image}${content}`;
+  };
   settingsLayout(`
     <section class="panel">
       <div class="panel-head"><div><h2>Mensagem de captação</h2><p class="muted-copy">Configura o e-mail enviado aos leads captados no evento.</p></div></div>
@@ -7884,6 +7917,7 @@ function renderEventCaptureMessageSettings() {
       <form id="eventCaptureSettingsForm" class="form-grid editor">
         <div class="field"><label>Nome do remetente</label><input name="senderName" value="${escapeHtml(settings.senderName || "Comercial Mauad")}" required><small>O endereço continuará sendo comercial@golfclubresort.com.br.</small></div>
         <div class="field"><label>Assunto do e-mail</label><input name="subject" value="${escapeHtml(settings.subject || "Obrigado por nos visitar no 64º Aberto de Golfe")}" required></div>
+        <div class="field full capture-email-image-settings"><label>Imagem da mensagem</label><div class="capture-email-image-controls"><input id="captureEmailImage" type="file" accept="image/jpeg,image/png,image/webp"><select id="captureEmailImagePosition" aria-label="Posição da imagem"><option value="top" ${imagePosition === "top" ? "selected" : ""}>No topo da mensagem</option><option value="bottom" ${imagePosition === "bottom" ? "selected" : ""}>No final da mensagem</option></select><button type="button" id="removeCaptureEmailImage" ${imageDataUrl ? "" : "disabled"}>Remover imagem</button></div><small>A imagem será otimizada e enviada incorporada ao e-mail.</small></div>
         <div class="field full"><label>Mensagem do e-mail de agradecimento</label><div class="email-template-builder">
           <section class="email-template-editor-pane">
             <div class="email-template-toolbar capture-email-toolbar" aria-label="Ferramentas de formatação">
@@ -7914,6 +7948,9 @@ function renderEventCaptureMessageSettings() {
   const size = document.querySelector("#captureEmailFontSize");
   const spacing = document.querySelector("#captureEmailLineHeight");
   const fontColor = document.querySelector("#captureEmailFontColor");
+  const imageInput = document.querySelector("#captureEmailImage");
+  const imagePositionInput = document.querySelector("#captureEmailImagePosition");
+  const removeImageButton = document.querySelector("#removeCaptureEmailImage");
   let savedRange = null;
   const rememberSelection = () => {
     const selection = window.getSelection();
@@ -7929,6 +7966,20 @@ function renderEventCaptureMessageSettings() {
     return true;
   };
   const refresh = () => { if (editor && preview) preview.innerHTML = renderPreview(editor.innerHTML); };
+  imageInput?.addEventListener("change", async () => {
+    const file = imageInput.files?.[0];
+    if (!file) return;
+    try {
+      imageDataUrl = await readOptimizedEmailImage(file);
+      removeImageButton.disabled = false;
+      refresh();
+    } catch (error) {
+      imageInput.value = "";
+      alert(error.message);
+    }
+  });
+  imagePositionInput?.addEventListener("change", () => { imagePosition = imagePositionInput.value === "bottom" ? "bottom" : "top"; refresh(); });
+  removeImageButton?.addEventListener("click", () => { imageDataUrl = ""; imageInput.value = ""; removeImageButton.disabled = true; refresh(); });
   const applySelectedStyle = (property, value) => {
     if (!editor || !restoreSelection()) return;
     const selection = window.getSelection();
@@ -7989,7 +8040,7 @@ function renderEventCaptureMessageSettings() {
     try {
       setButtonBusy(button, true, "Salvando...");
       const formData = new FormData(event.currentTarget);
-      const data = await api("/api/event-capture-settings", { method: "PUT", body: JSON.stringify({ senderName: formData.get("senderName"), subject: formData.get("subject"), emailTemplate: { html: sanitizeRichHtml(editor?.innerHTML || DEFAULT_EVENT_CAPTURE_EMAIL_HTML), fontFamily, fontSize, color, lineHeight } }) });
+      const data = await api("/api/event-capture-settings", { method: "PUT", body: JSON.stringify({ senderName: formData.get("senderName"), subject: formData.get("subject"), emailTemplate: { html: sanitizeRichHtml(editor?.innerHTML || DEFAULT_EVENT_CAPTURE_EMAIL_HTML), fontFamily, fontSize, color, lineHeight, imageDataUrl, imagePosition } }) });
       state.eventCaptureSettings = data.eventCaptureSettings || {};
       state.settingsNotice = "Mensagem de captação salva.";
       renderSettings();
@@ -10301,7 +10352,17 @@ function renderGolfEventCapture() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const chunks = [];
-        recorder = new MediaRecorder(stream);
+        const supportedMimeTypes = ["audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]
+          .filter((type) => typeof MediaRecorder.isTypeSupported === "function" && MediaRecorder.isTypeSupported(type));
+        let preferredMimeType = "";
+        for (const mimeType of supportedMimeTypes) {
+          try {
+            recorder = new MediaRecorder(stream, { mimeType });
+            preferredMimeType = mimeType;
+            break;
+          } catch { /* tenta o próximo formato suportado */ }
+        }
+        if (!recorder) recorder = new MediaRecorder(stream);
         recorder.addEventListener("dataavailable", (event) => { if (event.data.size) chunks.push(event.data); });
         recorder.addEventListener("stop", async () => {
           stream?.getTracks().forEach((track) => track.stop());
@@ -10309,7 +10370,7 @@ function renderGolfEventCapture() {
           mic.querySelector("strong").textContent = "Processando áudio...";
           status.textContent = "A IA está transcrevendo e organizando os dados.";
           try {
-            const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+            const blob = new Blob(chunks, { type: recorder.mimeType || chunks[0]?.type || preferredMimeType || "audio/webm" });
             audioDataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result || "")); reader.onerror = reject; reader.readAsDataURL(blob); });
             const result = await captureApi("/transcribe", { method: "POST", body: JSON.stringify({ audioDataUrl }) });
             transcript = result.transcript || "";
@@ -10321,7 +10382,7 @@ function renderGolfEventCapture() {
           mic.querySelector("strong").textContent = "Gravar novamente";
           mic.querySelector("small").textContent = "Toque para substituir o áudio";
         });
-        recorder.start();
+        recorder.start(250);
         mic.classList.add("is-recording");
         mic.querySelector("strong").textContent = "Gravando... toque para parar";
         mic.querySelector("small").textContent = "Diga nome completo, e-mail e telefone";

@@ -6041,11 +6041,24 @@ th {
   object-fit: contain;
 }
 
+.capture-email-image-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.capture-email-image-controls input { flex: 1 1 260px; }
+.capture-email-image-controls select { width: auto; min-width: 190px; }
+.capture-email-image-preview { margin: 14px 0; text-align: center; }
+.capture-email-image-preview img { display: block; width: 100%; max-width: 720px; height: auto; margin: 0 auto; }
+
 @media (max-width: 720px) {
   .event-capture-page { padding: 14px; }
   .event-capture-card { margin: 0 auto; border-radius: 16px; }
-  .event-capture-success { padding-right: 20px; padding-left: 20px; }
-  .event-capture-qr { width: calc(100vw - 40px); max-width: calc(100vw - 40px); }
+  .event-capture-success { padding: 20px; }
+  .event-capture-success > section { width: 100%; }
+  .event-capture-qr { width: 100%; max-width: min(75vh, 100%); }
   .event-capture-success > section { min-height: calc(100vh - 40px); }
 }
 
