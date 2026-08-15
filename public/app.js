@@ -4910,7 +4910,7 @@ function renderMarketingEventProvisions(action) {
   });
   const tabs = [["pending", "Pendentes"], ["confirmation", "Aguardando confirmação"], ["invoices", "NFs enviadas"], ["paid", "Pagos"]];
   const filtered = rows.filter((row) => row.status === state.marketingProvisionStatus);
-  return `<div class="tabs marketing-provision-tabs">${tabs.map(([id, label]) => `<button type="button" class="${state.marketingProvisionStatus === id ? "active" : ""}" data-marketing-provision-status="${id}">${label}</button>`).join("")}</div><div class="table-wrap"><table><thead><tr><th>Origem</th><th>Fornecedor</th><th>Valor</th><th>Ação</th></tr></thead><tbody>${filtered.map((row) => `<tr><td><strong>${escapeHtml(row.label)}</strong></td><td>${escapeHtml(row.supplier)}</td><td>${escapeHtml(brl(row.value))}</td><td><button type="button" data-marketing-mock-notice>Aprovisionar</button></td></tr>`).join("") || '<tr><td colspan="4">Nenhum aprovisionamento nesta etapa.</td></tr>'}</tbody></table></div>`;
+  return `<div class="tabs marketing-provision-tabs">${tabs.map(([id, label]) => `<button type="button" class="${state.marketingProvisionStatus === id ? "active" : ""}" data-marketing-provision-status="${id}">${label}</button>`).join("")}</div><div class="table-wrap"><table class="marketing-event-provisions-table"><thead><tr><th>Origem</th><th>Fornecedor</th><th>Valor</th><th>Ação</th></tr></thead><tbody>${filtered.map((row) => `<tr><td>${escapeHtml(row.label)}</td><td>${escapeHtml(row.supplier)}</td><td>${escapeHtml(brl(row.value))}</td><td><button type="button" data-marketing-mock-notice>Aprovisionar</button></td></tr>`).join("") || '<tr><td colspan="4">Nenhum aprovisionamento nesta etapa.</td></tr>'}</tbody></table></div>`;
 }
 
 function renderMarketingActivityModal(action, activities) {
@@ -5039,6 +5039,7 @@ function renderMarketingView() {
       popover.addEventListener("mouseenter", () => clearTimeout(closeTimer));
       popover.addEventListener("mouseleave", close, { once: true });
     });
+    cell.querySelector(".marketing-quote-edit")?.addEventListener("mouseenter", () => document.querySelector(".marketing-supplier-popover")?.remove());
   });
   document.querySelector("#marketingQuoteForm")?.addEventListener("submit", (event) => {
     event.preventDefault();

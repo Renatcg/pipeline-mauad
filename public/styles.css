@@ -5420,8 +5420,8 @@ th {
 }
 
 .marketing-gantt-row > * {
-  padding-top: 2px;
-  padding-bottom: 2px;
+  padding-top: 5px;
+  padding-bottom: 5px;
 }
 
 .marketing-gantt-row > div:first-child {
@@ -5496,8 +5496,14 @@ th {
 }
 
 .marketing-items-qc td {
-  padding-top: 2px;
-  padding-bottom: 2px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.marketing-event-provisions-table td {
+  padding-top: 5px;
+  padding-bottom: 5px;
+  font-weight: 400;
 }
 
 .marketing-items-qc th:nth-child(n+4):nth-child(-n+6),
