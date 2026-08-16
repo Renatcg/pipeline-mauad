@@ -1,5 +1,7 @@
 # Pipeline de Leads
 
+> **Produto Mauad em manutenção.** A linha funcional atual foi encerrada em 16/08/2026 e está identificada pela tag `mauad-v1-stable`. Este repositório passa a receber somente correções críticas, segurança e continuidade operacional. Novas funcionalidades serão desenvolvidas na futura plataforma SaaS.
+
 Sistema local para pipeline comercial com login, perfis, Kanban, Planilha, Base Odysseia e Dashboard.
 
 ## Rodar localmente
