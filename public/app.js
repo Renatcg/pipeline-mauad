@@ -4019,7 +4019,10 @@ function renderLeadInterest(project, lead) {
     <div class="opportunity-fields">
       <div class="field"><label>Empreendimento</label><input readonly value="${escapeHtml(opportunity.project || project || "Sem empreendimento")}"></div>
       <div class="field"><label>Unidade</label><input readonly value="${escapeHtml(opportunity.unitSamCode || opportunity.unit || "Sem unidade")}"></div>
-      <div class="field"><label>Valor da unidade</label><input readonly value="${escapeHtml(opportunity.unitValue || "")}"></div>
+      <form class="field opportunity-value-form" data-opportunity-value-form="${escapeHtml(opportunity.id || "")}">
+        <label>Valor da unidade</label>
+        <div class="inline-field-action"><input name="unitValue" inputmode="decimal" value="${escapeHtml(opportunity.unitValue || "")}" ${canManageLeads() ? "" : "readonly"}>${canManageLeads() ? '<button class="tiny primary" type="submit">Salvar</button>' : ""}</div>
+      </form>
       <div class="field"><label>Status</label><input readonly value="${escapeHtml(opportunity.status || lead.status || "Sem status")}"></div>
       <div class="field"><label>Corretor</label><input readonly value="${escapeHtml(opportunity.assignedName || "Sem corretor")}"></div>
     </div>
@@ -4281,6 +4284,27 @@ function renderLeadDetail() {
     await patchLead(lead.id, payload);
     alert("Detalhes do lead salvos com sucesso.");
     renderLeadDetail();
+  });
+  document.querySelectorAll("[data-opportunity-value-form]").forEach((formElement) => {
+    formElement.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const opportunityId = event.currentTarget.dataset.opportunityValueForm;
+      const button = event.currentTarget.querySelector("button[type='submit']");
+      try {
+        setButtonBusy(button, true, "Salvando...");
+        const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
+        const result = await api(`/api/leads/${encodeURIComponent(lead.id)}/opportunities/${encodeURIComponent(opportunityId)}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload)
+        });
+        Object.assign(lead, result.lead);
+        alert("Valor da unidade salvo com sucesso.");
+        renderLeadDetail();
+      } catch (error) {
+        setButtonBusy(button, false);
+        alert(error.message);
+      }
+    });
   });
   document.querySelector("#commentForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();

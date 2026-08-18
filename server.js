@@ -3505,6 +3505,7 @@ async function processSamWebhook(db, payload) {
   const eventDatetime = String(payload.event_datetime || payload.eventDatetime || "").trim();
   const email = String(payload.email || "").trim();
   const phone = String(payload.phone || payload.telefone || "").trim();
+  const name = String(payload.name || payload.nome || payload.client_name || payload.clientName || payload.cliente || "").trim();
   const unit = normalizeUnitForMatch(payload.unit_code || payload.unitCode || payload.unit || payload.unidade);
   const contractValue = parseMoney(payload.contract_value || payload.contractValue || payload.valor_contrato || payload.valorContrato || payload.value || payload.valor);
   const rawContractValue = filledSamValue(payload.contract_value, payload.contractValue, payload.valor_contrato, payload.valorContrato, payload.value, payload.valor);
@@ -5368,10 +5369,11 @@ async function isDuplicateStructuredSamEvent(sql, eventId) {
   return Boolean(logRows.length);
 }
 
-async function findStructuredSamLeadCandidate(sql, { email, phone }) {
+async function findStructuredSamLeadCandidates(sql, { email, phone, name }) {
   const normalizedEmail = normalizeEmail(email);
   const normalizedPhone = normalizePhoneDigits(phone);
-  if (!normalizedEmail && normalizedPhone.length < 8) return null;
+  const normalizedName = String(name || "").trim().toLowerCase();
+  if (!normalizedEmail && normalizedPhone.length < 8 && !normalizedName) return [];
   const phoneSuffix = normalizedPhone.length >= 8 ? normalizedPhone.slice(-8) : "";
   const rows = await sql`SELECT l.*, false AS favorite, '{}'::text[] AS tags
     FROM crm_leads l
@@ -5380,9 +5382,10 @@ async function findStructuredSamLeadCandidate(sql, { email, phone }) {
         regexp_replace(COALESCE(l.phone, ''), '\\D', '', 'g') = ${normalizedPhone}
         OR regexp_replace(COALESCE(l.phone, ''), '\\D', '', 'g') LIKE ${`%${phoneSuffix}`}
       ))
+      OR (${Boolean(normalizedName)} AND lower(COALESCE(l.name, '')) = ${normalizedName})
     ORDER BY l.in_pipeline DESC, l.updated_at DESC NULLS LAST, l.created_at DESC NULLS LAST
-    LIMIT 1`;
-  return rows.length ? structuredLeadFromRow(rows[0], false, []) : null;
+    LIMIT 20`;
+  return rows.map((row) => structuredLeadFromRow(row, false, [])).filter((lead) => lead.id);
 }
 
 async function findStructuredLeadForSamManualLink(sql, search) {
@@ -5406,6 +5409,33 @@ async function findStructuredLeadForSamManualLink(sql, search) {
   return rows.length ? structuredLeadFromRow(rows[0], false, []) : null;
 }
 
+async function findStructuredSamOpportunitiesByUnit(sql, unitInput) {
+  const unit = normalizeUnitForMatch(unitInput);
+  const compactUnit = unit.replace(/[^A-Z0-9]/g, "");
+  if (!compactUnit) return [];
+  const opportunityRows = await sql`SELECT * FROM crm_opportunities
+    WHERE regexp_replace(upper(COALESCE(NULLIF(unit_sam_code, ''), unit, '')), '[^A-Z0-9]', '', 'g') = ${compactUnit}
+    ORDER BY created_at ASC NULLS LAST, id ASC`;
+  return opportunityRows.map(structuredOpportunityFromRow).filter((opportunity) => opportunity.id && opportunity.leadId);
+}
+
+function closestPreviousSamOpportunity(opportunities, nextStatus, definitions = []) {
+  const positions = new Map(definitions.map((item, index) => [normalizeComparableText(item.status || item.name), Number(item.position ?? index)]));
+  const target = positions.get(normalizeComparableText(nextStatus));
+  if (!Number.isFinite(target)) return opportunities[0] || null;
+  return [...opportunities].sort((a, b) => {
+    const positionA = positions.get(normalizeComparableText(a.status));
+    const positionB = positions.get(normalizeComparableText(b.status));
+    const rank = (position) => {
+      if (!Number.isFinite(position)) return 10000;
+      if (position < target) return target - position;
+      if (position === target) return 1000;
+      return 2000 + position - target;
+    };
+    return rank(positionA) - rank(positionB) || new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+  })[0] || null;
+}
+
 async function structuredIntegration(provider, action, details = {}) {
   const entry = { at: new Date().toISOString(), provider, action, details };
   await mirrorStructuredIntegrationLog(entry);
@@ -5427,25 +5457,35 @@ async function processSamWebhookStructured(payload) {
   if (!eventId) return { ok: false, httpStatus: 400, error: "event_id obrigatório" };
   if (await isDuplicateStructuredSamEvent(sql, eventId)) return { ok: true, status: "duplicate" };
   if (!eventType) return { ok: false, httpStatus: 400, error: "event_type obrigatório" };
-  if (!email && !phone) return { ok: false, httpStatus: 400, error: "E-mail ou telefone obrigatório" };
-  if (!unit) return { ok: false, httpStatus: 400, error: "Unidade obrigatória" };
-  const [lead, statuses, projectDefinitions] = await Promise.all([
-    findStructuredSamLeadCandidate(sql, { email, phone }),
+  if (!email && !phone && !name) return { ok: false, httpStatus: 400, error: "Nome, e-mail ou telefone obrigatório" };
+  const [unitOpportunities, contactLeads, statuses, projectDefinitions] = await Promise.all([
+    findStructuredSamOpportunitiesByUnit(sql, unit),
+    findStructuredSamLeadCandidates(sql, { email, phone, name }),
     structuredStatusDefinitions(sql),
     structuredProjectDefinitions(sql)
   ]);
   const nextStatus = samStatusToPipelineStatusFromList(statuses, eventType);
+  const contactOpportunitiesByLead = await structuredOpportunitiesForLeadIds(sql, contactLeads.map((item) => item.id));
+  const contactOpportunities = contactLeads.flatMap((item) => contactOpportunitiesByLead.get(item.id) || []);
+  const matchingOpportunity = closestPreviousSamOpportunity(unitOpportunities.length ? unitOpportunities : contactOpportunities, nextStatus, statuses);
+  let lead = matchingOpportunity ? contactLeads.find((item) => item.id === matchingOpportunity.leadId) : contactLeads[0] || null;
+  if (!lead && matchingOpportunity) {
+    const leadRows = await sql`SELECT * FROM crm_leads WHERE id = ${matchingOpportunity.leadId} LIMIT 1`;
+    lead = leadRows.length ? structuredLeadFromRow(leadRows[0], false, []) : null;
+  }
   const project = projectNameForUnit(unit, projectDefinitions);
   const opportunityRows = lead ? await structuredOpportunitiesForLeadIds(sql, [lead.id]) : new Map();
   const opportunities = lead ? (opportunityRows.get(lead.id) || []) : [];
   const opportunityOptions = opportunities.map(samOpportunityOption).filter((item) => item.id);
-  const matchingOpportunity = opportunities.find((opportunity) => opportunityUnitsForMatch(opportunity).includes(unit));
+  const selectedOpportunity = matchingOpportunity?.leadId === lead?.id
+    ? opportunities.find((opportunity) => opportunity.id === matchingOpportunity.id) || matchingOpportunity
+    : null;
   const leadUnits = lead
     ? opportunities.length
       ? opportunities.flatMap(opportunityUnitsForMatch)
       : leadUnitsForMatch(lead)
     : [];
-  const unitMatches = Boolean(lead && (matchingOpportunity || (!opportunities.length && leadUnits.includes(unit))));
+  const unitMatches = Boolean(lead && (selectedOpportunity || (!opportunities.length && (!unit || leadUnits.includes(unit)))));
   const event = {
     id: `sam-${crypto.randomUUID()}`,
     eventId,
@@ -5462,7 +5502,7 @@ async function processSamWebhookStructured(payload) {
     leadId: lead?.id || "",
     leadName: lead?.name || "",
     leadUnits,
-    opportunityId: matchingOpportunity?.id || "",
+    opportunityId: selectedOpportunity?.id || "",
     opportunityOptions,
     createdAt: new Date().toISOString(),
     resolvedAt: "",
@@ -10859,6 +10899,16 @@ async function fastStructuredLeadAction(req, res, url) {
       lead.updatedAt = opportunity.updatedAt;
       await saveStructuredLead(sql, lead);
       lead.opportunities = opportunities.map((item) => item.id === opportunity.id ? opportunity : item);
+      if (isContractSignedPipelineStatus(opportunity.status) && Object.prototype.hasOwnProperty.call(body, "unitValue")) {
+        await upsertStructuredLevSaleFromSam(sql, lead, {
+          eventId: `opportunity-value-${opportunity.id}`,
+          eventDatetime: opportunity.contractSignedAt || opportunity.updatedAt,
+          unit: opportunity.unitSamCode || opportunity.unit,
+          project: opportunity.project || "",
+          rawContractValue: opportunity.unitValue || "",
+          contractValue: parseMoney(opportunity.unitValue || "")
+        }, { unitValue: opportunity.unitValue || "", contractValue: opportunity.unitValue || "" }, opportunity);
+      }
       if (opportunity.status && opportunity.status !== previousStatus) {
         await recordStructuredLeadStatusMovement(sql, {
           actor: user,
