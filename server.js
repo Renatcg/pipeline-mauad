@@ -4834,14 +4834,16 @@ async function ensureStructuredSchemaOnce(sql) {
 }
 
 const STRUCTURED_TABLES = [
-  "crm_lead_comments", "crm_lead_tags", "crm_lead_favorites", "crm_permissions", "crm_meta_forms", "crm_tag_definitions", "crm_settings",
+  "crm_lead_comments", "crm_lead_tags", "crm_lead_favorites", "crm_opportunities", "crm_units", "crm_permissions", "crm_meta_forms", "crm_tag_definitions", "crm_settings", "crm_meta_lead_health", "crm_meta_conversion_events",
   "crm_pipeline_statuses", "crm_projects", "crm_base_sources", "crm_audit_logs", "crm_access_logs", "crm_integration_logs",
-  "crm_fup_lead_logs", "crm_lead_status_movements", "crm_sam_events", "crm_lev_sales", "crm_lev_receipts", "crm_lev_settlements", "crm_knowledge_articles", "crm_leads", "crm_users"
+  "crm_fup_lead_logs", "crm_lead_status_movements", "crm_sam_events", "crm_lev_sales", "crm_lev_receipts", "crm_lev_settlements", "crm_sml_authorization_links", "crm_sml_sales", "crm_sml_receipts", "crm_sml_settlements", "crm_knowledge_articles", "crm_leads", "crm_users"
 ];
 
 const STRUCTURED_DATASETS = [
   { key: "users", tables: ["crm_users"] },
   { key: "leads", tables: ["crm_leads"] },
+  { key: "opportunities", tables: ["crm_opportunities"] },
+  { key: "units", tables: ["crm_units"] },
   { key: "comments", tables: ["crm_lead_comments"] },
   { key: "tags", tables: ["crm_lead_tags"] },
   { key: "tagDefinitions", tables: ["crm_tag_definitions"] },
@@ -4876,10 +4878,14 @@ async function clearStructuredTable(sql, table) {
   if (table === "crm_lead_comments") return sql`DELETE FROM crm_lead_comments`;
   if (table === "crm_lead_tags") return sql`DELETE FROM crm_lead_tags`;
   if (table === "crm_lead_favorites") return sql`DELETE FROM crm_lead_favorites`;
+  if (table === "crm_opportunities") return sql`DELETE FROM crm_opportunities`;
+  if (table === "crm_units") return sql`DELETE FROM crm_units`;
   if (table === "crm_permissions") return sql`DELETE FROM crm_permissions`;
   if (table === "crm_meta_forms") return sql`DELETE FROM crm_meta_forms`;
   if (table === "crm_tag_definitions") return sql`DELETE FROM crm_tag_definitions`;
   if (table === "crm_settings") return sql`DELETE FROM crm_settings`;
+  if (table === "crm_meta_lead_health") return sql`DELETE FROM crm_meta_lead_health`;
+  if (table === "crm_meta_conversion_events") return sql`DELETE FROM crm_meta_conversion_events`;
   if (table === "crm_pipeline_statuses") return sql`DELETE FROM crm_pipeline_statuses`;
   if (table === "crm_projects") return sql`DELETE FROM crm_projects`;
   if (table === "crm_base_sources") return sql`DELETE FROM crm_base_sources`;
@@ -4892,6 +4898,10 @@ async function clearStructuredTable(sql, table) {
   if (table === "crm_lev_sales") return sql`DELETE FROM crm_lev_sales`;
   if (table === "crm_lev_receipts") return sql`DELETE FROM crm_lev_receipts`;
   if (table === "crm_lev_settlements") return sql`DELETE FROM crm_lev_settlements`;
+  if (table === "crm_sml_authorization_links") return sql`DELETE FROM crm_sml_authorization_links`;
+  if (table === "crm_sml_sales") return sql`DELETE FROM crm_sml_sales`;
+  if (table === "crm_sml_receipts") return sql`DELETE FROM crm_sml_receipts`;
+  if (table === "crm_sml_settlements") return sql`DELETE FROM crm_sml_settlements`;
   if (table === "crm_knowledge_articles") return sql`DELETE FROM crm_knowledge_articles`;
   if (table === "crm_leads") return sql`DELETE FROM crm_leads`;
   if (table === "crm_users") return sql`DELETE FROM crm_users`;
@@ -4913,6 +4923,8 @@ async function countStructuredTable(sql, table) {
   if (table === "crm_lead_comments") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lead_comments`)[0]?.count || 0;
   if (table === "crm_lead_tags") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lead_tags`)[0]?.count || 0;
   if (table === "crm_lead_favorites") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lead_favorites`)[0]?.count || 0;
+  if (table === "crm_opportunities") return (await sql`SELECT COUNT(*)::int AS count FROM crm_opportunities`)[0]?.count || 0;
+  if (table === "crm_units") return (await sql`SELECT COUNT(*)::int AS count FROM crm_units`)[0]?.count || 0;
   if (table === "crm_tag_definitions") return (await sql`SELECT COUNT(*)::int AS count FROM crm_tag_definitions`)[0]?.count || 0;
   if (table === "crm_pipeline_statuses") return (await sql`SELECT COUNT(*)::int AS count FROM crm_pipeline_statuses`)[0]?.count || 0;
   if (table === "crm_projects") return (await sql`SELECT COUNT(*)::int AS count FROM crm_projects`)[0]?.count || 0;
@@ -5100,25 +5112,65 @@ function levSaleFromSamLead(lead, event, fields = {}, settings = {}) {
   };
 }
 
-async function upsertStructuredLevSaleFromSam(sql, lead, event, fields = {}) {
-  if (!isContractSignedPipelineStatus(lead.status)) return null;
-  const stateDb = await structuredLevFinanceDb(sql);
-  const sale = levSaleFromSamLead(lead, event, fields, stateDb.levFinance.settings || {});
+async function upsertStructuredLevSaleFromSam(sql, lead, event, fields = {}, opportunity = null) {
+  if (!isContractSignedPipelineStatus(opportunity?.status || lead.status)) return null;
+  const settingsRows = await sql`SELECT payload FROM crm_settings WHERE key = 'levFinanceSettings' LIMIT 1`;
+  const settings = normalizeLevFinanceSettingsPayload(settingsRows[0]?.payload || {});
+  const opportunityFields = {
+    ...fields,
+    unit: filledSamValue(opportunity?.unitSamCode, opportunity?.unit, fields.unit, event.unit),
+    desiredUnit: filledSamValue(opportunity?.unit, opportunity?.unitSamCode, fields.desiredUnit, event.unit),
+    project: filledSamValue(opportunity?.project, fields.project, event.project),
+    unitValue: filledSamValue(opportunity?.unitValue, fields.unitValue, event.rawContractValue, event.contractValue),
+    contractValue: filledSamValue(opportunity?.unitValue, fields.contractValue, event.rawContractValue, event.contractValue),
+    signedAt: filledSamValue(opportunity?.contractSignedAt, fields.signedAt, event.eventDatetime)
+  };
+  const sale = levSaleFromSamLead(lead, event, opportunityFields, settings);
   if (!sale) return null;
   const unit = normalizeLevUnit(sale.unit);
-  const existing = stateDb.levFinance.sales.find((item) => normalizeLevUnit(item.unit) === unit);
+  const existingRows = await sql`SELECT * FROM crm_lev_sales WHERE upper(unit) = ${unit} ORDER BY signed_at DESC NULLS LAST LIMIT 1`;
+  const existing = existingRows.length ? levFinancePayloadFromRow(existingRows[0]) : null;
+  const savedSale = existing ? { ...existing } : sale;
   if (existing) {
     for (const [key, value] of Object.entries(sale)) {
-      if (value !== "" && value !== 0 && value !== null && value !== undefined) existing[key] = value;
+      if (value !== "" && value !== 0 && value !== null && value !== undefined) savedSale[key] = value;
     }
-    existing.updatedAt = new Date().toISOString();
-    upsertLevSettlement(stateDb, existing, existing.status || "Assinado", "Contrato assinado via SAM");
-  } else {
-    stateDb.levFinance.sales.unshift(sale);
-    upsertLevSettlement(stateDb, sale, "Assinado", "Contrato assinado via SAM");
+    savedSale.updatedAt = new Date().toISOString();
   }
-  await persistStructuredLevFinance(sql, stateDb.levFinance);
-  return existing || sale;
+  await saveStructuredLevSale(sql, savedSale);
+  const settlementRows = await sql`SELECT * FROM crm_lev_settlements WHERE upper(unit) = ${unit} ORDER BY signed_at DESC NULLS LAST LIMIT 1`;
+  const settlementDb = { levFinance: { settlements: settlementRows.length ? [levFinancePayloadFromRow(settlementRows[0])] : [] } };
+  upsertLevSettlement(settlementDb, savedSale, settlementDb.levFinance.settlements[0]?.status || "Assinado", "Contrato assinado via SAM");
+  await saveStructuredLevSettlement(sql, settlementDb.levFinance.settlements[0]);
+  return savedSale;
+}
+
+async function reconcileStructuredSignedOpportunitiesToLev(sql) {
+  const rows = await sql`SELECT o.*, l.name AS lead_name, l.payload AS lead_payload
+    FROM crm_opportunities o
+    JOIN crm_leads l ON l.id = o.lead_id
+    WHERE COALESCE(NULLIF(o.unit_sam_code, ''), NULLIF(o.unit, '')) IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM crm_lev_sales s
+        WHERE upper(s.unit) = upper(COALESCE(NULLIF(o.unit_sam_code, ''), o.unit))
+      )`;
+  let created = 0;
+  for (const row of rows) {
+    const opportunity = structuredOpportunityFromRow(row);
+    if (!isContractSignedPipelineStatus(opportunity.status)) continue;
+    const lead = { ...(row.lead_payload || {}), id: opportunity.leadId, name: row.lead_name || row.lead_payload?.name || "", status: opportunity.status };
+    const event = {
+      eventId: `reconcile-${opportunity.id}`,
+      eventDatetime: opportunity.contractSignedAt || opportunity.updatedAt || new Date().toISOString(),
+      unit: opportunity.unitSamCode || opportunity.unit,
+      project: opportunity.project || "",
+      rawContractValue: opportunity.unitValue || "",
+      contractValue: parseMoney(opportunity.unitValue || "")
+    };
+    const sale = await upsertStructuredLevSaleFromSam(sql, lead, event, {}, opportunity);
+    if (sale) created += 1;
+  }
+  return created;
 }
 
 async function mirrorLevSaleToStructuredLead(sql, sale) {
@@ -5509,6 +5561,9 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
     if (fields.unitValue || event.rawContractValue || event.contractValue) opportunity.unitValue = fields.unitValue || event.rawContractValue || String(event.contractValue || "");
     opportunity.updatedAt = new Date().toISOString();
   }
+  if (isContractSignedPipelineStatus(nextStatus)) {
+    opportunity.contractSignedAt = filledSamValue(event.eventDatetime, opportunity.contractSignedAt, new Date().toISOString());
+  }
   lead.status = nextStatus;
   lead.inPipeline = true;
   const shouldApplySamOpportunityFieldsToLead = shouldLinkLeadDirect || (!requestedOpportunityId && !shouldCreateOpportunity);
@@ -5535,7 +5590,7 @@ async function applyStructuredSamEventToLead(sql, user, event, lead, fields = {}
   lead.opportunities = existingOpportunities.map((item) => item.id === opportunity.id ? opportunity : item);
   await saveStructuredLead(sql, lead);
   await upsertStructuredUnitFromLeadSam(sql, lead, event, projectDefinitions);
-  const levSale = await upsertStructuredLevSaleFromSam(sql, lead, event, fields);
+  const levSale = await upsertStructuredLevSaleFromSam(sql, lead, event, fields, opportunity);
   await saveStructuredSamEvent(sql, event);
   await recordStructuredLeadStatusMovement(sql, {
     actor: user,
@@ -6411,6 +6466,7 @@ async function structuredBackupDb(sql) {
   const [
     userRows,
     leadRows,
+    opportunityRows,
     commentRows,
     tagRows,
     favoriteRows,
@@ -6429,10 +6485,17 @@ async function structuredBackupDb(sql) {
     articleRows,
     unitRows,
     settings,
-    finance
+    finance,
+    smlSaleRows,
+    smlReceiptRows,
+    smlSettlementRows,
+    smlAuthorizationRows,
+    metaHealthRows,
+    metaConversionRows
   ] = await Promise.all([
     sql`SELECT * FROM crm_users ORDER BY name ASC, username ASC`,
     sql`SELECT * FROM crm_leads ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST`,
+    sql`SELECT * FROM crm_opportunities ORDER BY lead_id ASC, created_at ASC NULLS LAST, id ASC`,
     sql`SELECT lead_id, payload FROM crm_lead_comments ORDER BY created_at DESC NULLS LAST`,
     sql`SELECT lead_id, tag_id FROM crm_lead_tags ORDER BY lead_id ASC, tag_id ASC`,
     sql`SELECT lead_id, user_id, favorite FROM crm_lead_favorites ORDER BY lead_id ASC, user_id ASC`,
@@ -6451,7 +6514,13 @@ async function structuredBackupDb(sql) {
     sql`SELECT payload FROM crm_knowledge_articles ORDER BY updated_at DESC NULLS LAST, title ASC`,
     sql`SELECT * FROM crm_units ORDER BY project ASC, block ASC NULLS LAST, floor ASC NULLS LAST, stack ASC NULLS LAST, unit ASC`,
     structuredSettingsMap(sql),
-    structuredLevFinanceDb(sql)
+    structuredLevFinanceDb(sql),
+    sql`SELECT * FROM crm_sml_sales ORDER BY unit ASC`,
+    sql`SELECT * FROM crm_sml_receipts ORDER BY paid_at DESC NULLS LAST, unit ASC`,
+    sql`SELECT * FROM crm_sml_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC`,
+    sql`SELECT * FROM crm_sml_authorization_links ORDER BY expires_at DESC`,
+    sql`SELECT * FROM crm_meta_lead_health ORDER BY project ASC`,
+    sql`SELECT * FROM crm_meta_conversion_events ORDER BY created_at DESC`
   ]);
   const commentsByLead = new Map();
   for (const row of commentRows) {
@@ -6469,10 +6538,17 @@ async function structuredBackupDb(sql) {
     if (!favoritesByLead.has(row.lead_id)) favoritesByLead.set(row.lead_id, {});
     favoritesByLead.get(row.lead_id)[row.user_id] = row.favorite !== false;
   }
+  const opportunities = opportunityRows.map(structuredOpportunityFromRow).filter((opportunity) => opportunity.id && opportunity.leadId);
+  const opportunitiesByLead = opportunities.reduce((map, opportunity) => {
+    if (!map.has(opportunity.leadId)) map.set(opportunity.leadId, []);
+    map.get(opportunity.leadId).push(opportunity);
+    return map;
+  }, new Map());
   const leads = leadRows.map((row) => {
     const lead = structuredLeadFromRow(row, false, tagsByLead.get(row.id) || []);
     lead.comments = commentsByLead.get(row.id) || lead.comments || [];
     lead.favoritesByUser = favoritesByLead.get(row.id) || lead.favoritesByUser || {};
+    lead.opportunities = opportunitiesByLead.get(row.id) || [];
     return lead;
   }).filter((lead) => lead.id);
   const forms = formRows.map((row) => row.payload || {}).filter((form) => form.id);
@@ -6500,10 +6576,12 @@ async function structuredBackupDb(sql) {
     roles: ROLES,
     users: userRows.map(structuredUserFromAuthRow).filter((user) => user?.id),
     leads,
+    opportunities,
     projects: projectDefinitions.map((project) => project.name),
     projectDefinitions,
     unitDefinitions,
     availabilitySettings: normalizeAvailabilitySettings(settings.availabilitySettings || {}),
+    structuredSettings: settings,
     pipelineStatuses: statusDefinitions.map((status) => status.status),
     statusDefinitions,
     tagDefinitions: tagDefinitionRows.map((row) => row.payload || {}).filter((tag) => tag.id),
@@ -6527,6 +6605,18 @@ async function structuredBackupDb(sql) {
     leadStatusMovements: movementRows.map((row) => row.payload || {}).filter((item) => item.id),
     samEvents: samRows.map(samEventFromRow).filter((event) => event.id),
     levFinance: finance.levFinance,
+    smlFinance: {
+      settings: settings.smlFinanceSettings || {},
+      sales: smlSaleRows.map((row) => row.payload || {}).filter((item) => item.id),
+      receipts: smlReceiptRows.map((row) => row.payload || {}).filter((item) => item.id),
+      settlements: smlSettlementRows.map((row) => row.payload || {}).filter((item) => item.id),
+      authorizationLinks: smlAuthorizationRows,
+      rawSales: smlSaleRows,
+      rawReceipts: smlReceiptRows,
+      rawSettlements: smlSettlementRows
+    },
+    metaLeadHealth: metaHealthRows,
+    metaConversionEvents: metaConversionRows,
     importSummary: { origin: "STRUCTURED_BACKUP", leadCount: leads.length, inactiveBrokerCount: 0 }
   };
   ensurePermissions(db);
@@ -6550,12 +6640,19 @@ function backupRecordCounts(db = {}) {
   return {
     users: Array.isArray(db.users) ? db.users.length : 0,
     leads: Array.isArray(db.leads) ? db.leads.length : 0,
+    opportunities: Array.isArray(db.opportunities) ? db.opportunities.length : (db.leads || []).reduce((sum, lead) => sum + (Array.isArray(lead.opportunities) ? lead.opportunities.length : 0), 0),
+    units: Array.isArray(db.unitDefinitions) ? db.unitDefinitions.length : 0,
     comments: Array.isArray(db.leads) ? db.leads.reduce((sum, lead) => sum + (Array.isArray(lead.comments) ? lead.comments.length : 0), 0) : 0,
     auditLog: Array.isArray(db.auditLog) ? db.auditLog.length : 0,
     integrationLog: Array.isArray(db.integrationLog) ? db.integrationLog.length : 0,
+    accessLog: Array.isArray(db.accessLog) ? db.accessLog.length : 0,
     fupLeadLog: Array.isArray(db.fupLeadLog) ? db.fupLeadLog.length : 0,
     leadStatusMovements: Array.isArray(db.leadStatusMovements) ? db.leadStatusMovements.length : 0,
     levSales: Array.isArray(db.levFinance?.sales) ? db.levFinance.sales.length : 0,
+    smlSales: Array.isArray(db.smlFinance?.rawSales) ? db.smlFinance.rawSales.length : 0,
+    smlAuthorizationLinks: Array.isArray(db.smlFinance?.authorizationLinks) ? db.smlFinance.authorizationLinks.length : 0,
+    metaLeadHealth: Array.isArray(db.metaLeadHealth) ? db.metaLeadHealth.length : 0,
+    metaConversionEvents: Array.isArray(db.metaConversionEvents) ? db.metaConversionEvents.length : 0,
     samEvents: Array.isArray(db.samEvents) ? db.samEvents.length : 0,
     knowledgeArticles: Array.isArray(db.knowledgeArticles) ? db.knowledgeArticles.length : 0
   };
@@ -6579,6 +6676,8 @@ function validateStructuredBackupEnvelope(envelope = {}) {
     warnings.push("Nenhum Admin TI ativo encontrado no backup.");
   }
   if (Array.isArray(db.leads) && !db.leads.length) warnings.push("Backup sem leads.");
+  if (!Array.isArray(db.unitDefinitions)) warnings.push("Backup legado sem unidades do quadro de disponibilidade.");
+  if (!Array.isArray(db.opportunities) && !(db.leads || []).some((lead) => Array.isArray(lead.opportunities))) warnings.push("Backup legado sem oportunidades separadas.");
   let json = "";
   try {
     json = JSON.stringify(envelope);
@@ -8524,6 +8623,10 @@ async function fastStructuredStateResponse(req, res, url) {
     await ensureStructuredSchemaOnce(sql);
     const user = await structuredUserFromSession(req, res, sql);
     if (!user) return true;
+    if (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) {
+      await reconcileStructuredSignedOpportunitiesToLev(sql).catch((error) => mirrorStructuredError("lev-opportunity-reconciliation", error));
+    }
+    await ensureStructuredAvailabilityUnits(sql).catch((error) => mirrorStructuredError("availability-unit-recovery", error));
     const [
       configBundle,
       integrationRows,
@@ -9938,6 +10041,23 @@ function generatedUnitsForBlock(projectDefinition = {}, blockDefinition = {}) {
   return units;
 }
 
+async function ensureStructuredAvailabilityUnits(sql) {
+  const countRows = await sql`SELECT COUNT(*)::int AS count FROM crm_units`;
+  if (Number(countRows[0]?.count || 0) > 0) return 0;
+  const projectDefinitions = await structuredProjectDefinitions(sql);
+  let created = 0;
+  for (const project of projectDefinitions) {
+    for (const block of project.blocks || []) {
+      for (const unit of generatedUnitsForBlock(project, block)) {
+        await saveStructuredUnit(sql, unit, projectDefinitions);
+        created += 1;
+      }
+    }
+  }
+  if (created) await importStructuredLevSalesToUnits(sql);
+  return created;
+}
+
 function saleSignedAtIsoForUnit(record = {}) {
   const date = parseBrazilDate(record.signedAt || record.assinatura || record.signatureDate || record.contractSignedAt);
   return date && !Number.isNaN(date.getTime()) ? date.toISOString() : "";
@@ -11038,6 +11158,22 @@ async function insertStructuredDataset(sql, db, key) {
       await sql`INSERT INTO crm_leads (id, name, email, phone, source, source_status, odysseia_status, assistant, external_id, status, in_pipeline, assigned_to, assigned_name, project, unit, unit_value, base_source_before_pipeline, previous_pipeline_source, created_at, updated_at, payload) VALUES (${lead.id}, ${lead.name || ""}, ${lead.email || ""}, ${lead.phone || ""}, ${fields.source}, ${fields.sourceStatus}, ${fields.odysseiaStatus}, ${fields.assistant}, ${fields.externalId}, ${lead.status || ""}, ${Boolean(lead.inPipeline)}, ${lead.assignedTo || null}, ${lead.assignedName || ""}, ${fields.project}, ${fields.unit}, ${fields.unitValue}, ${fields.baseSourceBeforePipeline}, ${fields.previousPipelineSource}, ${dbDate(lead.createdAt || lead.meta?.createdTime)}, ${dbDate(lead.updatedAt)}, ${JSON.stringify(lead)}::jsonb)`;
       summary.leads += 1;
     }
+  } else if (key === "opportunities") {
+    const candidates = [
+      ...(Array.isArray(db.opportunities) ? db.opportunities : []),
+      ...(db.leads || []).flatMap((lead) => (lead.opportunities || []).map((opportunity) => ({ ...opportunity, leadId: opportunity.leadId || lead.id })))
+    ];
+    const opportunities = [...new Map(candidates.filter((item) => item?.id && item?.leadId).map((item) => [item.id, item])).values()];
+    for (const opportunity of opportunities) {
+      await saveStructuredOpportunity(sql, opportunity);
+      summary.opportunities += 1;
+    }
+  } else if (key === "units") {
+    const projectDefinitions = Array.isArray(db.projectDefinitions) ? db.projectDefinitions : [];
+    for (const unit of db.unitDefinitions || db.units || []) {
+      await saveStructuredUnit(sql, unit, projectDefinitions);
+      summary.units += 1;
+    }
   } else if (key === "comments") {
     for (const lead of db.leads || []) {
       for (const comment of lead.comments || []) {
@@ -11226,7 +11362,7 @@ async function syncStructuredDb(db, actor) {
   await ensureStructuredSchemaOnce(sql);
   const runId = crypto.randomUUID();
   await sql`INSERT INTO crm_structured_sync_runs (id, status, summary) VALUES (${runId}, 'running', '{}'::jsonb)`;
-  const summary = { users: 0, leads: 0, comments: 0, tags: 0, tagDefinitions: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, settings: 0, permissions: 0, auditLogs: 0, integrationLogs: 0, fupLeadLogs: 0, leadStatusMovements: 0, samEvents: 0, levSales: 0, levReceipts: 0, levSettlements: 0, knowledgeArticles: 0 };
+  const summary = { users: 0, leads: 0, opportunities: 0, units: 0, comments: 0, tags: 0, tagDefinitions: 0, favorites: 0, statuses: 0, projects: 0, baseSources: 0, metaForms: 0, settings: 0, permissions: 0, auditLogs: 0, accessLogs: 0, integrationLogs: 0, fupLeadLogs: 0, leadStatusMovements: 0, samEvents: 0, levSales: 0, levReceipts: 0, levSettlements: 0, smlSales: 0, smlReceipts: 0, smlSettlements: 0, smlAuthorizationLinks: 0, metaLeadHealth: 0, metaConversionEvents: 0, knowledgeArticles: 0 };
   try {
     ensurePermissions(db);
     await clearStructuredTables(sql);
@@ -11251,6 +11387,15 @@ async function syncStructuredDb(db, actor) {
         summary.favorites += 1;
       }
     }
+    const opportunityCandidates = [
+      ...(Array.isArray(db.opportunities) ? db.opportunities : []),
+      ...(db.leads || []).flatMap((lead) => Array.isArray(lead.opportunities) ? lead.opportunities : [])
+    ];
+    const opportunitiesById = new Map(opportunityCandidates.filter((opportunity) => opportunity?.id && opportunity?.leadId).map((opportunity) => [opportunity.id, opportunity]));
+    for (const opportunity of opportunitiesById.values()) {
+      await saveStructuredOpportunity(sql, opportunity);
+      summary.opportunities += 1;
+    }
     const statusDefinitions = Array.isArray(db.statusDefinitions) && db.statusDefinitions.length
       ? db.statusDefinitions
       : (db.pipelineStatuses || []).map((status, position) => ({ status, position }));
@@ -11269,6 +11414,10 @@ async function syncStructuredDb(db, actor) {
       await sql`INSERT INTO crm_projects (name, position, payload) VALUES (${project.name}, ${position}, ${JSON.stringify(project)}::jsonb)`;
       summary.projects += 1;
     }
+    for (const unit of db.unitDefinitions || []) {
+      await saveStructuredUnit(sql, unit, projectDefinitions);
+      summary.units += 1;
+    }
     for (const tag of db.tagDefinitions || []) {
       await sql`INSERT INTO crm_tag_definitions (id, name, color, payload) VALUES (${tag.id}, ${tag.name || ""}, ${tag.color || "#475467"}, ${JSON.stringify(tag)}::jsonb) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, color = EXCLUDED.color, payload = EXCLUDED.payload`;
       summary.tagDefinitions += 1;
@@ -11282,10 +11431,12 @@ async function syncStructuredDb(db, actor) {
       summary.metaForms += 1;
     }
     for (const [keyName, payload] of Object.entries({
+      ...(db.structuredSettings && typeof db.structuredSettings === "object" ? db.structuredSettings : {}),
       integrations: db.integrations || {},
       levFinanceSettings: db.levFinance?.settings || {},
       baseAccess: db.baseAccess || {},
-      knowledgeChatSessions: db.knowledgeChatSessions || []
+      knowledgeChatSessions: db.knowledgeChatSessions || [],
+      availabilitySettings: db.availabilitySettings || normalizeAvailabilitySettings({})
     })) {
       await sql`INSERT INTO crm_settings (key, payload, updated_at) VALUES (${keyName}, ${JSON.stringify(payload)}::jsonb, now()) ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`;
       summary.settings += 1;
@@ -11302,6 +11453,10 @@ async function syncStructuredDb(db, actor) {
     for (const [index, item] of (db.auditLog || []).entries()) {
       await sql`INSERT INTO crm_audit_logs (id, at, actor, actor_name, action, details, payload) VALUES (${logRowId("audit", item, index)}, ${dbDate(item.at)}, ${item.actor || ""}, ${item.actorName || ""}, ${item.action || ""}, ${JSON.stringify(item.details || {})}::jsonb, ${JSON.stringify(item)}::jsonb)`;
       summary.auditLogs += 1;
+    }
+    for (const [index, item] of (db.accessLog || []).entries()) {
+      await sql`INSERT INTO crm_access_logs (id, at, actor, actor_name, role, action, details, ip, user_agent, payload) VALUES (${logRowId("access", item, index)}, ${dbDate(item.at)}, ${item.actor || ""}, ${item.actorName || ""}, ${item.role || ""}, ${item.action || ""}, ${JSON.stringify(item.details || {})}::jsonb, ${item.ip || ""}, ${item.userAgent || ""}, ${JSON.stringify(item)}::jsonb)`;
+      summary.accessLogs += 1;
     }
     for (const [index, item] of (db.integrationLog || []).entries()) {
       await sql`INSERT INTO crm_integration_logs (id, at, provider, action, details, payload) VALUES (${logRowId("integration", item, index)}, ${dbDate(item.at)}, ${item.provider || ""}, ${item.action || ""}, ${JSON.stringify(item.details || {})}::jsonb, ${JSON.stringify(item)}::jsonb)`;
@@ -11348,6 +11503,30 @@ async function syncStructuredDb(db, actor) {
       await saveStructuredLevSettlement(sql, settlement);
       summary.levSettlements += 1;
     }
+    for (const row of db.smlFinance?.rawSales || []) {
+      await sql`INSERT INTO crm_sml_sales (id, unit, client, signed_at, contract_value, signal_value, financing_value, commission_value, realtor_company, zero_entry, status, nf_number, paid_at, payload) VALUES (${row.id}, ${row.unit || ""}, ${row.client || ""}, ${dbDate(row.signed_at)}, ${Number(row.contract_value || 0)}, ${Number(row.signal_value || 0)}, ${Number(row.financing_value || 0)}, ${Number(row.commission_value || 0)}, ${row.realtor_company || ""}, ${Boolean(row.zero_entry)}, ${row.status || ""}, ${row.nf_number || ""}, ${dbDate(row.paid_at)}, ${JSON.stringify(row.payload || {})}::jsonb)`;
+      summary.smlSales += 1;
+    }
+    for (const row of db.smlFinance?.rawReceipts || []) {
+      await sql`INSERT INTO crm_sml_receipts (id, unit, amount, paid_at, payload) VALUES (${row.id}, ${row.unit || ""}, ${Number(row.amount || 0)}, ${dbDate(row.paid_at)}, ${JSON.stringify(row.payload || {})}::jsonb)`;
+      summary.smlReceipts += 1;
+    }
+    for (const row of db.smlFinance?.rawSettlements || []) {
+      await sql`INSERT INTO crm_sml_settlements (id, unit, client, signed_at, contract_value, commission_value, realtor_company, status, nf_number, paid_at, payload) VALUES (${row.id}, ${row.unit || ""}, ${row.client || ""}, ${dbDate(row.signed_at)}, ${Number(row.contract_value || 0)}, ${Number(row.commission_value || 0)}, ${row.realtor_company || ""}, ${row.status || ""}, ${row.nf_number || ""}, ${dbDate(row.paid_at)}, ${JSON.stringify(row.payload || {})}::jsonb)`;
+      summary.smlSettlements += 1;
+    }
+    for (const row of db.smlFinance?.authorizationLinks || []) {
+      await sql`INSERT INTO crm_sml_authorization_links (id, token_hash, email, password_hash, sale_ids, expires_at, confirmed_at, payload) VALUES (${row.id}, ${row.token_hash}, ${row.email}, ${row.password_hash}, ${JSON.stringify(row.sale_ids || [])}::jsonb, ${dbDate(row.expires_at)}, ${dbDate(row.confirmed_at)}, ${JSON.stringify(row.payload || {})}::jsonb)`;
+      summary.smlAuthorizationLinks += 1;
+    }
+    for (const row of db.metaLeadHealth || []) {
+      await sql`INSERT INTO crm_meta_lead_health (project, last_lead_at, average_gap_minutes, current_gap_minutes, sample_size, status, alerted_at, updated_at, payload) VALUES (${row.project}, ${dbDate(row.last_lead_at)}, ${Number(row.average_gap_minutes || 0)}, ${Number(row.current_gap_minutes || 0)}, ${Number(row.sample_size || 0)}, ${row.status || "ok"}, ${dbDate(row.alerted_at)}, ${dbDate(row.updated_at)}, ${JSON.stringify(row.payload || {})}::jsonb)`;
+      summary.metaLeadHealth += 1;
+    }
+    for (const row of db.metaConversionEvents || []) {
+      await sql`INSERT INTO crm_meta_conversion_events (id, lead_id, source_type, source_key, event_id, event_name, status, attempts, last_error, payload, response, created_at, sent_at) VALUES (${row.id}, ${row.lead_id}, ${row.source_type}, ${row.source_key}, ${row.event_id}, ${row.event_name}, ${row.status || "pending"}, ${Number(row.attempts || 0)}, ${row.last_error || null}, ${JSON.stringify(row.payload || {})}::jsonb, ${JSON.stringify(row.response || {})}::jsonb, ${dbDate(row.created_at)}, ${dbDate(row.sent_at)})`;
+      summary.metaConversionEvents += 1;
+    }
     for (const article of db.knowledgeArticles || []) {
       await sql`INSERT INTO crm_knowledge_articles (id, title, category, published, updated_at, payload) VALUES (${article.id}, ${article.title || ""}, ${article.category || ""}, ${article.published !== false}, ${dbDate(article.updatedAt)}, ${JSON.stringify(article)}::jsonb)`;
       summary.knowledgeArticles += 1;
@@ -11368,7 +11547,7 @@ async function structuredDbDiagnostics(db) {
   await ensureStructuredSchemaOnce(sql);
   const count = (table) => countStructuredTable(sql, table);
   const structured = {
-    users: await count("crm_users"), leads: await count("crm_leads"), comments: await count("crm_lead_comments"),
+    users: await count("crm_users"), leads: await count("crm_leads"), opportunities: await count("crm_opportunities"), units: await count("crm_units"), comments: await count("crm_lead_comments"),
     tags: await count("crm_lead_tags"), favorites: await count("crm_lead_favorites"), statuses: await count("crm_pipeline_statuses"),
     tagDefinitions: await count("crm_tag_definitions"), projects: await count("crm_projects"), baseSources: await count("crm_base_sources"), metaForms: await count("crm_meta_forms"),
     settings: await count("crm_settings"),
@@ -11382,6 +11561,8 @@ async function structuredDbDiagnostics(db) {
     json = {
       users: (db.users || []).length,
       leads: (db.leads || []).length,
+      opportunities: Array.isArray(db.opportunities) ? db.opportunities.length : (db.leads || []).reduce((total, lead) => total + (lead.opportunities || []).length, 0),
+      units: (db.unitDefinitions || []).length,
       comments: (db.leads || []).reduce((total, lead) => total + (lead.comments || []).length, 0),
       tags: (db.leads || []).reduce((total, lead) => total + (lead.tags || lead.tagIds || []).length, 0),
       tagDefinitions: (db.tagDefinitions || []).length,

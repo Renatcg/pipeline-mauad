@@ -1058,7 +1058,7 @@ function allCommercialSales() {
     const opportunities = realLeadOpportunities(lead);
     const items = opportunities.length ? opportunities : [implicitLeadOpportunity(lead)];
     items
-      .filter((item) => lead.inPipeline && isContractSignedStatus(item.status || lead.status))
+      .filter((item) => (opportunities.length ? item.inPipeline !== false : lead.inPipeline) && isContractSignedStatus(item.status || lead.status))
       .forEach((item) => add({
         ...lead,
         ...item,
@@ -1068,7 +1068,7 @@ function allCommercialSales() {
         unit: item.unitSamCode || item.unit || lead.unit || lead.desiredUnit || "",
         desiredUnit: item.unit || item.unitSamCode || lead.desiredUnit || "",
         project: item.project || leadProjectValue(lead),
-        contractValue: item.contractValue || item.unitValue || lead.contractValue || lead.unitValue || lead.value || "",
+        contractValue: item.contractValue || item.unitValue || item.saleValue || item.value || lead.contractValue || lead.unitValue || lead.saleValue || lead.value || "",
         signedAt: item.contractSignedAt || item.signedAt || leadContractSignedAt(lead) || item.updatedAt
       }));
   });
@@ -4461,7 +4461,7 @@ function renderMonthlySalesChart(sales) {
       <div class="panel-title-row">
         <div>
           <h2>Curva de Vendas</h2>
-          <p class="muted-copy">Fonte: leads do pipeline em Contrato Assinado, pela data de assinatura do contrato.</p>
+          <p class="muted-copy">Fonte: oportunidades em Contrato Assinado, pela data de assinatura do contrato.</p>
         </div>
         <span>${escapeHtml(String(year))}</span>
       </div>
