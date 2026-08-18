@@ -4016,16 +4016,13 @@ function renderLeadInterest(project, lead) {
   const opportunities = realLeadOpportunities(lead);
   const displayed = opportunities.length ? opportunities : [implicitLeadOpportunity(lead)];
   const opportunityFields = (opportunity) => `
-    <div class="opportunity-fields">
+    <form id="opportunity-value-${escapeHtml(opportunity.id || "")}" class="opportunity-fields" data-opportunity-value-form="${escapeHtml(opportunity.id || "")}">
       <div class="field"><label>Empreendimento</label><input readonly value="${escapeHtml(opportunity.project || project || "Sem empreendimento")}"></div>
       <div class="field"><label>Unidade</label><input readonly value="${escapeHtml(opportunity.unitSamCode || opportunity.unit || "Sem unidade")}"></div>
-      <form class="field opportunity-value-form" data-opportunity-value-form="${escapeHtml(opportunity.id || "")}">
-        <label>Valor da unidade</label>
-        <div class="inline-field-action"><input name="unitValue" inputmode="decimal" value="${escapeHtml(opportunity.unitValue || "")}" ${canManageLeads() ? "" : "readonly"}>${canManageLeads() ? '<button class="tiny primary" type="submit">Salvar</button>' : ""}</div>
-      </form>
+      <div class="field"><label>Valor da unidade</label><input class="currency-input" name="unitValue" inputmode="numeric" value="${escapeHtml(opportunity.unitValue || "")}" ${canManageLeads() ? "" : "readonly"}></div>
       <div class="field"><label>Status</label><input readonly value="${escapeHtml(opportunity.status || lead.status || "Sem status")}"></div>
       <div class="field"><label>Corretor</label><input readonly value="${escapeHtml(opportunity.assignedName || "Sem corretor")}"></div>
-    </div>
+    </form>
   `;
   return `
     <div class="panel">
@@ -4036,7 +4033,7 @@ function renderLeadInterest(project, lead) {
       <div class="opportunity-list">
         ${displayed.map((opportunity, index) => `
           <article class="opportunity-row ${opportunity.implicit ? "implicit" : ""} ${opportunity.id && opportunity.id === state.selectedOpportunityId ? "selected" : ""}">
-            <strong><span class="opportunity-index">#${index + 1}</span>${escapeHtml(opportunity.project || project || "Sem empreendimento")}</strong>
+            <div class="opportunity-row-head"><strong><span class="opportunity-index">#${index + 1}</span>${escapeHtml(opportunity.project || project || "Sem empreendimento")}</strong>${opportunities.length && canManageLeads() ? `<button class="icon opportunity-save-icon" type="submit" form="opportunity-value-${escapeHtml(opportunity.id || "")}" title="Salvar oportunidade" aria-label="Salvar oportunidade"><span aria-hidden="true">✓</span></button>` : ""}</div>
             <span>${escapeHtml(opportunity.unitSamCode || opportunity.unit || "Sem unidade")} · ${escapeHtml(opportunity.status || lead.status || "Sem status")}</span>
             <small>${escapeHtml(opportunity.assignedName || "Sem corretor")}${displayed.length > 1 ? ` · #${index + 1}` : ""}</small>
             ${opportunities.length ? opportunityFields(opportunity) : ""}
@@ -4286,6 +4283,15 @@ function renderLeadDetail() {
     renderLeadDetail();
   });
   document.querySelectorAll("[data-opportunity-value-form]").forEach((formElement) => {
+    const currencyInput = formElement.querySelector(".currency-input");
+    const applyCurrencyMask = () => {
+      const digits = String(currencyInput?.value || "").replace(/\D/g, "");
+      currencyInput.value = digits ? (Number(digits) / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) : "";
+    };
+    if (currencyInput) {
+      currencyInput.value = numericMoneyValue(currencyInput.value).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+      currencyInput.addEventListener("input", applyCurrencyMask);
+    }
     formElement.addEventListener("submit", async (event) => {
       event.preventDefault();
       const opportunityId = event.currentTarget.dataset.opportunityValueForm;
