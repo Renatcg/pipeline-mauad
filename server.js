@@ -6714,7 +6714,12 @@ async function deliverBackupToDrive(settings, filename, envelope, validation) {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) return { sent: false, reason: data.error || data.message || `HTTP ${response.status}` };
-    return { sent: true, id: data.id || data.fileId || "", url: data.url || data.webViewLink || "" };
+    return {
+      sent: true,
+      id: data.id || data.fileId || "",
+      url: data.selectionUrl || data.webViewLink || data.url || data.alternateLink || "",
+      folderUrl: data.folderUrl || ""
+    };
   } catch (error) {
     return { sent: false, reason: externalFetchFailureReason("Google Drive", error) };
   }

@@ -8083,6 +8083,8 @@ function renderBackupSettings() {
   const lastRun = settings.lastRun || null;
   const validation = lastRun?.validation || {};
   const deliveries = lastRun?.deliveries || {};
+  const backupFileUrl = String(deliveries.googleDrive?.url || "").trim();
+  const hasBackupFileUrl = /^https?:\/\//i.test(backupFileUrl);
   const bytes = Number(validation.bytes || 0);
   const bytesLabel = bytes ? `${(bytes / 1024 / 1024).toLocaleString("pt-BR", { maximumFractionDigits: 2 })} MB` : "-";
   settingsLayout(`
@@ -8116,7 +8118,7 @@ function renderBackupSettings() {
         <div class="backup-status-grid">
           <div><strong>Status</strong><span class="${lastRun.status === "success" ? "status-active" : "chip-warning"}">${lastRun.status === "success" ? "OK" : "Falha"}</span></div>
           <div><strong>Gerado em</strong><span>${escapeHtml(dateTimeLabel(lastRun.at))}</span></div>
-          <div><strong>Arquivo</strong><span>${escapeHtml(lastRun.filename || "-")}</span></div>
+          <div><strong>Arquivo</strong><span>${hasBackupFileUrl ? `<a href="${escapeHtml(backupFileUrl)}" target="_blank" rel="noopener noreferrer" title="Abrir o arquivo no Google Drive">${escapeHtml(lastRun.filename || "-")}</a>` : escapeHtml(lastRun.filename || "-")}</span></div>
           <div><strong>Tamanho</strong><span>${escapeHtml(bytesLabel)}</span></div>
           <div><strong>Leads</strong><span>${Number(validation.counts?.leads || 0).toLocaleString("pt-BR")}</span></div>
           <div><strong>Checksum</strong><span class="mono-text">${escapeHtml(String(validation.checksum || "").slice(0, 18))}${validation.checksum ? "..." : ""}</span></div>
