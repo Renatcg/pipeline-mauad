@@ -2491,8 +2491,14 @@ function renderAvailability() {
     const units = projectUnits.filter((unit) => (unit.block || "1") === block);
     const blockDefinition = availabilityBlockDefinition(selectedProject, block);
     const isHorizontal = blockDefinition?.layoutType === "Horizontal";
-    const floors = [...new Set(units.map((unit) => unit.floor || ""))].sort(sortAlphaNumeric).reverse();
-    const columns = [...new Set(units.map((unit) => unit.column || ""))].sort(sortAlphaNumeric);
+    const configuredFloorCount = Number(blockDefinition?.floorCount || 0) + (blockDefinition?.hasPenthouse ? 1 : 0);
+    const configuredColumnCount = Number(blockDefinition?.columnCount || 0);
+    const floors = (configuredFloorCount
+      ? Array.from({ length: configuredFloorCount }, (_, index) => String(index + 1))
+      : [...new Set(units.map((unit) => unit.floor || ""))].filter(Boolean).sort(sortAlphaNumeric)).reverse();
+    const columns = configuredColumnCount
+      ? Array.from({ length: configuredColumnCount }, (_, index) => String(index + 1).padStart(2, "0"))
+      : [...new Set(units.map((unit) => unit.column || ""))].filter(Boolean).sort(sortAlphaNumeric);
     const structureLabel = availabilityBlockLabel(selectedProject, block);
     return `
       <section class="availability-block">
