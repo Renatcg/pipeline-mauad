@@ -7481,7 +7481,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
     }
 
     if (unitMatch && method === "DELETE") {
-      if (!canManagePipelineSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      if (user.role !== "Admin TI") return sendJson(res, 403, { error: "Exclusão permitida somente para Admin TI" });
       const unitId = decodeURIComponent(unitMatch[1]);
       const rows = await sql`SELECT project, unit FROM crm_units WHERE id = ${unitId} LIMIT 1`;
       if (!rows[0]) return notFound(res);
@@ -9944,11 +9944,16 @@ function normalizeUnitDefinition(input = {}) {
     floorPlanName: String(input.floorPlanName || "").trim(),
     floorPlanMime: String(input.floorPlanMime || "").trim(),
     floorPlanDataUrl: String(input.floorPlanDataUrl || "").trim(),
+    attachments: Array.isArray(input.attachments) ? input.attachments.filter((item) => item && item.name && item.dataUrl).map((item) => ({ id: String(item.id || `attachment-${crypto.randomUUID()}`), name: String(item.name || ""), mime: String(item.mime || ""), dataUrl: String(item.dataUrl || ""), createdAt: item.createdAt || new Date().toISOString() })) : [],
     floorKind: String(input.floorKind || "").trim(),
     structureType: String(input.structureType || "").trim(),
     status: String(input.status || "").trim(),
     leadId: String(input.leadId || input.lead_id || "").trim(),
     buyerName: String(input.buyerName || input.buyer_name || "").trim(),
+    linkName: String(input.linkName || "").trim(),
+    linkEmail: String(input.linkEmail || "").trim(),
+    linkPhone: String(input.linkPhone || "").trim(),
+    linkType: String(input.linkType || "").trim(),
     purchaseBuyerName: String(input.purchaseBuyerName || "").trim(),
     purchaseSignedAt: input.purchaseSignedAt || "",
     purchaseValue: Number(input.purchaseValue || 0),

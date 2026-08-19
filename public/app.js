@@ -96,6 +96,14 @@ const state = {
   visualMapEditingHotspotId: "",
   visualMapNewUnitId: "",
   editUnitId: "",
+  unitTableEditing: false,
+  unitTablePage: 1,
+  unitTablePageSize: 25,
+  unitTableOriginals: {},
+  unitTableDrafts: {},
+  unitCreateModalOpen: false,
+  availabilityUnitMenu: null,
+  availabilityUnitLinkId: "",
   editBlockId: "",
   levFinanceSearch: "",
   levFinanceTab: "pending",
@@ -954,6 +962,20 @@ function brl(value) {
 
 function numberPt(value) {
   return Number(value || 0).toLocaleString("pt-BR");
+}
+
+function paginatedTableModel(items = [], page = 1, pageSize = 25) {
+  const allowedSizes = [10, 25, 50, 100];
+  const size = allowedSizes.includes(Number(pageSize)) ? Number(pageSize) : 25;
+  const pageCount = Math.max(1, Math.ceil(items.length / size));
+  const currentPage = Math.min(Math.max(1, Number(page) || 1), pageCount);
+  const start = (currentPage - 1) * size;
+  return { items: items.slice(start, start + size), page: currentPage, pageSize: size, pageCount, total: items.length, start };
+}
+
+function paginatedTableControls(model, key) {
+  const pageOptions = Array.from({ length: model.pageCount }, (_, index) => index + 1);
+  return `<div class="table-pagination" data-pagination-key="${escapeHtml(key)}"><label>Registros por página <select data-page-size>${[10, 25, 50, 100].map((size) => `<option value="${size}" ${size === model.pageSize ? "selected" : ""}>${size}</option>`).join("")}</select></label><span>${model.total ? `${model.start + 1}–${Math.min(model.start + model.pageSize, model.total)} de ${model.total}` : "0 registros"}</span><label>Página <select data-page-number>${pageOptions.map((page) => `<option value="${page}" ${page === model.page ? "selected" : ""}>${page}</option>`).join("")}</select> de ${model.pageCount}</label></div>`;
 }
 
 function normalizeText(value) {
@@ -2384,6 +2406,16 @@ function selectedAvailabilityUnit() {
   return virtualUnitsForProject(selectedProject).find((unit) => unit.id === state.selectedAvailabilityUnitId) || null;
 }
 
+async function ensurePersistedAvailabilityUnit(unit) {
+  if (!unit?.virtual) return unit;
+  const payload = { ...unit };
+  delete payload.id;
+  delete payload.virtual;
+  const data = await api("/api/units", { method: "POST", body: JSON.stringify(payload) });
+  state.unitDefinitions = data.unitDefinitions || state.unitDefinitions;
+  return data.unit;
+}
+
 function visualMapForProject(project = {}) {
   const visualMap = project?.visualMap && typeof project.visualMap === "object" ? project.visualMap : {};
   return {
@@ -2501,6 +2533,9 @@ function renderAvailability() {
   const saleValue = purchaseValue
     ? canViewAvailabilitySaleValue() ? money(purchaseValue) : "XXXXXX"
     : "-";
+  const adminUnitMenu = state.user?.role === "Admin TI" && state.availabilityUnitMenu ? `<div class="availability-unit-context" style="left:${Number(state.availabilityUnitMenu.x || 0)}px;top:${Number(state.availabilityUnitMenu.y || 0)}px"><button type="button" data-admin-edit-unit="${escapeHtml(state.availabilityUnitMenu.id)}">Editar</button><button type="button" data-admin-link-unit="${escapeHtml(state.availabilityUnitMenu.id)}">Vincular Unidade</button></div>` : "";
+  const linkUnit = state.availabilityUnitLinkId ? projectUnits.find((unit) => unit.id === state.availabilityUnitLinkId) : null;
+  const linkModal = state.user?.role === "Admin TI" && linkUnit ? `<div class="modal-backdrop" data-close-unit-link><section class="modal-card"><div class="panel-head"><div><h2>Vincular Unidade</h2><p class="muted-copy">${escapeHtml(linkUnit.unit)}</p></div><button class="icon" type="button" data-close-unit-link>×</button></div><form id="availabilityUnitLinkForm" class="form-grid"><div class="field full"><label>Nome *</label><input name="name" required></div><div class="field"><label>E-mail</label><input name="email" type="email"></div><div class="field"><label>Telefone</label><input name="phone"></div><div class="field full"><label>Tipo de vínculo</label><select name="linkType" required><option>Bloqueada</option><option>Vendida</option><option>Permutada</option></select></div><div class="field full"><div class="row-actions"><button type="button" data-close-unit-link>Cancelar</button><button class="primary" type="submit">Vincular</button></div></div></form></section></div>` : "";
   renderShell(`
     ${renderViewHead("Disponibilidade", "Quadro de unidades por empreendimento", {
       actions: ""
@@ -2538,6 +2573,7 @@ function renderAvailability() {
         ` : '<div class="empty">Clique em uma unidade para ver os detalhes.</div>'}
       </aside>
     </section>
+    ${adminUnitMenu}${linkModal}
   `);
   document.querySelectorAll("[data-availability-project]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -2551,7 +2587,13 @@ function renderAvailability() {
       state.selectedAvailabilityUnitId = button.dataset.availabilityUnit;
       renderAvailability();
     });
+    if (state.user?.role === "Admin TI") button.addEventListener("contextmenu", (event) => { event.preventDefault(); event.stopPropagation(); state.availabilityUnitMenu = { id: button.dataset.availabilityUnit, x: event.clientX, y: event.clientY }; renderAvailability(); });
   });
+  document.querySelector("[data-admin-edit-unit]")?.addEventListener("click", async (event) => { let unit = projectUnits.find((item) => item.id === event.currentTarget.dataset.adminEditUnit); if (!unit) return; unit = await ensurePersistedAvailabilityUnit(unit); state.settingsTab = "projects"; state.settingsEditing = `units:${unit.project}`; state.unitTableEditing = true; state.unitTableOriginals = {}; state.unitTableDrafts = {}; state.editUnitId = unit.id; state.availabilityUnitMenu = null; routeTo("settings"); });
+  document.querySelector("[data-admin-link-unit]")?.addEventListener("click", (event) => { state.availabilityUnitLinkId = event.currentTarget.dataset.adminLinkUnit; state.availabilityUnitMenu = null; renderAvailability(); });
+  document.querySelectorAll("[data-close-unit-link]").forEach((element) => element.addEventListener("click", (event) => { if (element.classList.contains("modal-backdrop") && event.target !== element) return; state.availabilityUnitLinkId = ""; renderAvailability(); }));
+  document.querySelector("#availabilityUnitLinkForm")?.addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); let unit = projectUnits.find((item) => item.id === state.availabilityUnitLinkId); if (!unit) return; unit = await ensurePersistedAvailabilityUnit(unit); const payload = { buyerName: form.get("name"), linkName: form.get("name"), linkEmail: form.get("email"), linkPhone: form.get("phone"), linkType: form.get("linkType"), status: form.get("linkType") }; const data = await api(`/api/units/${encodeURIComponent(unit.id)}`, { method: "PATCH", body: JSON.stringify(payload) }); state.unitDefinitions = data.unitDefinitions || state.unitDefinitions; state.availabilityUnitLinkId = ""; renderAvailability(); });
+  document.addEventListener("click", (event) => { if (event.target.closest(".availability-unit-context")) return; state.availabilityUnitMenu = null; document.querySelector(".availability-unit-context")?.remove(); }, { once: true });
   document.querySelectorAll("[data-availability-status-chip]").forEach((button) => {
     button.addEventListener("click", () => button.classList.toggle("expanded"));
   });
@@ -9705,6 +9747,7 @@ function bindProjectVisualMapEditor(projectName = "") {
 }
 
 function renderProjectSettings() {
+  if (state.settingsEditing?.startsWith("units:")) return renderUnitManagementPage(state.settingsEditing.replace("units:", ""));
   const isCreating = state.settingsEditing === "new-project";
   const editIndex = state.settingsEditing?.startsWith("project:") ? Number(state.settingsEditing.replace("project:", "")) : null;
   const editProject = editIndex != null ? (state.projectDefinitions || [])[editIndex] || { name: state.projects[editIndex] || "", unitPrefixes: [] } : null;
@@ -10042,6 +10085,82 @@ function renderProjectSettings() {
   bindUnitCodeAutofill();
 }
 
+function unitSelectHtml(values, current) {
+  const options = [...new Set(values.map((item) => String(item ?? "").trim()).filter(Boolean))];
+  return `<option value="">Selecione</option>${options.map((item) => `<option value="${escapeHtml(item)}" ${String(current || "") === item ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}`;
+}
+
+function unitEditingField(unit, field, options = null) {
+  const value = String(state.unitTableDrafts?.[unit.id]?.[field] ?? unit[field] ?? "");
+  if (!state.unitTableEditing) return escapeHtml(value || "-");
+  return options
+    ? `<select data-unit-id="${escapeHtml(unit.id)}" data-unit-field="${field}">${unitSelectHtml(options, value)}</select>`
+    : `<input data-unit-id="${escapeHtml(unit.id)}" data-unit-field="${field}" value="${escapeHtml(value)}">`;
+}
+
+function unitCreateModal(project) {
+  if (!state.unitCreateModalOpen) return "";
+  const blocks = blockDefinitionsForProject(project);
+  const floors = blocks.flatMap((block) => Array.from({ length: Number(block.floorCount || 0) }, (_, index) => String(index + 1)));
+  const columns = blocks.flatMap((block) => Array.from({ length: Number(block.columnCount || 0) }, (_, index) => String(index + 1).padStart(2, "0")));
+  return `<div class="modal-backdrop" data-close-unit-create><section class="modal-card wide-modal"><div class="panel-head"><h2>Nova unidade</h2><button class="icon" type="button" data-close-unit-create>×</button></div><form id="unitCreateForm" class="form-grid editor"><input type="hidden" name="project" value="${escapeHtml(project)}"><div class="field"><label>Bloco/Quadra</label><select name="block">${unitSelectHtml(blocks.map((block) => padUnitPart(block.block, 2)), "")}</select></div><div class="field"><label>Andar</label><select name="floor">${unitSelectHtml(floors, "")}</select></div><div class="field"><label>Coluna</label><select name="column">${unitSelectHtml(columns, "")}</select></div><div class="field"><label>Unidade</label><input name="unit" required></div><div class="field"><label>Código SAM</label><input name="samCode"></div><div class="field"><label>Área útil</label><input name="usefulArea"></div><div class="field"><label>Área privativa</label><input name="privateArea"></div><div class="field"><label>Posição</label><select name="sunPosition">${unitSelectHtml(["Sol manhã", "Sol tarde"], "")}</select></div><div class="field"><label>Tipo</label><select name="unitType">${unitSelectHtml(["Casa", "Apartamento"], "")}</select></div><div class="field"><label>Arquitetura</label><input name="architecture"></div><div class="field"><label>Tipologia</label><input name="typology"></div><div class="field"><label>Fração ideal</label><input name="idealFraction"></div><div class="field"><label>Vista</label><select name="view">${unitSelectHtml(["Livre", "Impedida"], "")}</select></div><div class="field full"><div class="row-actions"><button type="button" data-close-unit-create>Cancelar</button><button class="primary" type="submit">Salvar unidade</button></div></div></form></section></div>`;
+}
+
+function renderUnitManagementPage(project) {
+  const allUnits = (state.unitDefinitions || []).filter((unit) => unit.project === project);
+  const editableFields = ["block", "floor", "column", "unit", "samCode", "usefulArea", "privateArea", "sunPosition", "unitType", "architecture", "typology", "idealFraction", "view"];
+  if (state.unitTableEditing && !Object.keys(state.unitTableOriginals || {}).length) {
+    state.unitTableOriginals = Object.fromEntries(allUnits.map((unit) => [unit.id, Object.fromEntries(editableFields.map((field) => [field, String(unit[field] ?? "")]))]));
+    state.unitTableDrafts = JSON.parse(JSON.stringify(state.unitTableOriginals));
+  }
+  if (state.editUnitId && state.unitTableEditing) {
+    const index = allUnits.findIndex((unit) => unit.id === state.editUnitId);
+    if (index >= 0) state.unitTablePage = Math.floor(index / state.unitTablePageSize) + 1;
+  }
+  const model = paginatedTableModel(allUnits, state.unitTablePage, state.unitTablePageSize);
+  state.unitTablePage = model.page;
+  const blocks = blockDefinitionsForProject(project);
+  const blockValues = blocks.map((block) => padUnitPart(block.block, 2));
+  const floors = [...new Set([...allUnits.map((unit) => unit.floor), ...blocks.flatMap((block) => block.layoutType === "Vertical" ? Array.from({ length: Number(block.floorCount || 0) }, (_, index) => String(index + 1)) : [])])];
+  const columns = [...new Set([...allUnits.map((unit) => unit.column), ...blocks.flatMap((block) => block.layoutType === "Vertical" ? Array.from({ length: Number(block.columnCount || 0) }, (_, index) => String(index + 1).padStart(2, "0")) : [])])];
+  const positions = [...(state.availabilitySettings?.sunPositionOptions || []), "Sol manhã", "Sol tarde"];
+  const types = [...(state.availabilitySettings?.unitTypeOptions || []), "Casa", "Apartamento"];
+  const fields = editableFields;
+  const rows = model.items.map((unit) => {
+    const currentBlock = state.unitTableDrafts?.[unit.id]?.block ?? unit.block;
+    const block = blocks.find((item) => padUnitPart(item.block, 2) === padUnitPart(currentBlock, 2));
+    const rowFloors = block?.layoutType === "Vertical" ? Array.from({ length: Number(block.floorCount || 0) }, (_, index) => String(index + 1)) : floors;
+    const rowColumns = block?.layoutType === "Vertical" ? Array.from({ length: Number(block.columnCount || 0) }, (_, index) => String(index + 1).padStart(2, "0")) : columns;
+    return `<tr data-unit-row="${escapeHtml(unit.id)}" class="${unit.id === state.editUnitId ? "selected-row" : ""}"><td>${unitEditingField(unit, "block", blockValues)}</td><td>${unitEditingField(unit, "floor", rowFloors)}</td><td>${unitEditingField(unit, "column", rowColumns)}</td><td>${unitEditingField(unit, "unit")}</td><td>${unitEditingField(unit, "samCode")}</td><td>${unitEditingField(unit, "usefulArea")}</td><td>${unitEditingField(unit, "privateArea")}</td><td>${unitEditingField(unit, "sunPosition", positions)}</td><td>${unitEditingField(unit, "unitType", types)}</td><td>${unitEditingField(unit, "architecture")}</td><td>${unitEditingField(unit, "typology")}</td><td>${unitEditingField(unit, "idealFraction")}</td><td>${unitEditingField(unit, "view", ["Livre", "Impedida"])}</td><td>${renderSettingsActionMenu(`unit-${unit.id}`, [`<label class="menu-file-action">Submeter anexos<input type="file" multiple data-unit-attachments="${escapeHtml(unit.id)}" accept="image/*,application/pdf"></label>`, state.user?.role === "Admin TI" ? `<button type="button" class="danger-menu-item" data-delete-unit="${escapeHtml(unit.id)}">Excluir</button>` : ""] )}</td></tr>`;
+  }).join("");
+  settingsLayout(`<section class="panel unit-management-page"><div class="panel-head unit-management-head"><div class="unit-management-title"><button type="button" data-back-projects>← Empreendimentos</button><h2>${escapeHtml(project)}</h2></div><div class="row-actions">${state.unitTableEditing ? '<button type="button" data-close-unit-edit>Fechar</button><button class="primary" type="button" data-save-unit-table>Salvar</button>' : '<button type="button" data-edit-unit-table>Editar</button>'}<button class="primary" type="button" data-new-unit>Nova Unidade</button></div></div>${paginatedTableControls(model, "units")}<div class="table-wrap unit-management-table"><table><thead><tr><th>Bloco/Quadra</th><th>Andar</th><th>Coluna</th><th>Unidade</th><th>Código SAM</th><th>Área útil</th><th>Área privativa</th><th>Posição</th><th>Tipo</th><th>Arquitetura</th><th>Tipologia</th><th>Fração ideal</th><th>Vista</th><th>Ações</th></tr></thead><tbody>${rows || '<tr><td colspan="14" class="empty">Nenhuma unidade cadastrada</td></tr>'}</tbody></table></div>${paginatedTableControls(model, "units-bottom")}</section>${unitCreateModal(project)}`);
+  bindSettingsActionMenus();
+  document.querySelector("[data-back-projects]")?.addEventListener("click", () => { state.settingsEditing = null; state.unitTableEditing = false; state.unitTableOriginals = {}; state.unitTableDrafts = {}; state.editUnitId = ""; renderSettings(); });
+  document.querySelectorAll("[data-page-size]").forEach((select) => select.addEventListener("change", () => { state.unitTablePageSize = Number(select.value); state.unitTablePage = 1; renderSettings(); }));
+  document.querySelectorAll("[data-page-number]").forEach((select) => select.addEventListener("change", () => { state.unitTablePage = Number(select.value); renderSettings(); }));
+  document.querySelector("[data-edit-unit-table]")?.addEventListener("click", () => { state.unitTableEditing = true; state.unitTableOriginals = Object.fromEntries(allUnits.map((unit) => [unit.id, Object.fromEntries(fields.map((field) => [field, String(unit[field] ?? "")]))])); state.unitTableDrafts = JSON.parse(JSON.stringify(state.unitTableOriginals)); renderSettings(); });
+  document.querySelectorAll("[data-unit-field]").forEach((input) => input.addEventListener("change", () => { state.unitTableDrafts[input.dataset.unitId] = { ...(state.unitTableDrafts[input.dataset.unitId] || {}), [input.dataset.unitField]: input.value }; if (input.dataset.unitField === "block") renderSettings(); }));
+  document.querySelector("[data-close-unit-edit]")?.addEventListener("click", () => { state.unitTableEditing = false; state.unitTableOriginals = {}; state.unitTableDrafts = {}; state.editUnitId = ""; renderSettings(); });
+  document.querySelector("[data-save-unit-table]")?.addEventListener("click", async () => {
+    const changes = new Map();
+    for (const [unitId, draft] of Object.entries(state.unitTableDrafts || {})) for (const [field, value] of Object.entries(draft)) { const original = state.unitTableOriginals[unitId]?.[field] ?? ""; if (value !== original) changes.set(unitId, { ...(changes.get(unitId) || {}), [field]: value }); }
+    if (!changes.size) return alert("Nenhuma alteração para salvar.");
+    if (!confirm(`Confirma o salvamento das alterações em ${changes.size} unidade(s)?`)) return;
+    for (const [id, payload] of changes) await api(`/api/units/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) });
+    await loadState(); state.unitTableEditing = false; state.unitTableOriginals = {}; state.unitTableDrafts = {}; state.editUnitId = ""; renderSettings();
+  });
+  document.querySelector("[data-new-unit]")?.addEventListener("click", () => { state.unitCreateModalOpen = true; renderSettings(); });
+  document.querySelectorAll("[data-close-unit-create]").forEach((element) => element.addEventListener("click", (event) => { if (element.classList.contains("modal-backdrop") && event.target !== element) return; state.unitCreateModalOpen = false; renderSettings(); }));
+  document.querySelector("#unitCreateForm")?.addEventListener("submit", async (event) => { event.preventDefault(); fillGeneratedUnitFields(event.currentTarget, false); const payload = Object.fromEntries(new FormData(event.currentTarget).entries()); const data = await api("/api/units", { method: "POST", body: JSON.stringify(payload) }); state.unitDefinitions = data.unitDefinitions || state.unitDefinitions; state.unitCreateModalOpen = false; renderSettings(); });
+  const createForm = document.querySelector("#unitCreateForm");
+  createForm?.elements.block?.addEventListener("change", () => { const block = blocks.find((item) => padUnitPart(item.block, 2) === padUnitPart(createForm.elements.block.value, 2)); const floorValues = block?.layoutType === "Vertical" ? Array.from({ length: Number(block.floorCount || 0) }, (_, index) => String(index + 1)) : []; const columnValues = block?.layoutType === "Vertical" ? Array.from({ length: Number(block.columnCount || 0) }, (_, index) => String(index + 1).padStart(2, "0")) : Array.from({ length: Math.max(0, Number(block?.houseEnd || 0) - Number(block?.houseStart || 0) + 1) }, (_, index) => String(Number(block?.houseStart || 0) + index)); createForm.elements.floor.innerHTML = unitSelectHtml(floorValues, ""); createForm.elements.column.innerHTML = unitSelectHtml(columnValues, ""); });
+  document.querySelectorAll("[data-unit-attachments]").forEach((input) => input.addEventListener("change", async () => { const unit = allUnits.find((item) => item.id === input.dataset.unitAttachments); const files = [...input.files]; if (!unit || !files.length) return; if (files.some((file) => file.size > 1200000)) return alert("Cada anexo precisa ter até 1,2 MB."); const attachments = await Promise.all(files.map(async (file) => ({ id: `attachment-${Date.now()}-${Math.random().toString(16).slice(2)}`, name: file.name, mime: file.type, dataUrl: await readFileAsDataUrl(file), createdAt: new Date().toISOString() }))); const data = await api(`/api/units/${encodeURIComponent(unit.id)}`, { method: "PATCH", body: JSON.stringify({ attachments: [...(unit.attachments || []), ...attachments] }) }); state.unitDefinitions = data.unitDefinitions || state.unitDefinitions; alert("Anexo(s) enviado(s) com sucesso."); renderSettings(); }));
+  document.querySelectorAll("[data-delete-unit]").forEach((button) => button.addEventListener("click", async () => { if (!confirm("Excluir esta unidade?")) return; const data = await api(`/api/units/${encodeURIComponent(button.dataset.deleteUnit)}`, { method: "DELETE" }); state.unitDefinitions = data.unitDefinitions || state.unitDefinitions; renderSettings(); }));
+  bindUnitCodeAutofill();
+  const selectedRow = state.editUnitId ? document.querySelector(`[data-unit-row="${CSS.escape(state.editUnitId)}"]`) : null;
+  if (selectedRow) { selectedRow.scrollIntoView({ block: "center", behavior: "smooth" }); selectedRow.querySelector("input, select")?.focus(); }
+}
+
 function fillGeneratedUnitFields(form, force = false) {
   if (!form) return;
   const project = form.elements.project?.value || "";
@@ -10054,7 +10173,7 @@ function fillGeneratedUnitFields(form, force = false) {
 }
 
 function bindUnitCodeAutofill() {
-  const form = document.querySelector("#unitForm");
+  const form = document.querySelector("#unitForm, #unitCreateForm");
   if (!form) return;
   const refresh = () => fillGeneratedUnitFields(form);
   form.elements.project?.addEventListener("change", () => {
