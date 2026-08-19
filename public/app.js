@@ -10094,8 +10094,14 @@ function unitEditingField(unit, field, options = null) {
   const value = String(state.unitTableDrafts?.[unit.id]?.[field] ?? unit[field] ?? "");
   if (!state.unitTableEditing) return escapeHtml(value || "-");
   return options
-    ? `<select data-unit-id="${escapeHtml(unit.id)}" data-unit-field="${field}">${unitSelectHtml(options, value)}</select>`
+    ? inlineTableSelect(unit.id, field, options, value)
     : `<input data-unit-id="${escapeHtml(unit.id)}" data-unit-field="${field}" value="${escapeHtml(value)}">`;
+}
+
+function inlineTableSelect(unitId, field, values, current) {
+  const options = [...new Set(values.map((item) => String(item ?? "").trim()).filter(Boolean))];
+  const selected = String(current || "");
+  return `<div class="inline-table-select" data-inline-table-select><input type="hidden" data-unit-id="${escapeHtml(unitId)}" data-unit-field="${escapeHtml(field)}" value="${escapeHtml(selected)}"><button type="button" class="inline-table-select-trigger" data-inline-table-select-trigger aria-label="Selecionar valor"><span>${selected ? escapeHtml(selected) : "&nbsp;"}</span><i aria-hidden="true"></i></button><div class="inline-table-select-menu"><button type="button" data-inline-table-select-value="" class="${selected ? "" : "selected"}"><span>&nbsp;</span></button>${options.map((item) => `<button type="button" data-inline-table-select-value="${escapeHtml(item)}" class="${item === selected ? "selected" : ""}">${escapeHtml(item)}</button>`).join("")}</div></div>`;
 }
 
 function unitCreateModal(project) {
@@ -10140,6 +10146,9 @@ function renderUnitManagementPage(project) {
   document.querySelectorAll("[data-page-number]").forEach((select) => select.addEventListener("change", () => { state.unitTablePage = Number(select.value); renderSettings(); }));
   document.querySelector("[data-edit-unit-table]")?.addEventListener("click", () => { state.unitTableEditing = true; state.unitTableOriginals = Object.fromEntries(allUnits.map((unit) => [unit.id, Object.fromEntries(fields.map((field) => [field, String(unit[field] ?? "")]))])); state.unitTableDrafts = JSON.parse(JSON.stringify(state.unitTableOriginals)); renderSettings(); });
   document.querySelectorAll("[data-unit-field]").forEach((input) => input.addEventListener("change", () => { state.unitTableDrafts[input.dataset.unitId] = { ...(state.unitTableDrafts[input.dataset.unitId] || {}), [input.dataset.unitField]: input.value }; if (input.dataset.unitField === "block") renderSettings(); }));
+  document.querySelectorAll("[data-inline-table-select-trigger]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); const select = button.closest("[data-inline-table-select]"); document.querySelectorAll(".inline-table-select.open").forEach((item) => { if (item !== select) item.classList.remove("open"); }); select?.classList.toggle("open"); }));
+  document.querySelectorAll("[data-inline-table-select-value]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); const select = button.closest("[data-inline-table-select]"); const input = select?.querySelector("[data-unit-field]"); const label = select?.querySelector(".inline-table-select-trigger span"); if (!input || !label) return; input.value = button.dataset.inlineTableSelectValue || ""; label.textContent = input.value || "\u00a0"; input.dispatchEvent(new Event("change", { bubbles: true })); select.classList.remove("open"); }));
+  document.addEventListener("click", () => document.querySelectorAll(".inline-table-select.open").forEach((item) => item.classList.remove("open")), { once: true });
   document.querySelector("[data-close-unit-edit]")?.addEventListener("click", () => { state.unitTableEditing = false; state.unitTableOriginals = {}; state.unitTableDrafts = {}; state.editUnitId = ""; renderSettings(); });
   document.querySelector("[data-save-unit-table]")?.addEventListener("click", async () => {
     const changes = new Map();
