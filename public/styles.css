@@ -1822,11 +1822,9 @@ textarea {
 .inline-table-select.open .inline-table-select-trigger i { transform: rotate(180deg); }
 .inline-table-select-menu {
   display: none;
-  position: absolute;
-  z-index: 80;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 100%;
+  position: fixed;
+  z-index: 10050;
+  min-width: 140px;
   max-height: 220px;
   overflow-y: auto;
   padding: 5px;
