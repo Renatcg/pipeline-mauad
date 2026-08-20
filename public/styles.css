@@ -5570,22 +5570,22 @@ th {
 .marketing-month-timeline.is-transparent .marketing-timeline-track button i {
   position: static;
   display: block;
-  width: 5px;
-  height: 2px;
+  width: 2px;
+  height: 5px;
   border: 0;
   border-radius: 0;
   background: #cbd5d1;
   transform: none;
-  transition: width 120ms ease, background 120ms ease;
+  transition: height 120ms ease, background 120ms ease;
 }
 
-.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-1 i { width: 7px; }
-.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-2 i { width: 10px; }
-.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-3 i { width: 14px; }
-.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-4 i { width: 8px; }
+.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-1 i { height: 7px; }
+.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-2 i { height: 10px; }
+.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-3 i { height: 14px; }
+.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-4 i { height: 8px; }
 .marketing-month-timeline.is-transparent .marketing-timeline-track button.selected i { background: #6b7f7a; }
 .marketing-month-timeline.is-transparent .marketing-timeline-track button:hover i,
-.marketing-month-timeline.is-transparent .marketing-timeline-track button:focus-visible i { width: 20px; background: #111827; }
+.marketing-month-timeline.is-transparent .marketing-timeline-track button:focus-visible i { height: 20px; background: #111827; }
 
 .marketing-cashflow-filters {
   justify-content: flex-end;
