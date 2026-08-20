@@ -68,6 +68,7 @@ const state = {
   canManageKnowledge: false,
   canCreateKnowledge: false,
   metaDiagnostics: null,
+  chatwootDiagnostics: null,
   metaCapiDiagnostics: null,
   metaCapiResponseEventId: "",
   view: "kanban",
@@ -90,6 +91,7 @@ const state = {
   knowledgeAiLoading: false,
   knowledgeOpenArticle: null,
   metaFormsTab: "active",
+  integrationTab: "meta",
   selectedAvailabilityProject: "",
   selectedAvailabilityUnitId: "",
   masterplanZoom: 1,
@@ -6368,7 +6370,81 @@ function renderMetaDiagnostics() {
   `;
 }
 
+function integrationSettingsTabs() {
+  return `
+    <div class="tabs compact-tabs">
+      <button class="${state.integrationTab === "meta" ? "active" : ""}" data-integration-tab="meta">Meta</button>
+      <button class="${state.integrationTab === "chatwoot" ? "active" : ""}" data-integration-tab="chatwoot">Chatwoot</button>
+    </div>
+  `;
+}
+
+function bindIntegrationSettingsTabs() {
+  document.querySelectorAll("[data-integration-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.integrationTab = button.dataset.integrationTab;
+      state.settingsNotice = "";
+      renderSettings();
+    });
+  });
+}
+
+function renderChatwootDiagnostics() {
+  const diagnostics = state.chatwootDiagnostics;
+  if (!diagnostics) return '<div class="empty">Execute o diagnóstico para validar a conexão e listar caixas, agentes e equipes.</div>';
+  const inboxRows = (diagnostics.inboxes || []).map((inbox) => `
+    <tr><td>${escapeHtml(inbox.id)}</td><td>${escapeHtml(inbox.name)}</td><td>${escapeHtml(inbox.channelType || "-")}</td></tr>
+  `).join("");
+  const agentRows = (diagnostics.agents || []).map((agent) => `
+    <tr><td>${escapeHtml(agent.id)}</td><td>${escapeHtml(agent.name || "-")}</td><td>${escapeHtml(agent.email || "-")}</td><td>${escapeHtml(agent.role || "-")}</td></tr>
+  `).join("");
+  const teamRows = (diagnostics.teams || []).map((team) => `
+    <tr><td>${escapeHtml(team.id)}</td><td>${escapeHtml(team.name)}</td></tr>
+  `).join("");
+  return `
+    <div class="diagnostic-grid">
+      <div class="success">Conexão ativa com a conta ${escapeHtml(diagnostics.accountId)}. Usuário técnico: ${escapeHtml(diagnostics.profile?.name || diagnostics.profile?.email || "identificado")}.</div>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>Caixa de entrada</th><th>Canal</th></tr></thead><tbody>${inboxRows || '<tr><td colspan="3" class="empty">Nenhuma caixa encontrada.</td></tr>'}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>Agente</th><th>E-mail</th><th>Perfil</th></tr></thead><tbody>${agentRows || '<tr><td colspan="4" class="empty">Nenhum agente encontrado.</td></tr>'}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>Equipe</th></tr></thead><tbody>${teamRows || '<tr><td colspan="2" class="empty">Nenhuma equipe encontrada.</td></tr>'}</tbody></table></div>
+    </div>
+  `;
+}
+
+function renderChatwootIntegrationSettings() {
+  settingsLayout(`
+    ${integrationSettingsTabs()}
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Integração Chatwoot</h2>
+          <p class="muted">Conexão somente leitura para validar a instância, a conta e os recursos disponíveis. O token permanece protegido no servidor.</p>
+        </div>
+        <button type="button" class="primary" data-diagnose-chatwoot>Testar conexão</button>
+      </div>
+      ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
+      ${renderChatwootDiagnostics()}
+    </section>
+  `);
+  bindSettingsCommon();
+  bindIntegrationSettingsTabs();
+  document.querySelector("[data-diagnose-chatwoot]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Conectando...");
+      const data = await api("/api/integrations/chatwoot/diagnostics", { method: "POST" });
+      state.chatwootDiagnostics = data.diagnostics;
+      state.settingsNotice = "Conexão com o Chatwoot validada.";
+      renderSettings();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+}
+
 function renderIntegrationSettings() {
+  if (state.integrationTab === "chatwoot") return renderChatwootIntegrationSettings();
   const integrations = state.integrations || {};
   const metaConversions = normalizeMetaConversions(integrations);
   const metaForms = integrations.metaForms?.forms || [];
@@ -6398,6 +6474,7 @@ function renderIntegrationSettings() {
     </tr>
   `).join("");
   settingsLayout(`
+    ${integrationSettingsTabs()}
     <section class="panel">
       <h2>Integrações Meta</h2>
       ${state.settingsNotice ? `<div class="success settings-notice">${escapeHtml(state.settingsNotice)}</div>` : ""}
@@ -6453,6 +6530,7 @@ function renderIntegrationSettings() {
     ${isFormModalOpen ? renderMetaFormModal(formValue, editIndex != null) : ""}
   `);
   bindSettingsCommon();
+  bindIntegrationSettingsTabs();
   bindSettingsActionMenus();
   const saveMetaConversions = async (nextMetaConversions, notice) => {
     const next = JSON.parse(JSON.stringify(state.integrations || {}));

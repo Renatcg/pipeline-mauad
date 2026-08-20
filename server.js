@@ -19,6 +19,9 @@ const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
 const REDIS_KEY_PREFIX = process.env.REDIS_KEY_PREFIX || "pipeline-mauad";
 const REDIS_TIMEOUT_MS = Number(process.env.REDIS_TIMEOUT_MS || 800);
 const REDIS_CONFIG_TTL_SECONDS = Number(process.env.REDIS_CONFIG_TTL_SECONDS || 120);
+const CHATWOOT_BASE_URL = String(process.env.CHATWOOT_BASE_URL || "").trim().replace(/\/+$/, "");
+const CHATWOOT_ACCOUNT_ID = String(process.env.CHATWOOT_ACCOUNT_ID || "").trim();
+const CHATWOOT_API_TOKEN = String(process.env.CHATWOOT_API_TOKEN || "").trim();
 const ROLES = ["Admin TI", "Head Comercial", "Supervisor Comercial", "Diretoria", "Corretor", "Gerente Financeiro", "Auxiliar Financeiro", "Gestor de Tráfego", "Coordenador de Marketing"];
 const META_HEALTH_NOTIFICATION_ROLES = new Set(["Admin TI", "Gestor de Tráfego", "Coordenador de Marketing"]);
 const META_HEALTH_ALERT_FACTOR = Number(process.env.META_HEALTH_ALERT_FACTOR || 2.5);
@@ -3038,6 +3041,72 @@ function requireAuth(req, res, db) {
 
 function canManageSettings(user) {
   return user.role === "Admin TI";
+}
+
+function chatwootCollection(value) {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.payload)) return value.payload;
+  if (Array.isArray(value?.data)) return value.data;
+  return [];
+}
+
+async function chatwootRequest(pathname) {
+  if (!CHATWOOT_BASE_URL || !CHATWOOT_ACCOUNT_ID || !CHATWOOT_API_TOKEN) {
+    throw new Error("Configure CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID e CHATWOOT_API_TOKEN no ambiente do servidor.");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(`${CHATWOOT_BASE_URL}${pathname}`, {
+      headers: { api_access_token: CHATWOOT_API_TOKEN, Accept: "application/json" },
+      signal: controller.signal
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = String(data?.message || data?.error || "").trim();
+      throw new Error(`Chatwoot respondeu HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
+    }
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("O Chatwoot não respondeu em até 10 segundos.");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function diagnoseChatwoot() {
+  const accountPath = `/api/v1/accounts/${encodeURIComponent(CHATWOOT_ACCOUNT_ID)}`;
+  const profile = await chatwootRequest("/api/v1/profile");
+  const [inboxResponse, agentResponse, teamResponse] = await Promise.all([
+    chatwootRequest(`${accountPath}/inboxes`),
+    chatwootRequest(`${accountPath}/agents`),
+    chatwootRequest(`${accountPath}/teams`)
+  ]);
+  const inboxes = chatwootCollection(inboxResponse).map((inbox) => ({
+    id: inbox.id,
+    name: inbox.name || `Caixa ${inbox.id}`,
+    channelType: inbox.channel_type || inbox.channel?.type || "",
+    enabled: inbox.enable_auto_assignment !== false
+  }));
+  const agents = chatwootCollection(agentResponse).map((agent) => ({
+    id: agent.id,
+    name: agent.name || "",
+    email: agent.email || "",
+    role: agent.role || "",
+    availability: agent.availability_status || ""
+  }));
+  const teams = chatwootCollection(teamResponse).map((team) => ({ id: team.id, name: team.name || `Equipe ${team.id}` }));
+  return {
+    connected: true,
+    checkedAt: new Date().toISOString(),
+    baseUrl: CHATWOOT_BASE_URL,
+    accountId: CHATWOOT_ACCOUNT_ID,
+    profile: { id: profile.id, name: profile.name || "", email: profile.email || "", role: profile.role || "" },
+    inboxes,
+    agents,
+    teams
+  };
 }
 
 function canManagePipelineSettings(user) {
@@ -7089,6 +7158,7 @@ async function fastStructuredSettingsRoutes(req, res, url) {
     url.pathname === "/api/integrations" ||
     url.pathname.startsWith("/api/integrations/meta/") ||
     url.pathname.startsWith("/api/integrations/email/") ||
+    url.pathname.startsWith("/api/integrations/chatwoot/") ||
     url.pathname === "/api/commercial-settings" ||
     url.pathname === "/api/event-capture-settings" ||
     url.pathname === "/api/pipeline-front-settings" ||
@@ -7213,6 +7283,24 @@ async function fastStructuredSettingsRoutes(req, res, url) {
       await structuredIntegration("EMAIL", "TEST_EMAIL_SENT", { to: "renat.cg@gmail.com", id: result.id || "", from: result.from || "" });
       await structuredAudit(user, "SEND_TEST_EMAIL", { to: "renat.cg@gmail.com", id: result.id || "", from: result.from || "" });
       return sendJson(res, 200, { ok: true, email: result, to: "renat.cg@gmail.com", from: result.from || EMAIL_FROM, dataSources: { action: "structured" } });
+    }
+
+    if (url.pathname === "/api/integrations/chatwoot/diagnostics" && method === "POST") {
+      if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      try {
+        const diagnostics = await diagnoseChatwoot();
+        await structuredIntegration("CHATWOOT", "DIAGNOSTIC_OK", {
+          accountId: diagnostics.accountId,
+          inboxes: diagnostics.inboxes.length,
+          agents: diagnostics.agents.length,
+          teams: diagnostics.teams.length
+        });
+        await structuredAudit(user, "DIAGNOSE_CHATWOOT", { accountId: diagnostics.accountId, inboxes: diagnostics.inboxes.length });
+        return sendJson(res, 200, { ok: true, diagnostics, dataSources: { action: "structured" } });
+      } catch (error) {
+        await structuredIntegration("CHATWOOT", "DIAGNOSTIC_ERROR", { error: error.message });
+        return sendJson(res, 400, { error: error.message });
+      }
     }
 
     if (url.pathname === "/api/integrations/meta/capi-diagnostics" && method === "POST") {
@@ -12671,6 +12759,26 @@ async function routeApi(req, res, db) {
       return sendJson(res, 200, { ok: true, diagnostics });
     } catch (error) {
       integrationEvent(db, "META", "DIAGNOSTIC_ERROR", { error: error.message });
+      await saveDb(db);
+      return sendJson(res, 400, { error: error.message });
+    }
+  }
+
+  if (url.pathname === "/api/integrations/chatwoot/diagnostics" && method === "POST") {
+    if (!canManageSettings(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    try {
+      const diagnostics = await diagnoseChatwoot();
+      integrationEvent(db, "CHATWOOT", "DIAGNOSTIC_OK", {
+        accountId: diagnostics.accountId,
+        inboxes: diagnostics.inboxes.length,
+        agents: diagnostics.agents.length,
+        teams: diagnostics.teams.length
+      });
+      audit(db, user, "DIAGNOSE_CHATWOOT", { accountId: diagnostics.accountId, inboxes: diagnostics.inboxes.length });
+      await saveDb(db);
+      return sendJson(res, 200, { ok: true, diagnostics });
+    } catch (error) {
+      integrationEvent(db, "CHATWOOT", "DIAGNOSTIC_ERROR", { error: error.message });
       await saveDb(db);
       return sendJson(res, 400, { error: error.message });
     }
