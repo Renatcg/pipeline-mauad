@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const XLSX = require("xlsx");
+const MARKETING_HISTORICAL_EXPENSES = require("./resources/marketing-actual-expenses.json");
 
 process.env.TZ = "America/Sao_Paulo";
 
@@ -865,7 +866,7 @@ const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 const META_DEFAULT_ASSIGNED_TO = process.env.META_DEFAULT_ASSIGNED_TO || "";
 const SAM_WEBHOOK_SECRET = process.env.SAM_WEBHOOK_SECRET || "";
 const BACKUP_SECRET = process.env.CRON_SECRET || process.env.BACKUP_SECRET || "";
-const APP_SCHEMA_VERSION = 2026072903;
+const APP_SCHEMA_VERSION = 2026082003;
 const DB_CACHE_TTL_MS = 3000;
 let sqlClientPromise = null;
 let structuredSchemaReady = false;
@@ -1055,6 +1056,7 @@ function buildDefaultDb() {
         integrationLog: [],
         samEvents: [],
         accessLog: [],
+        marketing: defaultMarketingData(),
         knowledgeArticles: DEFAULT_KNOWLEDGE_ARTICLES,
         auditLog: [
       {
@@ -1075,6 +1077,42 @@ async function getSql() {
     sqlClientPromise = import("@neondatabase/serverless").then(({ neon }) => neon(DATABASE_URL));
   }
   return sqlClientPromise;
+}
+
+function defaultMarketingData() {
+  return {
+    actualExpenses: MARKETING_HISTORICAL_EXPENSES.map((item) => ({ ...item })),
+    reconciliationQueue: [],
+    provisions: [],
+    commitments: [],
+    budgetGroups: ["Estratégia", "Gestão de marketing", "Marketing offline", "Marketing online", "Stand de vendas", "Comercial"],
+    budgetCategories: [],
+    budgetEntries: []
+  };
+}
+
+function normalizeMarketingData(marketing) {
+  const source = marketing && typeof marketing === "object" && !Array.isArray(marketing) ? marketing : {};
+  const actualExpenses = Array.isArray(source.actualExpenses) && source.actualExpenses.length
+    ? source.actualExpenses
+    : MARKETING_HISTORICAL_EXPENSES;
+  return {
+    actualExpenses: actualExpenses.map((item) => ({
+      ...item,
+      id: String(item.id || `mkt-exp-${crypto.randomUUID()}`),
+      project: String(item.project || "").trim(),
+      paymentDate: String(item.paymentDate || "").slice(0, 10),
+      paidAmount: Number(item.paidAmount || 0),
+      provisioningId: String(item.provisioningId || ""),
+      eventId: String(item.eventId || "")
+    })),
+    reconciliationQueue: Array.isArray(source.reconciliationQueue) ? source.reconciliationQueue : [],
+    provisions: Array.isArray(source.provisions) ? source.provisions : [],
+    commitments: Array.isArray(source.commitments) ? source.commitments : [],
+    budgetGroups: ["Estratégia", "Gestão de marketing", "Marketing offline", "Marketing online", "Stand de vendas", "Comercial"],
+    budgetCategories: Array.isArray(source.budgetCategories) ? source.budgetCategories : [],
+    budgetEntries: Array.isArray(source.budgetEntries) ? source.budgetEntries : (Array.isArray(source.budgets) ? source.budgets : [])
+  };
 }
 
 async function ensurePostgresState() {
@@ -1187,6 +1225,9 @@ function migrateDb(db) {
     db.samEvents = [];
     changed = true;
   }
+  const normalizedMarketing = normalizeMarketingData(db.marketing);
+  if (!db.marketing || !Array.isArray(db.marketing.actualExpenses)) changed = true;
+  db.marketing = normalizedMarketing;
   if (!db.baseAccess || typeof db.baseAccess !== "object" || Array.isArray(db.baseAccess)) {
     db.baseAccess = structuredClone(DEFAULT_BASE_ACCESS);
     changed = true;
@@ -4806,6 +4847,8 @@ async function ensureStructuredSchema(sql) {
   await sql`DELETE FROM crm_base_sources WHERE name = '64º Aberto de Golfe'`;
   await sql`CREATE TABLE IF NOT EXISTS crm_meta_forms (id text PRIMARY KEY, name text, project text, archived boolean NOT NULL DEFAULT false, ad_url text, payload jsonb NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_settings (key text PRIMARY KEY, payload jsonb NOT NULL DEFAULT '{}'::jsonb, updated_at timestamptz NOT NULL DEFAULT now())`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_marketing_state (id text PRIMARY KEY, data jsonb NOT NULL DEFAULT '{}'::jsonb, updated_at timestamptz NOT NULL DEFAULT now())`;
+  await sql`INSERT INTO crm_marketing_state (id, data) VALUES ('main', ${JSON.stringify(defaultMarketingData())}::jsonb) ON CONFLICT (id) DO NOTHING`;
   await sql`CREATE TABLE IF NOT EXISTS crm_permissions (owner_type text NOT NULL, owner_id text NOT NULL, resource_id text NOT NULL, can_access boolean NOT NULL DEFAULT false, can_act boolean NOT NULL DEFAULT false, PRIMARY KEY (owner_type, owner_id, resource_id))`;
   await sql`INSERT INTO crm_permissions (owner_type, owner_id, resource_id, can_access, can_act) VALUES
     ('role', 'Admin TI', 'base:64 OPEN', true, true),
@@ -8811,6 +8854,8 @@ async function fastStructuredStateResponse(req, res, url) {
       availabilitySettings
     } = configBundle;
     const userPresence = buildUserPresence(users, presenceRows, sessionTtlMsFromCommercialSettings(commercialSettings), await redisPresenceForUsers(users));
+    const marketingRows = await sql`SELECT data FROM crm_marketing_state WHERE id = 'main' LIMIT 1`;
+    const structuredMarketing = normalizeMarketingData(marketingRows[0]?.data);
     const stateDb = {
       roles: ROLES,
       users,
@@ -8887,6 +8932,7 @@ async function fastStructuredStateResponse(req, res, url) {
       eventCaptureSettings: canManageEventCaptureSettings(user) ? stateDb.eventCaptureSettings : null,
       pipelineFrontSettings: stateDb.pipelineFrontSettings,
       backupSettings: canManageSettings(user) ? normalizeBackupSettings(settings.backupSettings || {}) : null,
+      marketing: structuredMarketing,
       levFinance: (canAccessCommercialSalesReport(user) || canAccessLevFinance(user)) ? publicLevFinance(stateDb) : null,
       smlFinance: canAccessLevFinance(user) ? stateDb.smlFinance : null
     });
@@ -8894,6 +8940,86 @@ async function fastStructuredStateResponse(req, res, url) {
     mirrorStructuredError("state", error);
     sendJson(res, 500, { error: "Erro ao carregar estado estruturado", detail: error.message });
     return true;
+  }
+}
+
+async function fastStructuredMarketingRoutes(req, res, url) {
+  if (!DATABASE_URL || !url.pathname.startsWith("/api/marketing/")) return false;
+  const supported = url.pathname === "/api/marketing/budget-categories"
+    || url.pathname === "/api/marketing/budget-entries"
+    || /^\/api\/marketing\/reconciliation\/[^/]+\/create-expense$/.test(url.pathname)
+    || /^\/api\/marketing\/provisions\/[^/]+\/pay$/.test(url.pathname);
+  if (!supported || req.method !== "POST") return false;
+  try {
+    const sql = await getSql();
+    await ensureStructuredSchemaOnce(sql);
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+    const permission = await structuredPermissionForUser(sql, user, "screen:marketing");
+    if (!permission.action) return sendJson(res, 403, { error: "Sem permissão" }), true;
+    const rows = await sql`SELECT data FROM crm_marketing_state WHERE id = 'main' LIMIT 1`;
+    const marketing = normalizeMarketingData(rows[0]?.data);
+    const body = await readBody(req);
+    let result;
+    let auditAction;
+    let auditDetails;
+
+    if (url.pathname === "/api/marketing/budget-categories") {
+      const name = String(body.name || "").trim();
+      const group = String(body.group || "").trim();
+      if (!name || !marketing.budgetGroups.includes(group)) return sendJson(res, 400, { error: "Nome e grupo financeiro válido são obrigatórios" }), true;
+      if (marketing.budgetCategories.some((item) => item.name.toLocaleLowerCase("pt-BR") === name.toLocaleLowerCase("pt-BR"))) return sendJson(res, 409, { error: "Categoria já cadastrada" }), true;
+      const category = { id: `mkt-cat-${crypto.randomUUID()}`, name, group, active: true, createdAt: new Date().toISOString(), createdBy: user.username };
+      marketing.budgetCategories.push(category);
+      result = { category };
+      auditAction = "CREATE_MARKETING_BUDGET_CATEGORY";
+      auditDetails = { categoryId: category.id, name, group };
+    } else if (url.pathname === "/api/marketing/budget-entries") {
+      const category = marketing.budgetCategories.find((item) => item.id === body.categoryId && item.active !== false);
+      const competence = String(body.competence || "").slice(0, 7);
+      const amount = Number(body.amount);
+      const project = String(body.project || "").trim();
+      if (!category || !/^\d{4}-\d{2}$/.test(competence) || !project || !Number.isFinite(amount) || amount < 0) return sendJson(res, 400, { error: "Categoria, empreendimento, competência e valor válido são obrigatórios" }), true;
+      const entry = { id: `mkt-budget-${crypto.randomUUID()}`, categoryId: category.id, categoryName: category.name, group: category.group, project, competence, amount, notes: String(body.notes || "").trim(), createdAt: new Date().toISOString(), createdBy: user.username };
+      marketing.budgetEntries.push(entry);
+      result = { entry };
+      auditAction = "CREATE_MARKETING_BUDGET_ENTRY";
+      auditDetails = { entryId: entry.id, categoryId: category.id, project, competence, amount };
+    } else if (url.pathname.includes("/reconciliation/")) {
+      const reconciliationId = decodeURIComponent(url.pathname.match(/^\/api\/marketing\/reconciliation\/([^/]+)\/create-expense$/)[1]);
+      const candidate = marketing.reconciliationQueue.find((item) => item.id === reconciliationId);
+      if (!candidate || candidate.status !== "pending") return sendJson(res, candidate ? 400 : 404, { error: candidate ? "Item de conciliação já tratado" : "Item de conciliação não encontrado" }), true;
+      const expense = { ...candidate.expense, id: `mkt-exp-${crypto.randomUUID()}`, project: String(body.project || candidate.expense?.project || "").trim(), source: "manual_reconciliation", reconciliationId, createdAt: new Date().toISOString(), createdBy: user.username };
+      if (!expense.project || !expense.paymentDate || !Number.isFinite(Number(expense.paidAmount))) return sendJson(res, 400, { error: "Empreendimento, data de pagamento e valor são obrigatórios" }), true;
+      marketing.actualExpenses.push(expense);
+      Object.assign(candidate, { status: "created_historical_expense", resolvedAt: new Date().toISOString(), resolvedBy: user.username, expenseId: expense.id });
+      result = { expense, reconciliation: candidate };
+      auditAction = "CREATE_MARKETING_HISTORICAL_EXPENSE";
+      auditDetails = { reconciliationId, expenseId: expense.id, project: expense.project, paidAmount: expense.paidAmount };
+    } else {
+      const provisioningId = decodeURIComponent(url.pathname.match(/^\/api\/marketing\/provisions\/([^/]+)\/pay$/)[1]);
+      const existingExpense = marketing.actualExpenses.find((item) => item.provisioningId === provisioningId);
+      if (existingExpense) return sendJson(res, 200, { expense: existingExpense, idempotent: true, marketing }), true;
+      const paidAmount = Number(body.paidAmount);
+      const paymentDate = String(body.paymentDate || "").slice(0, 10);
+      if (!body.project || !paymentDate || !Number.isFinite(paidAmount)) return sendJson(res, 400, { error: "Empreendimento, data de pagamento e valor são obrigatórios" }), true;
+      const now = new Date().toISOString();
+      let provision = marketing.provisions.find((item) => item.id === provisioningId);
+      if (!provision) { provision = { id: provisioningId, createdAt: now }; marketing.provisions.push(provision); }
+      Object.assign(provision, { eventId: String(body.eventId || provision.eventId || ""), eventName: String(body.eventName || provision.eventName || ""), project: String(body.project), supplier: String(body.supplier || ""), label: String(body.label || ""), expectedAmount: Number(body.expectedAmount || paidAmount), paidAmount, paymentDate, document: String(body.document || ""), status: "paid", paidAt: now, paidBy: user.username, updatedAt: now });
+      const expense = { id: `mkt-exp-${crypto.randomUUID()}`, project: provision.project, projectCode: provision.project === "Reserva Guinle" ? "RGL" : provision.project === "Golf Club Resort" ? "GOLF" : "", creditorName: provision.supplier, financialPlanName: "Ações e eventos", document: provision.document, paymentDate, originalAmount: provision.expectedAmount, paidAmount, notes: provision.label || provision.eventName, source: "provisioning", provisioningId, eventId: provision.eventId, createdAt: now, createdBy: user.username };
+      marketing.actualExpenses.push(expense);
+      result = { provision, expense };
+      auditAction = "PAY_MARKETING_PROVISION";
+      auditDetails = { provisioningId, expenseId: expense.id, eventId: provision.eventId, project: provision.project, paidAmount, paymentDate };
+    }
+
+    await sql`UPDATE crm_marketing_state SET data = ${JSON.stringify(marketing)}::jsonb, updated_at = now() WHERE id = 'main'`;
+    await structuredAudit(user, auditAction, auditDetails);
+    return sendJson(res, 201, { ...result, marketing }), true;
+  } catch (error) {
+    mirrorStructuredError("marketing", error);
+    return sendJson(res, 500, { error: "Erro ao atualizar Marketing", detail: error.message }), true;
   }
 }
 
@@ -11953,8 +12079,130 @@ async function routeApi(req, res, db) {
         logs: structuredLogs.source,
         config: structuredConfig.source
       },
+      marketing: normalizeMarketingData(db.marketing),
       levFinance: canAccessLevFinance(user) ? publicLevFinance(db) : null
     });
+  }
+
+  if (url.pathname === "/api/marketing/budget-categories" && method === "POST") {
+    if (!permissionForUser(db, user, "screen:marketing").action) return sendJson(res, 403, { error: "Sem permissão" });
+    const marketing = normalizeMarketingData(db.marketing);
+    const body = await readBody(req);
+    const name = String(body.name || "").trim();
+    const group = String(body.group || "").trim();
+    if (!name || !marketing.budgetGroups.includes(group)) return sendJson(res, 400, { error: "Nome e grupo financeiro válido são obrigatórios" });
+    if (marketing.budgetCategories.some((item) => item.name.toLocaleLowerCase("pt-BR") === name.toLocaleLowerCase("pt-BR"))) return sendJson(res, 409, { error: "Categoria já cadastrada" });
+    const category = { id: `mkt-cat-${crypto.randomUUID()}`, name, group, active: true, createdAt: new Date().toISOString(), createdBy: user.username };
+    marketing.budgetCategories.push(category);
+    db.marketing = marketing;
+    audit(db, user, "CREATE_MARKETING_BUDGET_CATEGORY", { categoryId: category.id, name, group });
+    await saveDb(db);
+    return sendJson(res, 201, { category, marketing });
+  }
+
+  if (url.pathname === "/api/marketing/budget-entries" && method === "POST") {
+    if (!permissionForUser(db, user, "screen:marketing").action) return sendJson(res, 403, { error: "Sem permissão" });
+    const marketing = normalizeMarketingData(db.marketing);
+    const body = await readBody(req);
+    const category = marketing.budgetCategories.find((item) => item.id === body.categoryId && item.active !== false);
+    const competence = String(body.competence || "").slice(0, 7);
+    const amount = Number(body.amount);
+    const project = String(body.project || "").trim();
+    if (!category || !/^\d{4}-\d{2}$/.test(competence) || !project || !Number.isFinite(amount) || amount < 0) return sendJson(res, 400, { error: "Categoria, empreendimento, competência e valor válido são obrigatórios" });
+    const entry = { id: `mkt-budget-${crypto.randomUUID()}`, categoryId: category.id, categoryName: category.name, group: category.group, project, competence, amount, notes: String(body.notes || "").trim(), createdAt: new Date().toISOString(), createdBy: user.username };
+    marketing.budgetEntries.push(entry);
+    db.marketing = marketing;
+    audit(db, user, "CREATE_MARKETING_BUDGET_ENTRY", { entryId: entry.id, categoryId: category.id, project, competence, amount });
+    await saveDb(db);
+    return sendJson(res, 201, { entry, marketing });
+  }
+
+  const marketingReconciliationCreateMatch = url.pathname.match(/^\/api\/marketing\/reconciliation\/([^/]+)\/create-expense$/);
+  if (marketingReconciliationCreateMatch && method === "POST") {
+    if (!permissionForUser(db, user, "screen:marketing").action) return sendJson(res, 403, { error: "Sem permissão" });
+    const marketing = normalizeMarketingData(db.marketing);
+    const candidate = marketing.reconciliationQueue.find((item) => item.id === marketingReconciliationCreateMatch[1]);
+    if (!candidate) return sendJson(res, 404, { error: "Item de conciliação não encontrado" });
+    if (candidate.status !== "pending") return sendJson(res, 400, { error: "Item de conciliação já tratado" });
+    const body = await readBody(req);
+    const expense = {
+      ...candidate.expense,
+      id: `mkt-exp-${crypto.randomUUID()}`,
+      project: String(body.project || candidate.expense?.project || "").trim(),
+      source: "manual_reconciliation",
+      reconciliationId: candidate.id,
+      createdAt: new Date().toISOString(),
+      createdBy: user.username
+    };
+    if (!expense.project || !expense.paymentDate || !Number.isFinite(Number(expense.paidAmount))) {
+      return sendJson(res, 400, { error: "Empreendimento, data de pagamento e valor são obrigatórios" });
+    }
+    marketing.actualExpenses.push(expense);
+    candidate.status = "created_historical_expense";
+    candidate.resolvedAt = new Date().toISOString();
+    candidate.resolvedBy = user.username;
+    candidate.expenseId = expense.id;
+    db.marketing = marketing;
+    audit(db, user, "CREATE_MARKETING_HISTORICAL_EXPENSE", { reconciliationId: candidate.id, expenseId: expense.id, project: expense.project, paidAmount: expense.paidAmount });
+    await saveDb(db);
+    return sendJson(res, 201, { expense, reconciliation: candidate, marketing });
+  }
+
+  const marketingProvisionPayMatch = url.pathname.match(/^\/api\/marketing\/provisions\/([^/]+)\/pay$/);
+  if (marketingProvisionPayMatch && method === "POST") {
+    if (!permissionForUser(db, user, "screen:marketing").action) return sendJson(res, 403, { error: "Sem permissão" });
+    const marketing = normalizeMarketingData(db.marketing);
+    const provisioningId = decodeURIComponent(marketingProvisionPayMatch[1]);
+    const existingExpense = marketing.actualExpenses.find((item) => item.provisioningId === provisioningId);
+    if (existingExpense) return sendJson(res, 200, { expense: existingExpense, idempotent: true, marketing });
+    const body = await readBody(req);
+    const paidAmount = Number(body.paidAmount);
+    const paymentDate = String(body.paymentDate || "").slice(0, 10);
+    if (!body.project || !paymentDate || !Number.isFinite(paidAmount)) return sendJson(res, 400, { error: "Empreendimento, data de pagamento e valor são obrigatórios" });
+    const now = new Date().toISOString();
+    let provision = marketing.provisions.find((item) => item.id === provisioningId);
+    if (!provision) {
+      provision = { id: provisioningId, createdAt: now };
+      marketing.provisions.push(provision);
+    }
+    Object.assign(provision, {
+      eventId: String(body.eventId || provision.eventId || ""),
+      eventName: String(body.eventName || provision.eventName || ""),
+      project: String(body.project),
+      supplier: String(body.supplier || ""),
+      label: String(body.label || ""),
+      expectedAmount: Number(body.expectedAmount || paidAmount),
+      paidAmount,
+      paymentDate,
+      document: String(body.document || ""),
+      status: "paid",
+      paidAt: now,
+      paidBy: user.username,
+      updatedAt: now
+    });
+    const expense = {
+      id: `mkt-exp-${crypto.randomUUID()}`,
+      project: provision.project,
+      projectCode: provision.project === "Reserva Guinle" ? "RGL" : provision.project === "Golf Club Resort" ? "GOLF" : "",
+      creditorName: provision.supplier,
+      financialPlanCode: "",
+      financialPlanName: "Ações e eventos",
+      document: provision.document,
+      paymentDate,
+      originalAmount: provision.expectedAmount,
+      paidAmount,
+      notes: provision.label || provision.eventName,
+      source: "provisioning",
+      provisioningId,
+      eventId: provision.eventId,
+      createdAt: now,
+      createdBy: user.username
+    };
+    marketing.actualExpenses.push(expense);
+    db.marketing = marketing;
+    audit(db, user, "PAY_MARKETING_PROVISION", { provisioningId, expenseId: expense.id, eventId: provision.eventId, project: provision.project, paidAmount, paymentDate });
+    await saveDb(db);
+    return sendJson(res, 201, { provision, expense, marketing });
   }
 
   const samEventActionMatch = url.pathname.match(/^\/api\/sam-events\/([^/]+)\/(link|ignore)$/);
@@ -13255,6 +13503,7 @@ async function handleRequest(req, res) {
     if (await fastStructuredSalesReportRoutes(req, res, url)) return;
     if (await fastStructuredBackupRoutes(req, res, url)) return;
     if (await fastStructuredOperationalRoutes(req, res, url)) return;
+    if (await fastStructuredMarketingRoutes(req, res, url)) return;
     if (await fastStructuredPresenceResponse(req, res, url)) return;
     if (await fastStructuredStateResponse(req, res, url)) return;
     if (await fastStructuredLeadsResponse(req, res, url)) return;
