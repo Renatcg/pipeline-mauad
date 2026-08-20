@@ -9957,8 +9957,14 @@ function renderProjectSettings() {
   const updateBlockFields = () => {
     if (!blockModalForm) return;
     const isHorizontal = blockModalForm.elements.layoutType.value === "Horizontal";
-    blockModalForm.querySelectorAll("[data-vertical-block-field]").forEach((field) => { field.hidden = isHorizontal; });
-    blockModalForm.querySelectorAll("[data-horizontal-block-field]").forEach((field) => { field.hidden = !isHorizontal; });
+    blockModalForm.querySelectorAll("[data-vertical-block-field]").forEach((field) => {
+      field.hidden = isHorizontal;
+      field.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = isHorizontal; });
+    });
+    blockModalForm.querySelectorAll("[data-horizontal-block-field]").forEach((field) => {
+      field.hidden = !isHorizontal;
+      field.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = !isHorizontal; });
+    });
     blockModalForm.elements.floorCount.required = !isHorizontal;
     blockModalForm.elements.columnCount.required = !isHorizontal;
     blockModalForm.elements.houseStart.required = isHorizontal;
