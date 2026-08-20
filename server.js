@@ -11747,7 +11747,11 @@ async function structuredDbDiagnostics(db) {
 
 function routeStatic(req, res) {
   const requested = req.url === "/" ? "/index.html" : decodeURIComponent(req.url.split("?")[0]);
-  const routedRequest = path.extname(requested) ? requested : "/index.html";
+  const publicPages = {
+    "/politica-de-privacidade": "/politica-de-privacidade.html",
+    "/exclusao-de-dados": "/exclusao-de-dados.html"
+  };
+  const routedRequest = publicPages[requested] || (path.extname(requested) ? requested : "/index.html");
   const filePath = path.normalize(path.join(PUBLIC_DIR, routedRequest));
   if (!filePath.startsWith(PUBLIC_DIR)) return notFound(res);
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) return notFound(res);

@@ -1,0 +1,94 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #17202c;
+  background: #f5f7fa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 32px 20px;
+}
+
+.legal-page {
+  width: min(100%, 780px);
+  margin: 0 auto;
+  padding: 44px;
+  background: #fff;
+  border: 1px solid #e0e5ec;
+  border-radius: 18px;
+  box-shadow: 0 10px 35px rgba(16, 24, 40, 0.06);
+}
+
+header {
+  padding-bottom: 24px;
+  border-bottom: 1px solid #e5e9ef;
+}
+
+.product-name {
+  color: #137f75;
+  font-size: 14px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 10px 0 8px;
+  font-size: clamp(30px, 5vw, 42px);
+  line-height: 1.1;
+}
+
+h2 {
+  margin: 0 0 10px;
+  font-size: 20px;
+}
+
+section {
+  padding-top: 24px;
+}
+
+p,
+li {
+  color: #536174;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+p {
+  margin: 8px 0 0;
+}
+
+ul {
+  margin: 10px 0 0;
+  padding-left: 24px;
+}
+
+a {
+  color: #0b766d;
+  font-weight: 650;
+}
+
+footer {
+  margin-top: 30px;
+  padding-top: 22px;
+  border-top: 1px solid #e5e9ef;
+}
+
+@media (max-width: 600px) {
+  body {
+    padding: 0;
+  }
+
+  .legal-page {
+    min-height: 100vh;
+    padding: 30px 22px;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}
