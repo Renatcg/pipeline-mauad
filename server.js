@@ -11749,7 +11749,8 @@ function routeStatic(req, res) {
   const requested = req.url === "/" ? "/index.html" : decodeURIComponent(req.url.split("?")[0]);
   const publicPages = {
     "/politica-de-privacidade": "/politica-de-privacidade.html",
-    "/exclusao-de-dados": "/exclusao-de-dados.html"
+    "/exclusao-de-dados": "/exclusao-de-dados.html",
+    "/termos-de-servico": "/termos-de-servico.html"
   };
   const routedRequest = publicPages[requested] || (path.extname(requested) ? requested : "/index.html");
   const filePath = path.normalize(path.join(PUBLIC_DIR, routedRequest));
