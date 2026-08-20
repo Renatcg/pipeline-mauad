@@ -146,7 +146,11 @@ const state = {
   marketingTimelineEnd: "",
   marketingBudgetEntryScreen: false,
   marketingCashflowExpanded: { planned: false, committed: false, actual: false },
-  marketing: { actualExpenses: [], reconciliationQueue: [], provisions: [], commitments: [], budgetGroups: [], budgetCategories: [], budgetEntries: [] },
+  marketingCashflowGroupExpanded: {},
+  marketingLaunchTab: "planned",
+  marketingFundModalOpen: false,
+  marketingEditingFundId: "",
+  marketing: { actualExpenses: [], reconciliationQueue: [], provisions: [], commitments: [], marketingFunds: [], budgetGroups: [], budgetCategories: [], budgetEntries: [] },
   marketingAddedItemQuotes: {},
   marketingQuoteEdits: {},
   marketingItemWinnerSelections: { "action-1:item-1": "item-1-q2", "action-1:item-2": "item-2-q1" },
@@ -1644,7 +1648,7 @@ async function loadState() {
   state.auditLog = data.auditLog;
   state.accessLog = data.accessLog || [];
   state.fupLeadLog = data.fupLeadLog || [];
-  state.marketing = data.marketing || { actualExpenses: [], reconciliationQueue: [], provisions: [], commitments: [], budgetGroups: [], budgetCategories: [], budgetEntries: [] };
+  state.marketing = data.marketing || { actualExpenses: [], reconciliationQueue: [], provisions: [], commitments: [], marketingFunds: [], budgetGroups: [], budgetCategories: [], budgetEntries: [] };
   state.levFinance = data.levFinance || null;
   state.smlFinance = data.smlFinance || { settings: {}, sales: [], receipts: [], paidUnits: [], settlements: [] };
   state.commercialSettings = data.commercialSettings || {};
@@ -5088,6 +5092,100 @@ function renderMarketingBudgetMock() {
   return `<section class="panel marketing-panel"><div class="panel-head"><div><h2>Fluxo de caixa de Marketing</h2><p class="muted-copy">Previsto por competência; realizado pela data da baixa.</p></div><div class="row-actions"><label class="compact-select"><span>Empreendimento</span><select id="marketingBudgetProject"><option value="TODOS">Todos</option>${(state.projects || []).map((item) => `<option value="${escapeHtml(item)}" ${project === item ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}</select></label><button class="primary" type="button" data-open-marketing-budget-entries>Lançamentos do previsto</button></div></div><div class="marketing-month-timeline"><div class="marketing-timeline-track">${timelineMonths.map((month) => { const selected = month >= (state.marketingTimelineDraftStart || appliedStart) && month <= (state.marketingTimelineDraftEnd || state.marketingTimelineDraftStart || appliedEnd); return `<button type="button" class="${selected ? "selected" : ""}" data-marketing-timeline-month="${month}" title="${escapeHtml(marketingMonthLabel(month))}"><i></i><span>${escapeHtml(marketingMonthLabel(month))}</span></button>`; }).join("")}</div><div class="marketing-timeline-actions"><span>Início: <strong>${escapeHtml(marketingMonthLabel(state.marketingTimelineDraftStart || appliedStart))}</strong></span><span>Fim: <strong>${escapeHtml(marketingMonthLabel(state.marketingTimelineDraftEnd || appliedEnd))}</strong></span><button type="button" class="secondary" data-apply-marketing-timeline>Filtrar</button></div></div>${alerts.length ? `<div class="marketing-budget-alerts">${alerts.map((item) => `<span class="${marketingAttainmentClass(item.rate)}">${escapeHtml(marketingMonthLabel(item.month))}: ${item.planned ? `${Math.round(item.rate * 100)}% atingido` : "sem previsto"}</span>`).join("")}</div>` : ""}<div class="table-wrap marketing-cashflow"><table><thead><tr><th>Movimento</th>${visibleMonths.map((month) => `<th>${escapeHtml(marketingMonthLabel(month))}</th>`).join("")}<th>Total</th></tr></thead><tbody>${row("planned", "Previsto", planned)}${row("committed", "Comprometido", committed)}${row("actual", "Realizado", actual)}<tr class="marketing-balance-row"><th>Saldo do mês</th>${balance.map((value) => `<td>${escapeHtml(brl(value))}</td>`).join("")}<td>${escapeHtml(brl(balance.reduce((sum, value) => sum + value, 0)))}</td></tr><tr class="marketing-balance-row accumulated"><th>Saldo acumulado</th>${accumulatedBalance.map((value) => `<td>${escapeHtml(brl(value))}</td>`).join("")}<td>${escapeHtml(brl(accumulatedBalance.at(-1) || 0))}</td></tr></tbody></table></div></section><section class="panel marketing-panel"><div class="panel-head"><div><h2>Gastos realizados</h2><p class="muted-copy">${numberPt(selectedExpenses.length)} lançamento(s) · ${escapeHtml(brl(selectedExpenses.reduce((sum, item) => sum + Number(item.paidAmount || 0), 0)))}</p></div><label class="compact-select"><span>Busca</span><input id="marketingExpenseSearch" value="${escapeHtml(state.marketingExpenseSearch)}" placeholder="Credor, documento ou descrição"></label></div><div class="table-wrap marketing-expenses-table"><table><thead><tr><th>Pagamento</th><th>Empreendimento</th><th>Plano financeiro</th><th>Credor</th><th>Documento</th><th>Descrição</th><th>Valor pago</th><th>Origem</th></tr></thead><tbody>${selectedExpenses.slice(0, 150).map((item) => `<tr><td>${escapeHtml(dateLabel(item.paymentDate))}</td><td>${escapeHtml(item.project)}</td><td>${escapeHtml(item.financialPlanName || "—")}</td><td>${escapeHtml(item.creditorName || "—")}</td><td>${escapeHtml(item.document || "—")}</td><td title="${escapeHtml(item.notes || "")}">${escapeHtml(item.notes || "—")}</td><td class="money">${escapeHtml(brl(item.paidAmount))}</td><td><span class="chip">${item.source === "provisioning" ? "Provisionamento" : item.source === "manual_reconciliation" ? "Conciliação manual" : "Histórico"}</span></td></tr>`).join("") || '<tr><td colspan="8">Nenhum gasto realizado no período.</td></tr>'}</tbody></table></div></section><section class="panel marketing-panel"><div class="panel-head"><div><h2>Fila de conciliação manual</h2><p class="muted-copy">Itens sem correspondência não criam gastos automaticamente.</p></div><span class="chip">${numberPt(pendingReconciliation.length)} pendente(s)</span></div><div class="table-wrap"><table><thead><tr><th>Pagamento</th><th>Empreendimento sugerido</th><th>Credor</th><th>Documento</th><th>Valor</th><th>Ação</th></tr></thead><tbody>${pendingReconciliation.map((item) => `<tr><td>${escapeHtml(dateLabel(item.expense?.paymentDate))}</td><td>${escapeHtml(item.expense?.project || "—")}</td><td>${escapeHtml(item.expense?.creditorName || "—")}</td><td>${escapeHtml(item.expense?.document || "—")}</td><td>${escapeHtml(brl(item.expense?.paidAmount || 0))}</td><td><button type="button" data-create-marketing-historical="${escapeHtml(item.id)}">Criar novo gasto histórico</button></td></tr>`).join("") || '<tr><td colspan="6">Nenhum item aguardando conciliação.</td></tr>'}</tbody></table></div></section>`;
 }
 
+function marketingCashflowContext(project = state.marketingBudgetProject || "TODOS") {
+  const actualEntries = (state.marketing?.actualExpenses || []).filter((item) => project === "TODOS" || item.project === project);
+  const plannedEntries = (state.marketing?.budgetEntries || []).filter((item) => project === "TODOS" || item.project === project);
+  const committedEntries = marketingCommittedEntries(project);
+  const todayMonth = new Date().toISOString().slice(0, 7);
+  const allCompetences = [...actualEntries.map((item) => String(item.paymentDate).slice(0, 7)), ...plannedEntries.map((item) => item.competence), ...committedEntries.map((item) => item.competence), todayMonth].filter((item) => /^\d{4}-\d{2}$/.test(item)).sort();
+  const firstMonth = allCompetences[0] || todayMonth;
+  const lastMonth = allCompetences.at(-1) || todayMonth;
+  const timelineMonths = marketingMonthRange(firstMonth, lastMonth);
+  const appliedStart = state.marketingTimelineStart || firstMonth;
+  const appliedEnd = state.marketingTimelineEnd || lastMonth;
+  const visibleMonths = marketingMonthRange(appliedStart, appliedEnd);
+  return { project, actualEntries, plannedEntries, committedEntries, firstMonth, lastMonth, timelineMonths, appliedStart, appliedEnd, visibleMonths };
+}
+
+function marketingEntryGroup(entry, movement) {
+  if (movement === "actual") return entry.financialPlanName || "Sem grupo";
+  return entry.group || "Sem grupo";
+}
+
+function marketingEntryCompetence(entry, movement) {
+  return String(movement === "actual" ? entry.paymentDate : entry.competence).slice(0, 7);
+}
+
+function marketingEntryAmount(entry, movement) {
+  return Number(movement === "actual" ? entry.paidAmount : entry.amount || 0);
+}
+
+function marketingEntryLabel(entry, movement) {
+  if (movement === "planned") return entry.categoryName || entry.notes || "Lançamento previsto";
+  if (movement === "committed") return entry.sourceName || entry.sourceType || "Compromisso";
+  return entry.notes || `${entry.creditorName || "Credor"} · ${entry.document || "sem documento"}`;
+}
+
+function renderMarketingCashflowRows(key, label, entries, months, groups) {
+  const movement = key;
+  const totals = months.map((month) => entries.filter((item) => marketingEntryCompetence(item, movement) === month).reduce((sum, item) => sum + marketingEntryAmount(item, movement), 0));
+  const expanded = Boolean(state.marketingCashflowExpanded[key]);
+  const parent = `<tr class="marketing-tree-parent"><th><button type="button" class="marketing-tree-toggle" data-toggle-marketing-cashflow="${key}" aria-expanded="${expanded}">${expanded ? "−" : "+"}</button>${escapeHtml(label)}</th>${totals.map((value) => `<td>${value ? escapeHtml(brl(value)) : "-"}</td>`).join("")}<td><strong>${escapeHtml(brl(totals.reduce((sum, value) => sum + value, 0)))}</strong></td></tr>`;
+  if (!expanded) return parent;
+  const groupNames = [...groups, ...entries.map((item) => marketingEntryGroup(item, movement)).filter((group) => !groups.includes(group))];
+  return parent + groupNames.map((group) => {
+    const groupEntries = entries.filter((item) => marketingEntryGroup(item, movement) === group);
+    const groupValues = months.map((month) => groupEntries.filter((item) => marketingEntryCompetence(item, movement) === month).reduce((sum, item) => sum + marketingEntryAmount(item, movement), 0));
+    const groupKey = `${key}:${group}`;
+    const groupExpanded = Boolean(state.marketingCashflowGroupExpanded[groupKey]);
+    const groupRow = `<tr class="marketing-tree-child"><th>${groupEntries.length ? `<button type="button" class="marketing-tree-toggle" data-toggle-marketing-cashflow-group="${escapeHtml(groupKey)}" aria-expanded="${groupExpanded}">${groupExpanded ? "−" : "+"}</button>` : '<span class="marketing-tree-spacer"></span>'}${escapeHtml(group)}</th>${groupValues.map((value) => `<td>${value ? escapeHtml(brl(value)) : "-"}</td>`).join("")}<td>${escapeHtml(brl(groupValues.reduce((sum, value) => sum + value, 0)))}</td></tr>`;
+    if (!groupExpanded) return groupRow;
+    return groupRow + groupEntries.map((entry) => {
+      const competence = marketingEntryCompetence(entry, movement);
+      const amount = marketingEntryAmount(entry, movement);
+      return `<tr class="marketing-tree-entry"><th title="${escapeHtml(marketingEntryLabel(entry, movement))}">${escapeHtml(marketingEntryLabel(entry, movement))}</th>${months.map((month) => `<td>${month === competence ? escapeHtml(brl(amount)) : "-"}</td>`).join("")}<td>${escapeHtml(brl(amount))}</td></tr>`;
+    }).join("");
+  }).join("");
+}
+
+function renderMarketingCashflowView() {
+  const context = marketingCashflowContext();
+  const { project, actualEntries, plannedEntries, committedEntries, timelineMonths, appliedStart, appliedEnd, visibleMonths } = context;
+  const groups = state.marketing?.budgetGroups || [];
+  const planned = marketingValuesByMonths(plannedEntries, visibleMonths, "competence", "amount");
+  const committed = marketingValuesByMonths(committedEntries, visibleMonths, "competence", "amount");
+  const actual = marketingValuesByMonths(actualEntries, visibleMonths, "paymentDate", "paidAmount");
+  const balance = visibleMonths.map((_, index) => planned[index] - committed[index] - actual[index]);
+  let running = 0;
+  const accumulated = balance.map((value) => (running += value));
+  const alerts = visibleMonths.map((month, index) => ({ month, planned: planned[index], committed: committed[index], rate: planned[index] ? (actual[index] + committed[index]) / planned[index] : (committed[index] ? 1 : 0) })).filter((item) => (item.planned && item.rate >= 0.6) || (!item.planned && item.committed));
+  return `<section class="panel marketing-panel"><div class="panel-head marketing-cashflow-head"><div><h2>Fluxo de caixa de Marketing</h2><p class="muted-copy">Previsto por competência; realizado pela data da baixa.</p></div><div class="row-actions marketing-cashflow-filters"><label class="compact-select"><span>Empreendimento</span><select id="marketingBudgetProject"><option value="TODOS">Todos</option>${(state.projects || []).map((item) => `<option value="${escapeHtml(item)}" ${project === item ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}</select></label><span class="marketing-date-choice">Início <strong>${escapeHtml(marketingMonthLabel(state.marketingTimelineDraftStart || appliedStart))}</strong></span><span class="marketing-date-choice">Fim <strong>${escapeHtml(marketingMonthLabel(state.marketingTimelineDraftEnd || appliedEnd))}</strong></span><button type="button" class="secondary" data-apply-marketing-timeline>Filtrar</button></div></div><div class="marketing-month-timeline is-transparent"><div class="marketing-timeline-track" style="--timeline-count:${timelineMonths.length}">${timelineMonths.map((month, index) => { const selected = month >= (state.marketingTimelineDraftStart || appliedStart) && month <= (state.marketingTimelineDraftEnd || state.marketingTimelineDraftStart || appliedEnd); return `<button type="button" class="${selected ? "selected" : ""} size-${index % 5}" data-marketing-timeline-month="${month}" title="${escapeHtml(marketingMonthLabel(month))}"><i></i><span>${escapeHtml(marketingMonthLabel(month))}</span></button>`; }).join("")}</div></div>${alerts.length ? `<div class="marketing-budget-alerts">${alerts.map((item) => `<span class="${marketingAttainmentClass(item.rate)}">${escapeHtml(marketingMonthLabel(item.month))}: ${item.planned ? `${Math.round(item.rate * 100)}% atingido` : "sem previsto"}</span>`).join("")}</div>` : ""}<div class="table-wrap marketing-cashflow"><table><thead><tr><th>Movimento</th>${visibleMonths.map((month) => `<th>${escapeHtml(marketingMonthLabel(month))}</th>`).join("")}<th>Total</th></tr></thead><tbody>${renderMarketingCashflowRows("planned", "Previsto", plannedEntries, visibleMonths, groups)}${renderMarketingCashflowRows("committed", "Comprometido", committedEntries, visibleMonths, groups)}${renderMarketingCashflowRows("actual", "Realizado", actualEntries, visibleMonths, groups)}<tr class="marketing-balance-row"><th>Saldo do mês</th>${balance.map((value) => `<td>${escapeHtml(brl(value))}</td>`).join("")}<td>${escapeHtml(brl(balance.reduce((sum, value) => sum + value, 0)))}</td></tr><tr class="marketing-balance-row accumulated"><th>Saldo acumulado</th>${accumulated.map((value) => `<td>${escapeHtml(brl(value))}</td>`).join("")}<td>${escapeHtml(brl(accumulated.at(-1) || 0))}</td></tr></tbody></table></div></section>`;
+}
+
+function renderMarketingRealizedLaunches() {
+  const project = state.marketingBudgetProject || "TODOS";
+  const expenses = (state.marketing?.actualExpenses || []).filter((item) => project === "TODOS" || item.project === project).filter((item) => !state.marketingExpenseSearch || [item.creditorName, item.financialPlanName, item.document, item.notes].some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(state.marketingExpenseSearch.toLocaleLowerCase("pt-BR")))).sort((a, b) => String(b.paymentDate).localeCompare(String(a.paymentDate)));
+  const pending = (state.marketing?.reconciliationQueue || []).filter((item) => item.status === "pending");
+  return `<section class="panel marketing-panel"><div class="panel-head"><div><h2>Gastos realizados</h2><p class="muted-copy">${numberPt(expenses.length)} lançamento(s) · ${escapeHtml(brl(expenses.reduce((sum, item) => sum + Number(item.paidAmount || 0), 0)))}</p></div><div class="row-actions"><label class="compact-select"><span>Empreendimento</span><select id="marketingBudgetProject"><option value="TODOS">Todos</option>${(state.projects || []).map((item) => `<option value="${escapeHtml(item)}" ${project === item ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}</select></label><label class="compact-select"><span>Busca</span><input id="marketingExpenseSearch" value="${escapeHtml(state.marketingExpenseSearch)}" placeholder="Credor, documento ou descrição"></label></div></div><div class="table-wrap marketing-expenses-table"><table><thead><tr><th>Pagamento</th><th>Empreendimento</th><th>Plano financeiro</th><th>Credor</th><th>Documento</th><th>Descrição</th><th>Valor pago</th><th>Origem</th></tr></thead><tbody>${expenses.slice(0, 200).map((item) => `<tr><td>${escapeHtml(dateLabel(item.paymentDate))}</td><td>${escapeHtml(item.project)}</td><td>${escapeHtml(item.financialPlanName || "—")}</td><td>${escapeHtml(item.creditorName || "—")}</td><td>${escapeHtml(item.document || "—")}</td><td title="${escapeHtml(item.notes || "")}">${escapeHtml(item.notes || "—")}</td><td class="money">${escapeHtml(brl(item.paidAmount))}</td><td><span class="chip">${item.source === "provisioning" ? "Provisionamento" : item.source === "manual_reconciliation" ? "Conciliação manual" : "Histórico"}</span></td></tr>`).join("")}</tbody></table></div></section><section class="panel marketing-panel"><div class="panel-head"><div><h2>Fila de conciliação manual</h2><p class="muted-copy">Itens sem correspondência exigem criação manual.</p></div><span class="chip">${numberPt(pending.length)} pendente(s)</span></div><div class="table-wrap"><table><thead><tr><th>Pagamento</th><th>Empreendimento</th><th>Credor</th><th>Documento</th><th>Valor</th><th>Ação</th></tr></thead><tbody>${pending.map((item) => `<tr><td>${escapeHtml(dateLabel(item.expense?.paymentDate))}</td><td>${escapeHtml(item.expense?.project || "—")}</td><td>${escapeHtml(item.expense?.creditorName || "—")}</td><td>${escapeHtml(item.expense?.document || "—")}</td><td>${escapeHtml(brl(item.expense?.paidAmount || 0))}</td><td><button type="button" data-create-marketing-historical="${escapeHtml(item.id)}">Criar novo gasto histórico</button></td></tr>`).join("") || '<tr><td colspan="6">Nenhum item aguardando conciliação.</td></tr>'}</tbody></table></div></section>`;
+}
+
+function renderMarketingFundModal() {
+  if (!state.marketingFundModalOpen) return "";
+  const fund = (state.marketing?.marketingFunds || []).find((item) => item.id === state.marketingEditingFundId);
+  return `<div class="modal-backdrop" data-close-marketing-fund><section class="modal-card"><div class="panel-head"><div><h2>${fund ? "Editar Verba de Marketing" : "Nova Verba de Marketing"}</h2></div><button class="icon" type="button" data-close-marketing-fund>×</button></div><form id="marketingFundForm" class="form-grid"><div class="field full"><label>Empreendimento</label><select name="project" required>${(state.projects || []).map((item) => `<option value="${escapeHtml(item)}" ${fund?.project === item ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}</select></div><div class="field"><label>VGV estimado</label><input name="estimatedVgv" type="number" min="0" step="0.01" value="${fund?.estimatedVgv || ""}" required></div><div class="field"><label>% geral de verba de marketing</label><input name="marketingPercent" type="number" min="0" step="0.01" value="${fund?.marketingPercent || ""}" required></div><div class="field full marketing-fund-preview"><span>Verba calculada</span><strong data-marketing-fund-preview>${escapeHtml(brl(fund?.totalBudget || 0))}</strong></div><div class="field full"><button class="primary" type="submit">${fund ? "Salvar alterações" : "Criar VM"}</button></div></form></section></div>`;
+}
+
+function renderMarketingFunds() {
+  const expenses = state.marketing?.actualExpenses || [];
+  const funds = state.marketing?.marketingFunds || [];
+  return `<section class="panel marketing-panel"><div class="panel-head"><div><h2>Verbas de Marketing</h2><p class="muted-copy">Limite geral calculado sobre o VGV estimado de cada empreendimento.</p></div><button class="primary" type="button" data-new-marketing-fund>Nova VM</button></div><div class="table-wrap marketing-funds-table"><table><thead><tr><th>Empreendimento</th><th>VGV estimado</th><th>% MKT</th><th>Verba total</th><th>Total gasto</th><th>Disponível</th><th>% consumido</th><th>Ações</th></tr></thead><tbody>${funds.map((fund) => { const spent = expenses.filter((item) => item.project === fund.project).reduce((sum, item) => sum + Number(item.paidAmount || 0), 0); const remaining = Number(fund.totalBudget || 0) - spent; const consumed = fund.totalBudget ? spent / fund.totalBudget : 0; return `<tr><td>${escapeHtml(fund.project)}</td><td>${escapeHtml(brl(fund.estimatedVgv))}</td><td>${numberPt(fund.marketingPercent)}%</td><td>${escapeHtml(brl(fund.totalBudget))}</td><td>${escapeHtml(brl(spent))}</td><td class="${remaining < 0 ? "negative" : ""}">${escapeHtml(brl(remaining))}</td><td><div class="marketing-consumption"><span><i style="width:${Math.min(100, consumed * 100)}%"></i></span><strong>${numberPt(consumed * 100)}%</strong></div></td><td>${renderSettingsActionMenu(`marketing-fund-${fund.id}`, [`<button type="button" data-edit-marketing-fund="${escapeHtml(fund.id)}">Editar e alterar</button>`])}</td></tr>`; }).join("") || '<tr><td colspan="8">Nenhuma Verba de Marketing cadastrada.</td></tr>'}</tbody></table></div></section>${renderMarketingFundModal()}`;
+}
+
+function renderMarketingLaunchesView() {
+  const tabs = [["planned", "Previstos"], ["actual", "Realizados"], ["funds", "Verba mkt"]];
+  return `<div class="tabs marketing-launch-tabs">${tabs.map(([id, label]) => `<button type="button" class="${state.marketingLaunchTab === id ? "active" : ""}" data-marketing-launch-tab="${id}">${label}</button>`).join("")}</div>${state.marketingLaunchTab === "planned" ? renderMarketingBudgetEntriesScreen(state.marketingBudgetProject || "TODOS").replace(/<button[^>]+data-close-marketing-budget-entries[^>]*>.*?<\/button>/, "") : state.marketingLaunchTab === "actual" ? renderMarketingRealizedLaunches() : renderMarketingFunds()}`;
+}
+
 function renderMarketingActionsMock() {
   const actions = marketingMockActions().sort((a, b) => String(b.eventDate).localeCompare(String(a.eventDate)));
   if (state.marketingEditingActionId) return renderMarketingEventEditorMock(actions);
@@ -5286,6 +5384,7 @@ function renderMarketingView() {
   document.querySelector(".marketing-supplier-popover")?.remove();
   const tabs = [
     ["budget", "Orçado × Realizado"],
+    ["launches", "Lançamentos"],
     ["actions", "Ações e eventos"],
     ["campaigns", "Campanhas"],
     ["pieces", "Peças"],
@@ -5295,7 +5394,7 @@ function renderMarketingView() {
     ${renderViewHead("Marketing", "Gerenciador de orçamento, ações e provisionamento")}
     <div class="mock-banner"><strong>Módulo em consolidação</strong><span>Os gastos realizados são históricos importados; ações, eventos e cotações ainda são demonstrativos.</span></div>
     <div class="tabs marketing-tabs">${tabs.map(([id, label]) => `<button type="button" class="${state.marketingTab === id ? "active" : ""}" data-marketing-tab="${id}">${label}</button>`).join("")}</div>
-    ${state.marketingTab === "budget" ? renderMarketingBudgetMock() : state.marketingTab === "actions" ? renderMarketingActionsMock() : ""}
+    ${state.marketingTab === "budget" ? renderMarketingCashflowView() : state.marketingTab === "launches" ? renderMarketingLaunchesView() : state.marketingTab === "actions" ? renderMarketingActionsMock() : ""}
     ${renderMarketingEmailMock()}
   `);
   document.querySelectorAll("[data-marketing-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingTab = button.dataset.marketingTab; state.marketingEditingActionId = ""; state.marketingEditingItemId = ""; state.marketingActivityModalOpen = false; state.marketingBudgetEntryScreen = false; renderMarketingView(); }));
@@ -5327,6 +5426,42 @@ function renderMarketingView() {
     state.marketingCashflowExpanded[key] = !state.marketingCashflowExpanded[key];
     renderMarketingViewAtScroll();
   }));
+  document.querySelectorAll("[data-toggle-marketing-cashflow-group]").forEach((button) => button.addEventListener("click", () => {
+    const key = button.dataset.toggleMarketingCashflowGroup;
+    state.marketingCashflowGroupExpanded[key] = !state.marketingCashflowGroupExpanded[key];
+    renderMarketingViewAtScroll();
+  }));
+  document.querySelectorAll("[data-marketing-launch-tab]").forEach((button) => button.addEventListener("click", () => { state.marketingLaunchTab = button.dataset.marketingLaunchTab; state.marketingFundModalOpen = false; renderMarketingView(); }));
+  document.querySelector("[data-new-marketing-fund]")?.addEventListener("click", () => { state.marketingEditingFundId = ""; state.marketingFundModalOpen = true; renderMarketingView(); });
+  document.querySelectorAll("[data-edit-marketing-fund]").forEach((button) => button.addEventListener("click", () => { state.marketingEditingFundId = button.dataset.editMarketingFund; state.marketingFundModalOpen = true; renderMarketingView(); }));
+  document.querySelectorAll("[data-close-marketing-fund]").forEach((element) => element.addEventListener("click", (event) => { if (event.target !== element && element.classList.contains("modal-backdrop")) return; state.marketingFundModalOpen = false; state.marketingEditingFundId = ""; renderMarketingView(); }));
+  const marketingFundForm = document.querySelector("#marketingFundForm");
+  const updateMarketingFundPreview = () => {
+    if (!marketingFundForm) return;
+    const vgv = Number(marketingFundForm.elements.estimatedVgv?.value || 0);
+    const percent = Number(marketingFundForm.elements.marketingPercent?.value || 0);
+    const output = marketingFundForm.querySelector("[data-marketing-fund-preview]");
+    if (output) output.textContent = brl(vgv * percent / 100);
+  };
+  marketingFundForm?.elements.estimatedVgv?.addEventListener("input", updateMarketingFundPreview);
+  marketingFundForm?.elements.marketingPercent?.addEventListener("input", updateMarketingFundPreview);
+  marketingFundForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const button = event.currentTarget.querySelector("button[type=submit]");
+    try {
+      setButtonBusy(button, true, "Salvando...");
+      const path = state.marketingEditingFundId ? `/api/marketing/funds/${encodeURIComponent(state.marketingEditingFundId)}` : "/api/marketing/funds";
+      const result = await api(path, { method: state.marketingEditingFundId ? "PATCH" : "POST", body: JSON.stringify({ project: form.get("project"), estimatedVgv: Number(form.get("estimatedVgv")), marketingPercent: Number(form.get("marketingPercent")) }) });
+      state.marketing = result.marketing;
+      state.marketingFundModalOpen = false;
+      state.marketingEditingFundId = "";
+      renderMarketingView();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
   document.querySelector("#marketingExpenseMonth")?.addEventListener("change", (event) => { state.marketingExpenseMonth = event.currentTarget.value; renderMarketingView(); });
   document.querySelector("#marketingExpenseSearch")?.addEventListener("change", (event) => { state.marketingExpenseSearch = event.currentTarget.value.trim(); renderMarketingView(); });
   document.querySelectorAll("[data-marketing-expense-month]").forEach((button) => button.addEventListener("click", () => { state.marketingExpenseMonth = button.dataset.marketingExpenseMonth; renderMarketingView(); }));

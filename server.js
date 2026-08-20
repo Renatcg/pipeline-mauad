@@ -866,7 +866,7 @@ const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 const META_DEFAULT_ASSIGNED_TO = process.env.META_DEFAULT_ASSIGNED_TO || "";
 const SAM_WEBHOOK_SECRET = process.env.SAM_WEBHOOK_SECRET || "";
 const BACKUP_SECRET = process.env.CRON_SECRET || process.env.BACKUP_SECRET || "";
-const APP_SCHEMA_VERSION = 2026082003;
+const APP_SCHEMA_VERSION = 2026082004;
 const DB_CACHE_TTL_MS = 3000;
 let sqlClientPromise = null;
 let structuredSchemaReady = false;
@@ -1085,6 +1085,7 @@ function defaultMarketingData() {
     reconciliationQueue: [],
     provisions: [],
     commitments: [],
+    marketingFunds: [],
     budgetGroups: ["Estratégia", "Gestão de marketing", "Marketing offline", "Marketing online", "Stand de vendas", "Comercial"],
     budgetCategories: [],
     budgetEntries: []
@@ -1109,6 +1110,7 @@ function normalizeMarketingData(marketing) {
     reconciliationQueue: Array.isArray(source.reconciliationQueue) ? source.reconciliationQueue : [],
     provisions: Array.isArray(source.provisions) ? source.provisions : [],
     commitments: Array.isArray(source.commitments) ? source.commitments : [],
+    marketingFunds: Array.isArray(source.marketingFunds) ? source.marketingFunds : [],
     budgetGroups: ["Estratégia", "Gestão de marketing", "Marketing offline", "Marketing online", "Stand de vendas", "Comercial"],
     budgetCategories: Array.isArray(source.budgetCategories) ? source.budgetCategories : [],
     budgetEntries: Array.isArray(source.budgetEntries) ? source.budgetEntries : (Array.isArray(source.budgets) ? source.budgets : [])
@@ -8947,9 +8949,11 @@ async function fastStructuredMarketingRoutes(req, res, url) {
   if (!DATABASE_URL || !url.pathname.startsWith("/api/marketing/")) return false;
   const supported = url.pathname === "/api/marketing/budget-categories"
     || url.pathname === "/api/marketing/budget-entries"
+    || url.pathname === "/api/marketing/funds"
+    || /^\/api\/marketing\/funds\/[^/]+$/.test(url.pathname)
     || /^\/api\/marketing\/reconciliation\/[^/]+\/create-expense$/.test(url.pathname)
     || /^\/api\/marketing\/provisions\/[^/]+\/pay$/.test(url.pathname);
-  if (!supported || req.method !== "POST") return false;
+  if (!supported || !["POST", "PATCH"].includes(req.method)) return false;
   try {
     const sql = await getSql();
     await ensureStructuredSchemaOnce(sql);
@@ -8964,7 +8968,31 @@ async function fastStructuredMarketingRoutes(req, res, url) {
     let auditAction;
     let auditDetails;
 
-    if (url.pathname === "/api/marketing/budget-categories") {
+    if (url.pathname === "/api/marketing/funds" && req.method === "POST") {
+      const project = String(body.project || "").trim();
+      const estimatedVgv = Number(body.estimatedVgv);
+      const marketingPercent = Number(body.marketingPercent);
+      if (!project || !Number.isFinite(estimatedVgv) || estimatedVgv < 0 || !Number.isFinite(marketingPercent) || marketingPercent < 0) return sendJson(res, 400, { error: "Empreendimento, VGV estimado e percentual válido são obrigatórios" }), true;
+      if (marketing.marketingFunds.some((item) => item.project === project)) return sendJson(res, 409, { error: "Já existe uma Verba de Marketing para este empreendimento" }), true;
+      const fund = { id: `mkt-fund-${crypto.randomUUID()}`, project, estimatedVgv, marketingPercent, totalBudget: estimatedVgv * marketingPercent / 100, createdAt: new Date().toISOString(), createdBy: user.username, updatedAt: new Date().toISOString(), updatedBy: user.username };
+      marketing.marketingFunds.push(fund);
+      result = { fund };
+      auditAction = "CREATE_MARKETING_FUND";
+      auditDetails = { fundId: fund.id, project, estimatedVgv, marketingPercent, totalBudget: fund.totalBudget };
+    } else if (/^\/api\/marketing\/funds\/[^/]+$/.test(url.pathname) && req.method === "PATCH") {
+      const fundId = decodeURIComponent(url.pathname.match(/^\/api\/marketing\/funds\/([^/]+)$/)[1]);
+      const fund = marketing.marketingFunds.find((item) => item.id === fundId);
+      if (!fund) return sendJson(res, 404, { error: "Verba de Marketing não encontrada" }), true;
+      const project = String(body.project || fund.project).trim();
+      const estimatedVgv = Number(body.estimatedVgv);
+      const marketingPercent = Number(body.marketingPercent);
+      if (!project || !Number.isFinite(estimatedVgv) || estimatedVgv < 0 || !Number.isFinite(marketingPercent) || marketingPercent < 0) return sendJson(res, 400, { error: "Empreendimento, VGV estimado e percentual válido são obrigatórios" }), true;
+      if (marketing.marketingFunds.some((item) => item.id !== fund.id && item.project === project)) return sendJson(res, 409, { error: "Já existe uma Verba de Marketing para este empreendimento" }), true;
+      Object.assign(fund, { project, estimatedVgv, marketingPercent, totalBudget: estimatedVgv * marketingPercent / 100, updatedAt: new Date().toISOString(), updatedBy: user.username });
+      result = { fund };
+      auditAction = "UPDATE_MARKETING_FUND";
+      auditDetails = { fundId, project, estimatedVgv, marketingPercent, totalBudget: fund.totalBudget };
+    } else if (url.pathname === "/api/marketing/budget-categories") {
       const name = String(body.name || "").trim();
       const group = String(body.group || "").trim();
       if (!name || !marketing.budgetGroups.includes(group)) return sendJson(res, 400, { error: "Nome e grupo financeiro válido são obrigatórios" }), true;
@@ -12082,6 +12110,42 @@ async function routeApi(req, res, db) {
       marketing: normalizeMarketingData(db.marketing),
       levFinance: canAccessLevFinance(user) ? publicLevFinance(db) : null
     });
+  }
+
+  if (url.pathname === "/api/marketing/funds" && method === "POST") {
+    if (!permissionForUser(db, user, "screen:marketing").action) return sendJson(res, 403, { error: "Sem permissão" });
+    const marketing = normalizeMarketingData(db.marketing);
+    const body = await readBody(req);
+    const project = String(body.project || "").trim();
+    const estimatedVgv = Number(body.estimatedVgv);
+    const marketingPercent = Number(body.marketingPercent);
+    if (!project || !Number.isFinite(estimatedVgv) || estimatedVgv < 0 || !Number.isFinite(marketingPercent) || marketingPercent < 0) return sendJson(res, 400, { error: "Empreendimento, VGV estimado e percentual válido são obrigatórios" });
+    if (marketing.marketingFunds.some((item) => item.project === project)) return sendJson(res, 409, { error: "Já existe uma Verba de Marketing para este empreendimento" });
+    const fund = { id: `mkt-fund-${crypto.randomUUID()}`, project, estimatedVgv, marketingPercent, totalBudget: estimatedVgv * marketingPercent / 100, createdAt: new Date().toISOString(), createdBy: user.username, updatedAt: new Date().toISOString(), updatedBy: user.username };
+    marketing.marketingFunds.push(fund);
+    db.marketing = marketing;
+    audit(db, user, "CREATE_MARKETING_FUND", { fundId: fund.id, project, estimatedVgv, marketingPercent, totalBudget: fund.totalBudget });
+    await saveDb(db);
+    return sendJson(res, 201, { fund, marketing });
+  }
+
+  const marketingFundMatch = url.pathname.match(/^\/api\/marketing\/funds\/([^/]+)$/);
+  if (marketingFundMatch && method === "PATCH") {
+    if (!permissionForUser(db, user, "screen:marketing").action) return sendJson(res, 403, { error: "Sem permissão" });
+    const marketing = normalizeMarketingData(db.marketing);
+    const fund = marketing.marketingFunds.find((item) => item.id === marketingFundMatch[1]);
+    if (!fund) return sendJson(res, 404, { error: "Verba de Marketing não encontrada" });
+    const body = await readBody(req);
+    const project = String(body.project || fund.project).trim();
+    const estimatedVgv = Number(body.estimatedVgv);
+    const marketingPercent = Number(body.marketingPercent);
+    if (!project || !Number.isFinite(estimatedVgv) || estimatedVgv < 0 || !Number.isFinite(marketingPercent) || marketingPercent < 0) return sendJson(res, 400, { error: "Empreendimento, VGV estimado e percentual válido são obrigatórios" });
+    if (marketing.marketingFunds.some((item) => item.id !== fund.id && item.project === project)) return sendJson(res, 409, { error: "Já existe uma Verba de Marketing para este empreendimento" });
+    Object.assign(fund, { project, estimatedVgv, marketingPercent, totalBudget: estimatedVgv * marketingPercent / 100, updatedAt: new Date().toISOString(), updatedBy: user.username });
+    db.marketing = marketing;
+    audit(db, user, "UPDATE_MARKETING_FUND", { fundId: fund.id, project, estimatedVgv, marketingPercent, totalBudget: fund.totalBudget });
+    await saveDb(db);
+    return sendJson(res, 200, { fund, marketing });
   }
 
   if (url.pathname === "/api/marketing/budget-categories" && method === "POST") {

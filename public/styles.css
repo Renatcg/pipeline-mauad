@@ -5538,6 +5538,152 @@ th {
   color: #115e59;
 }
 
+.marketing-month-timeline.is-transparent {
+  margin: 2px 0 16px;
+  padding: 8px 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+.marketing-month-timeline.is-transparent .marketing-timeline-track {
+  display: grid;
+  grid-template-columns: repeat(var(--timeline-count, 58), minmax(0, 1fr));
+  width: 100%;
+  height: 38px;
+  padding: 8px 2px;
+  overflow: hidden;
+}
+
+.marketing-month-timeline.is-transparent .marketing-timeline-track button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 22px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+}
+
+.marketing-month-timeline.is-transparent .marketing-timeline-track button i {
+  position: static;
+  display: block;
+  width: 5px;
+  height: 2px;
+  border: 0;
+  border-radius: 0;
+  background: #cbd5d1;
+  transform: none;
+  transition: width 120ms ease, background 120ms ease;
+}
+
+.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-1 i { width: 7px; }
+.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-2 i { width: 10px; }
+.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-3 i { width: 14px; }
+.marketing-month-timeline.is-transparent .marketing-timeline-track button.size-4 i { width: 8px; }
+.marketing-month-timeline.is-transparent .marketing-timeline-track button.selected i { background: #6b7f7a; }
+.marketing-month-timeline.is-transparent .marketing-timeline-track button:hover i,
+.marketing-month-timeline.is-transparent .marketing-timeline-track button:focus-visible i { width: 20px; background: #111827; }
+
+.marketing-cashflow-filters {
+  justify-content: flex-end;
+}
+
+.marketing-date-choice {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.marketing-tree-toggle {
+  width: auto !important;
+  height: auto !important;
+  margin-right: 7px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: inherit;
+  box-shadow: none !important;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.marketing-tree-spacer {
+  display: inline-block;
+  width: 15px;
+  margin-right: 7px;
+}
+
+.marketing-tree-entry th:first-child {
+  max-width: 320px;
+  padding-left: 66px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marketing-cashflow tbody tr:nth-child(even):not(.marketing-balance-row) th,
+.marketing-cashflow tbody tr:nth-child(even):not(.marketing-balance-row) td {
+  background: #f7f9fb;
+}
+
+.marketing-launch-tabs {
+  margin-bottom: 14px;
+}
+
+.marketing-fund-preview {
+  padding: 14px;
+  border-radius: 10px;
+  background: #eef6f4;
+}
+
+.marketing-fund-preview span,
+.marketing-fund-preview strong {
+  display: block;
+}
+
+.marketing-fund-preview strong {
+  margin-top: 4px;
+  color: #115e59;
+  font-size: 24px;
+}
+
+.marketing-consumption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 130px;
+}
+
+.marketing-consumption > span {
+  width: 76px;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.marketing-consumption i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #0f766e;
+}
+
+.marketing-funds-table .negative {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
 .marketing-action-layout {
   display: grid;
   grid-template-columns: minmax(260px, .72fr) minmax(0, 1.8fr);
