@@ -5778,6 +5778,11 @@ function availableSettingsGroups() {
       tabs: canManageSystemSettings() ? [{ id: "logs", label: "Logs" }] : []
     },
     {
+      id: "privacy",
+      label: "Privacidade",
+      tabs: canManagePrivacy() ? [{ id: "privacy", label: "Solicitações LGPD" }] : []
+    },
+    {
       id: "levFinance",
       label: "Financeiro Lev",
       tabs: canManageLevFinanceSettings() ? [{ id: "levFinance", label: "Financeiro Lev" }] : []
