@@ -5898,13 +5898,43 @@ async function renderPrivacySettings() {
     document.querySelectorAll("[data-privacy-evidence]").forEach((button) => button.addEventListener("click", async () => {
       try {
         const evidence = await api(`/api/privacy/requests/${encodeURIComponent(button.dataset.privacyEvidence)}/evidence`);
-        const opened = window.open();
-        if (opened) opened.location.href = evidence.dataUrl;
+        openPrivacyEvidenceModal(evidence.dataUrl);
       } catch (error) { alert(error.message); }
     }));
   } catch (error) {
     settingsLayout(`<section class="panel"><div class="empty">${escapeHtml(error.message)}</div></section>`);
   }
+}
+
+function openPrivacyEvidenceModal(dataUrl) {
+  document.querySelector("[data-privacy-evidence-modal]")?.remove();
+  const wrapper = document.createElement("div");
+  wrapper.className = "privacy-modal-backdrop";
+  wrapper.dataset.privacyEvidenceModal = "true";
+  wrapper.innerHTML = `
+    <section class="privacy-evidence-modal" role="dialog" aria-modal="true" aria-labelledby="privacy-evidence-title">
+      <div class="privacy-evidence-head">
+        <h2 id="privacy-evidence-title">Comprovante</h2>
+        <button type="button" data-close-privacy-evidence aria-label="Fechar">×</button>
+      </div>
+      <div class="privacy-evidence-viewer"></div>
+    </section>`;
+  const viewer = wrapper.querySelector(".privacy-evidence-viewer");
+  const isImage = /^data:image\//i.test(String(dataUrl || ""));
+  const content = document.createElement(isImage ? "img" : "iframe");
+  content.src = dataUrl;
+  content.alt = isImage ? "Comprovante da solicitação de privacidade" : "";
+  if (!isImage) content.title = "Comprovante da solicitação de privacidade";
+  viewer.appendChild(content);
+  const close = () => {
+    document.removeEventListener("keydown", onKeyDown);
+    wrapper.remove();
+  };
+  const onKeyDown = (event) => { if (event.key === "Escape") close(); };
+  wrapper.querySelector("[data-close-privacy-evidence]").addEventListener("click", close);
+  wrapper.addEventListener("click", (event) => { if (event.target === wrapper) close(); });
+  document.addEventListener("keydown", onKeyDown);
+  document.body.appendChild(wrapper);
 }
 
 function renderSettingsActionMenu(menuId, actions, label = "⋮") {

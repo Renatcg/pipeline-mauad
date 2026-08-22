@@ -59,6 +59,32 @@
 .privacy-badge { display: inline-flex; padding: 4px 8px; border-radius: 999px; color: #176b55; background: #e8f7f1; }
 .privacy-badge.danger { color: #9c2118; background: #fff0ef; }
 
+.privacy-evidence-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  height: 40dvh;
+  min-height: 260px;
+  overflow: hidden;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 28px 90px rgba(15, 23, 42, .3);
+}
+
+.privacy-evidence-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.privacy-evidence-head h2 { margin: 0; font-size: 18px; }
+.privacy-evidence-head button { width: 36px; min-height: 34px; padding: 0; font-size: 24px; }
+.privacy-evidence-viewer { flex: 1; min-height: 0; overflow: auto; background: #f3f5f7; }
+.privacy-evidence-viewer img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.privacy-evidence-viewer iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+
 * {
   box-sizing: border-box;
 }
