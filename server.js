@@ -29,6 +29,7 @@ const META_HEALTH_ALERT_FACTOR = Number(process.env.META_HEALTH_ALERT_FACTOR || 
 const META_HEALTH_MIN_SAMPLE = Number(process.env.META_HEALTH_MIN_SAMPLE || 5);
 const META_HEALTH_MIN_GAP_MINUTES = Number(process.env.META_HEALTH_MIN_GAP_MINUTES || 180);
 const META_HEALTH_ALERT_COOLDOWN_HOURS = Number(process.env.META_HEALTH_ALERT_COOLDOWN_HOURS || 6);
+const PRIVACY_ROLES = new Set(["Admin TI", "Coordenador de Marketing", "Gestor de Tráfego"]);
 const DEFAULT_PROJECTS = ["Reserva Guinle", "Golf Club Resort"];
 const DEFAULT_EVENT_CAPTURE_EMAIL_HTML = "<h1>Obrigado pela sua visita, {{nome_lead}}!</h1><p>Agradecemos a atenção dispensada à equipe Comercial Mauad durante o 64º Aberto de Golfe, em Teresópolis.</p><p>Foi um prazer conversar com você. Em breve, nossa equipe poderá apresentar mais detalhes do Golf Club Resort.</p><p>Atenciosamente,<br><strong>Comercial Mauad</strong></p>";
 const PERMISSION_SCREENS = [
@@ -1053,7 +1054,10 @@ function buildDefaultDb() {
       inPipeline: false
     })),
     integrations: seed.integrations,
+        privacyRequests: [],
+        privacySuppressions: [],
         integrationLog: [],
+        fupLeadLog: [],
         samEvents: [],
         accessLog: [],
         marketing: defaultMarketingData(),
@@ -1225,6 +1229,14 @@ function migrateDb(db) {
   }
   if (!Array.isArray(db.samEvents)) {
     db.samEvents = [];
+    changed = true;
+  }
+  if (!Array.isArray(db.privacyRequests)) {
+    db.privacyRequests = [];
+    changed = true;
+  }
+  if (!Array.isArray(db.privacySuppressions)) {
+    db.privacySuppressions = [];
     changed = true;
   }
   const normalizedMarketing = normalizeMarketingData(db.marketing);
@@ -3086,6 +3098,55 @@ function canManageSettings(user) {
   return user.role === "Admin TI";
 }
 
+function canManagePrivacy(user) {
+  return Boolean(user && PRIVACY_ROLES.has(user.role));
+}
+
+function canExecuteLeadPrivacy(user) {
+  return Boolean(user && ["Admin TI", "Head Comercial"].includes(user.role));
+}
+
+function privacyFingerprint(kind, value) {
+  const normalized = kind === "email" ? normalizeEmail(value) : normalizePhoneDigits(value);
+  if (!normalized) return "";
+  const secret = process.env.LGPD_FINGERPRINT_SECRET || SESSION_SECRET;
+  return crypto.createHmac("sha256", secret).update(`${kind}:${normalized}`).digest("hex");
+}
+
+function maskPrivacyEmail(value) {
+  const email = normalizeEmail(value);
+  const [local = "", domain = ""] = email.split("@");
+  if (!local || !domain) return "***";
+  const parts = domain.split(".");
+  const provider = parts.shift() || "";
+  const suffix = parts.length ? `.${parts.join(".")}` : "";
+  return `${local.slice(0, 4)}***@${provider.slice(0, 2)}***${suffix}`;
+}
+
+function encryptPrivacyEvidence(evidence) {
+  if (!evidence?.dataUrl) return null;
+  const match = String(evidence.dataUrl).match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw new Error("Anexo inválido");
+  const allowed = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
+  if (!allowed.has(match[1])) throw new Error("Envie uma imagem JPG, PNG, WEBP ou PDF");
+  const raw = Buffer.from(match[2], "base64");
+  if (raw.length > 3 * 1024 * 1024) throw new Error("O anexo deve ter no máximo 3 MB");
+  const key = crypto.createHash("sha256").update(process.env.LGPD_EVIDENCE_SECRET || SESSION_SECRET).digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(raw), cipher.final()]);
+  return { name: String(evidence.name || "comprovante"), mime: match[1], size: raw.length, iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: encrypted.toString("base64") };
+}
+
+function decryptPrivacyEvidence(evidence) {
+  if (!evidence?.ciphertext) return null;
+  const key = crypto.createHash("sha256").update(process.env.LGPD_EVIDENCE_SECRET || SESSION_SECRET).digest();
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(evidence.iv, "base64"));
+  decipher.setAuthTag(Buffer.from(evidence.tag, "base64"));
+  const raw = Buffer.concat([decipher.update(Buffer.from(evidence.ciphertext, "base64")), decipher.final()]);
+  return { name: evidence.name, mime: evidence.mime, dataUrl: `data:${evidence.mime};base64,${raw.toString("base64")}` };
+}
+
 function chatwootCollection(value) {
   if (Array.isArray(value)) return value;
   if (Array.isArray(value?.payload)) return value.payload;
@@ -3357,6 +3418,7 @@ function structuredBaseSourceAliasesMany(sources = []) {
 }
 
 function visibleLeadsFromList(db, user, leads) {
+  leads = leads.filter((lead) => !lead.privacyStatus);
   if (user.role === "Corretor") {
     return leads.filter((lead) => {
       if (lead.inPipeline && lead.assignedTo) return lead.assignedTo === user.id;
@@ -3452,6 +3514,10 @@ function normalizeManualLeadPayload(db, body) {
   if (!desiredProject) return { error: "Empreendimento desejado obrigatório" };
   if (!validProjectNames(db).has(desiredProject)) return { error: "Empreendimento desejado inválido" };
   if (!MANUAL_LEAD_SOURCES.includes(source)) return { error: "Origem do novo lead inválida" };
+  const fingerprints = [privacyFingerprint("email", email), privacyFingerprint("phone", phone)].filter(Boolean);
+  if ((db.privacySuppressions || []).some((item) => item.active !== false && fingerprints.includes(item.fingerprint))) {
+    return { error: "Contato bloqueado por solicitação de privacidade (LGPD). O cadastro não foi realizado." };
+  }
   return {
     lead: {
       name,
@@ -4775,6 +4841,9 @@ async function ensureStructuredSchema(sql) {
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_phone_idx ON crm_leads (phone)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_base_before_idx ON crm_leads (base_source_before_pipeline)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_previous_source_idx ON crm_leads (previous_pipeline_source)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_privacy_requests (id text PRIMARY KEY, lead_id text NOT NULL, request_type text NOT NULL, status text NOT NULL, requested_at timestamptz NOT NULL, completed_at timestamptz, actor_id text, actor_name text, actor_role text, masked_name text, masked_email text, masked_phone text, reason text, channel text, evidence jsonb, payload jsonb NOT NULL DEFAULT '{}'::jsonb)`;
+  await sql`CREATE INDEX IF NOT EXISTS crm_privacy_requests_lead_idx ON crm_privacy_requests (lead_id)`;
+  await sql`CREATE TABLE IF NOT EXISTS crm_privacy_suppressions (fingerprint text PRIMARY KEY, kind text NOT NULL, request_id text NOT NULL, active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now())`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_source_status_idx ON crm_leads (source_status)`;
   await sql`CREATE INDEX IF NOT EXISTS crm_leads_odysseia_status_idx ON crm_leads (odysseia_status)`;
   await sql`CREATE TABLE IF NOT EXISTS crm_opportunities (
@@ -4950,7 +5019,7 @@ async function ensureStructuredSchemaOnce(sql) {
 
 const STRUCTURED_TABLES = [
   "crm_lead_comments", "crm_lead_tags", "crm_lead_favorites", "crm_opportunities", "crm_units", "crm_permissions", "crm_meta_forms", "crm_tag_definitions", "crm_settings", "crm_meta_lead_health", "crm_meta_conversion_events",
-  "crm_pipeline_statuses", "crm_projects", "crm_base_sources", "crm_audit_logs", "crm_access_logs", "crm_integration_logs",
+  "crm_pipeline_statuses", "crm_projects", "crm_base_sources", "crm_audit_logs", "crm_access_logs", "crm_integration_logs", "crm_privacy_requests", "crm_privacy_suppressions",
   "crm_fup_lead_logs", "crm_lead_status_movements", "crm_sam_events", "crm_lev_sales", "crm_lev_receipts", "crm_lev_settlements", "crm_sml_authorization_links", "crm_sml_sales", "crm_sml_receipts", "crm_sml_settlements", "crm_knowledge_articles", "crm_leads", "crm_users"
 ];
 
@@ -4979,6 +5048,7 @@ const STRUCTURED_DATASETS = [
   { key: "levReceipts", tables: ["crm_lev_receipts"] },
   { key: "levSettlements", tables: ["crm_lev_settlements"] },
   { key: "knowledgeArticles", tables: ["crm_knowledge_articles"] }
+  ,{ key: "privacy", tables: ["crm_privacy_requests", "crm_privacy_suppressions"] }
 ];
 
 const STRUCTURED_DATASET_BY_KEY = new Map(STRUCTURED_DATASETS.map((item) => [item.key, item]));
@@ -5018,6 +5088,8 @@ async function clearStructuredTable(sql, table) {
   if (table === "crm_sml_receipts") return sql`DELETE FROM crm_sml_receipts`;
   if (table === "crm_sml_settlements") return sql`DELETE FROM crm_sml_settlements`;
   if (table === "crm_knowledge_articles") return sql`DELETE FROM crm_knowledge_articles`;
+  if (table === "crm_privacy_requests") return sql`DELETE FROM crm_privacy_requests`;
+  if (table === "crm_privacy_suppressions") return sql`DELETE FROM crm_privacy_suppressions`;
   if (table === "crm_leads") return sql`DELETE FROM crm_leads`;
   if (table === "crm_users") return sql`DELETE FROM crm_users`;
   throw new Error(`Tabela estruturada inválida: ${table}`);
@@ -5057,6 +5129,8 @@ async function countStructuredTable(sql, table) {
   if (table === "crm_lev_receipts") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_receipts`)[0]?.count || 0;
   if (table === "crm_lev_settlements") return (await sql`SELECT COUNT(*)::int AS count FROM crm_lev_settlements`)[0]?.count || 0;
   if (table === "crm_knowledge_articles") return (await sql`SELECT COUNT(*)::int AS count FROM crm_knowledge_articles`)[0]?.count || 0;
+  if (table === "crm_privacy_requests") return (await sql`SELECT COUNT(*)::int AS count FROM crm_privacy_requests`)[0]?.count || 0;
+  if (table === "crm_privacy_suppressions") return (await sql`SELECT COUNT(*)::int AS count FROM crm_privacy_suppressions`)[0]?.count || 0;
   throw new Error(`Tabela estruturada inválida: ${table}`);
 }
 
@@ -6645,7 +6719,9 @@ async function structuredBackupDb(sql) {
     smlSettlementRows,
     smlAuthorizationRows,
     metaHealthRows,
-    metaConversionRows
+    metaConversionRows,
+    privacyRequestRows,
+    privacySuppressionRows
   ] = await Promise.all([
     sql`SELECT * FROM crm_users ORDER BY name ASC, username ASC`,
     sql`SELECT * FROM crm_leads ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST`,
@@ -6674,7 +6750,9 @@ async function structuredBackupDb(sql) {
     sql`SELECT * FROM crm_sml_settlements ORDER BY signed_at DESC NULLS LAST, unit ASC`,
     sql`SELECT * FROM crm_sml_authorization_links ORDER BY expires_at DESC`,
     sql`SELECT * FROM crm_meta_lead_health ORDER BY project ASC`,
-    sql`SELECT * FROM crm_meta_conversion_events ORDER BY created_at DESC`
+    sql`SELECT * FROM crm_meta_conversion_events ORDER BY created_at DESC`,
+    sql`SELECT * FROM crm_privacy_requests ORDER BY requested_at DESC`,
+    sql`SELECT * FROM crm_privacy_suppressions ORDER BY created_at DESC`
   ]);
   const commentsByLead = new Map();
   for (const row of commentRows) {
@@ -6771,6 +6849,8 @@ async function structuredBackupDb(sql) {
     },
     metaLeadHealth: metaHealthRows,
     metaConversionEvents: metaConversionRows,
+    privacyRequests: privacyRequestRows.map((row) => ({ ...(row.payload || {}), evidence: row.evidence || null })),
+    privacySuppressions: privacySuppressionRows.map((row) => ({ fingerprint: row.fingerprint, kind: row.kind, requestId: row.request_id, active: row.active, createdAt: row.created_at })),
     importSummary: { origin: "STRUCTURED_BACKUP", leadCount: leads.length, inactiveBrokerCount: 0 }
   };
   ensurePermissions(db);
@@ -9771,6 +9851,7 @@ async function structuredLeadById(sql, leadId, user) {
   if (!rows.length) return null;
   const commentRows = await sql`SELECT payload FROM crm_lead_comments WHERE lead_id = ${leadId} ORDER BY created_at DESC NULLS LAST`;
   const lead = structuredLeadFromRow(rows[0], rows[0].favorite, rows[0].tags);
+  if (lead.privacyStatus) return null;
   lead.comments = commentRows.map((row) => row.payload || {}).filter((comment) => comment.id);
   lead.opportunities = (await structuredOpportunitiesForLeadIds(sql, [leadId])).get(leadId) || [];
   lead.favoritesByUser[user.id] = Boolean(rows[0].favorite);
@@ -10677,6 +10758,7 @@ async function fastStructuredLeadsResponse(req, res, url) {
             CASE WHEN ${sortKey} = 'source' AND ${sortDirection} = 'desc' THEN lower(l.source) END DESC NULLS LAST,
             lower(l.name) ASC NULLS LAST
           LIMIT ${pageLimit} OFFSET ${pageOffset}`;
+      rows = rows.filter((row) => !String(row.payload?.privacyStatus || ""));
       const leads = await attachStructuredOpportunities(sql, rows.map((row) => structuredLeadFromRow(row, row.favorite, row.tags)));
       return sendJson(res, 200, {
         leads: leads.map((lead) => publicLeadSummary(lead, user)),
@@ -10701,6 +10783,7 @@ async function fastStructuredLeadsResponse(req, res, url) {
         previousPipelineSource: row.previous_pipeline_source
       }).some((source) => allowedSources.includes(source)));
     }
+    rows = rows.filter((row) => !String(row.payload?.privacyStatus || ""));
     let leads = await attachStructuredOpportunities(sql, rows.map((row) => structuredLeadFromRow(row, row.favorite, row.tags)));
     if (scope === "pipeline") leads = await attachStructuredCommentPreviews(sql, leads);
     return sendJson(res, 200, {
@@ -10724,10 +10807,17 @@ async function fastStructuredManualLeadRoutes(req, res, url) {
     if (!user) return true;
     if (!canManageLeads(user) && user.role !== "Corretor") return sendJson(res, 403, { error: "Sem permissão" });
     const body = await readBody(req);
+    const ensureNotSuppressed = async (candidate) => {
+      const fingerprints = [privacyFingerprint("email", candidate.email), privacyFingerprint("phone", candidate.phone)].filter(Boolean);
+      if (!fingerprints.length) return false;
+      const rows = await sql`SELECT fingerprint FROM crm_privacy_suppressions WHERE active = true AND fingerprint = ANY(${fingerprints}) LIMIT 1`;
+      return rows.length > 0;
+    };
 
     if (url.pathname === "/api/leads/check-duplicate") {
       const normalized = await normalizeStructuredManualLeadPayload(sql, body);
       if (normalized.error) return sendJson(res, 400, { error: normalized.error });
+      if (await ensureNotSuppressed(normalized.lead)) return sendJson(res, 409, { error: "Contato bloqueado por solicitação de privacidade (LGPD). O cadastro não foi realizado." });
       const duplicate = await findStructuredManualLeadDuplicate(sql, normalized.lead);
       return sendJson(res, 200, {
         duplicate: duplicate ? publicLead(duplicate, user) : null,
@@ -10748,6 +10838,7 @@ async function fastStructuredManualLeadRoutes(req, res, url) {
       if (!["overwrite", "rescue"].includes(mode)) return sendJson(res, 400, { error: "Escolha inválida" });
       const normalized = await normalizeStructuredManualLeadPayload(sql, body.lead || {});
       if (normalized.error) return sendJson(res, 400, { error: normalized.error });
+      if (await ensureNotSuppressed(normalized.lead)) return sendJson(res, 409, { error: "Contato bloqueado por solicitação de privacidade (LGPD)." });
       const payload = normalized.lead;
       const requestedStatus = String(body.lead?.status || "").trim();
       const status = statuses.includes(requestedStatus) ? requestedStatus : statuses[0];
@@ -10798,6 +10889,7 @@ async function fastStructuredManualLeadRoutes(req, res, url) {
 
     const normalized = await normalizeStructuredManualLeadPayload(sql, body);
     if (normalized.error) return sendJson(res, 400, { error: normalized.error });
+    if (await ensureNotSuppressed(normalized.lead)) return sendJson(res, 409, { error: "Contato bloqueado por solicitação de privacidade (LGPD). O cadastro não foi realizado." });
     const payload = normalized.lead;
     const duplicate = await findStructuredManualLeadDuplicate(sql, payload);
     if (duplicate) {
@@ -11384,6 +11476,81 @@ async function fastStructuredLeadAction(req, res, url) {
   }
 }
 
+async function fastStructuredPrivacyRoutes(req, res, url) {
+  if (!DATABASE_URL || !url.pathname.startsWith("/api/privacy") && !/^\/api\/leads\/[^/]+\/privacy$/.test(url.pathname)) return false;
+  try {
+    const sql = await getSql();
+    if (!sql) return false;
+    await ensureStructuredSchemaOnce(sql);
+    const user = await structuredUserFromSession(req, res, sql);
+    if (!user) return true;
+    const leadMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/privacy$/);
+    if (leadMatch && req.method === "POST") {
+      if (!canManageLeads(user)) return sendJson(res, 403, { error: "Sem permissão" });
+      const leadId = decodeURIComponent(leadMatch[1]);
+      const lead = await structuredLeadById(sql, leadId, user);
+      if (!lead || lead.privacyStatus) return sendJson(res, 404, { error: "Lead não encontrado ou já processado" });
+      const body = await readBody(req);
+      const type = String(body.type || "");
+      if (!['opt_out', 'anonymize'].includes(type)) return sendJson(res, 400, { error: "Operação de privacidade inválida" });
+      const reason = String(body.reason || "").trim();
+      if (!reason) return sendJson(res, 400, { error: "Informe o motivo ou contexto do pedido" });
+      const evidence = encryptPrivacyEvidence(body.evidence || null);
+      const requestId = `privacy-${crypto.randomUUID()}`;
+      const now = new Date().toISOString();
+      const maskedEmail = maskPrivacyEmail(lead.email);
+      const fingerprints = [["email", lead.email], ["phone", lead.phone]].map(([kind, value]) => [kind, privacyFingerprint(kind, value)]).filter(([, fingerprint]) => fingerprint);
+      for (const [kind, fingerprint] of fingerprints) {
+        await sql`INSERT INTO crm_privacy_suppressions (fingerprint, kind, request_id, active, created_at) VALUES (${fingerprint}, ${kind}, ${requestId}, true, now()) ON CONFLICT (fingerprint) DO UPDATE SET request_id = EXCLUDED.request_id, active = true`;
+      }
+      const requestPayload = { id: requestId, leadId, type, privacyTag: type === "anonymize" ? "Anonim." : "Opt-Out", status: "completed", requestedAt: now, completedAt: now, actorId: user.id, actorName: user.name, actorRole: user.role, maskedName: "***", maskedEmail, maskedPhone: "***", reason, channel: String(body.channel || "Não informado"), hasEvidence: Boolean(evidence), evidenceName: evidence?.name || "" };
+      await sql`INSERT INTO crm_privacy_requests (id, lead_id, request_type, status, requested_at, completed_at, actor_id, actor_name, actor_role, masked_name, masked_email, masked_phone, reason, channel, evidence, payload) VALUES (${requestId}, ${leadId}, ${type}, 'completed', ${now}::timestamptz, ${now}::timestamptz, ${user.id}, ${user.name}, ${user.role}, '***', ${maskedEmail}, '***', ${reason}, ${requestPayload.channel}, ${evidence ? JSON.stringify(evidence) : null}::jsonb, ${JSON.stringify(requestPayload)}::jsonb)`;
+      lead.privacyStatus = type;
+      lead.privacyRequestId = requestId;
+      lead.privacyProcessedAt = now;
+      lead.inPipeline = false;
+      lead.assignedTo = null;
+      lead.assignedName = "";
+      lead.favorite = false;
+      lead.favoritesByUser = {};
+      if (type === "anonymize") {
+        lead.name = "***";
+        lead.phone = "***";
+        lead.email = maskedEmail;
+        lead.assistant = "";
+        lead.notes = "";
+        lead.comments = [];
+        lead.tags = [];
+        lead.meta = {};
+      }
+      lead.updatedAt = now;
+      await saveStructuredLead(sql, lead);
+      if (type === "anonymize") {
+        await sql`DELETE FROM crm_lead_comments WHERE lead_id = ${leadId}`;
+        await sql`DELETE FROM crm_lead_tags WHERE lead_id = ${leadId}`;
+      }
+      await sql`DELETE FROM crm_lead_favorites WHERE lead_id = ${leadId}`;
+      await structuredAudit(user, type === "anonymize" ? "ANONYMIZE_LEAD" : "OPT_OUT_LEAD", { leadId, requestId, reason, channel: requestPayload.channel, hasEvidence: Boolean(evidence) });
+      return sendJson(res, 200, { ok: true, request: requestPayload });
+    }
+    if (!canManagePrivacy(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    if (req.method === "GET" && url.pathname === "/api/privacy/requests") {
+      const rows = await sql`SELECT payload FROM crm_privacy_requests ORDER BY requested_at DESC`;
+      return sendJson(res, 200, { requests: rows.map((row) => row.payload) });
+    }
+    const evidenceMatch = url.pathname.match(/^\/api\/privacy\/requests\/([^/]+)\/evidence$/);
+    if (req.method === "GET" && evidenceMatch) {
+      const rows = await sql`SELECT evidence FROM crm_privacy_requests WHERE id = ${decodeURIComponent(evidenceMatch[1])} LIMIT 1`;
+      if (!rows.length || !rows[0].evidence) return sendJson(res, 404, { error: "Comprovante não encontrado" });
+      return sendJson(res, 200, decryptPrivacyEvidence(rows[0].evidence));
+    }
+    return false;
+  } catch (error) {
+    console.error("PRIVACY_ROUTE_ERROR", error);
+    return sendJson(res, 400, { error: error.message || "Erro ao processar privacidade" });
+  }
+}
+
 async function mirrorStructuredUser(user) {
   if (!user?.id) return;
   try {
@@ -11501,6 +11668,14 @@ async function insertStructuredDataset(sql, db, key) {
         await sql`INSERT INTO crm_lead_favorites (lead_id, user_id, favorite) VALUES (${lead.id}, ${userId}, ${Boolean(favorite)}) ON CONFLICT DO NOTHING`;
         summary.favorites += 1;
       }
+    }
+  } else if (key === "privacy") {
+    for (const request of db.privacyRequests || []) {
+      await sql`INSERT INTO crm_privacy_requests (id, lead_id, request_type, status, requested_at, completed_at, actor_id, actor_name, actor_role, masked_name, masked_email, masked_phone, reason, channel, evidence, payload) VALUES (${request.id}, ${request.leadId}, ${request.type}, ${request.status || "completed"}, ${dbDate(request.requestedAt)}, ${dbDate(request.completedAt)}, ${request.actorId || ""}, ${request.actorName || ""}, ${request.actorRole || ""}, ${request.maskedName || "***"}, ${request.maskedEmail || "***"}, ${request.maskedPhone || "***"}, ${request.reason || ""}, ${request.channel || ""}, ${request.evidence ? JSON.stringify(request.evidence) : null}::jsonb, ${JSON.stringify({ ...request, evidence: undefined })}::jsonb)`;
+      summary.privacy = (summary.privacy || 0) + 1;
+    }
+    for (const item of db.privacySuppressions || []) {
+      await sql`INSERT INTO crm_privacy_suppressions (fingerprint, kind, request_id, active, created_at) VALUES (${item.fingerprint}, ${item.kind}, ${item.requestId}, ${item.active !== false}, ${dbDate(item.createdAt)}) ON CONFLICT (fingerprint) DO UPDATE SET active = EXCLUDED.active, request_id = EXCLUDED.request_id`;
     }
   } else if (key === "statuses") {
     const definitions = Array.isArray(db.statusDefinitions) && db.statusDefinitions.length
@@ -11697,6 +11872,16 @@ async function syncStructuredDb(db, actor) {
     for (const opportunity of opportunitiesById.values()) {
       await saveStructuredOpportunity(sql, opportunity);
       summary.opportunities += 1;
+    }
+    for (const request of db.privacyRequests || []) {
+      const publicPayload = { ...request };
+      delete publicPayload.evidence;
+      await sql`INSERT INTO crm_privacy_requests (id, lead_id, request_type, status, requested_at, completed_at, actor_id, actor_name, actor_role, masked_name, masked_email, masked_phone, reason, channel, evidence, payload) VALUES (${request.id}, ${request.leadId}, ${request.type}, ${request.status || "completed"}, ${dbDate(request.requestedAt)}, ${dbDate(request.completedAt)}, ${request.actorId || ""}, ${request.actorName || ""}, ${request.actorRole || ""}, ${request.maskedName || "***"}, ${request.maskedEmail || "***"}, ${request.maskedPhone || "***"}, ${request.reason || ""}, ${request.channel || ""}, ${request.evidence ? JSON.stringify(request.evidence) : null}::jsonb, ${JSON.stringify(publicPayload)}::jsonb)`;
+      summary.privacy = (summary.privacy || 0) + 1;
+    }
+    for (const item of db.privacySuppressions || []) {
+      if (!item.fingerprint) continue;
+      await sql`INSERT INTO crm_privacy_suppressions (fingerprint, kind, request_id, active, created_at) VALUES (${item.fingerprint}, ${item.kind || ""}, ${item.requestId || ""}, ${item.active !== false}, ${dbDate(item.createdAt)}) ON CONFLICT (fingerprint) DO UPDATE SET active = EXCLUDED.active, request_id = EXCLUDED.request_id`;
     }
     const statusDefinitions = Array.isArray(db.statusDefinitions) && db.statusDefinitions.length
       ? db.statusDefinitions
@@ -12065,6 +12250,50 @@ async function routeApi(req, res, db) {
 
   const user = requireAuth(req, res, db);
   if (!user) return;
+
+  const legacyPrivacyMatch = url.pathname.match(/^\/api\/leads\/([^/]+)\/privacy$/);
+  if (legacyPrivacyMatch && method === "POST") {
+    if (!canExecuteLeadPrivacy(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const lead = db.leads.find((item) => item.id === decodeURIComponent(legacyPrivacyMatch[1]) && !item.privacyStatus);
+    if (!lead) return notFound(res);
+    const body = await readBody(req);
+    const type = String(body.type || "");
+    const reason = String(body.reason || "").trim();
+    if (!['opt_out', 'anonymize'].includes(type) || !reason) return sendJson(res, 400, { error: "Informe uma ação e o motivo" });
+    const evidence = encryptPrivacyEvidence(body.evidence || null);
+    const requestId = `privacy-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    const request = { id: requestId, leadId: lead.id, type, privacyTag: type === "anonymize" ? "Anonim." : "Opt-Out", status: "completed", requestedAt: now, completedAt: now, actorId: user.id, actorName: user.name, actorRole: user.role, maskedName: "***", maskedEmail: maskPrivacyEmail(lead.email), maskedPhone: "***", reason, channel: String(body.channel || "Não informado"), hasEvidence: Boolean(evidence), evidenceName: evidence?.name || "", evidence };
+    for (const [kind, value] of [["email", lead.email], ["phone", lead.phone]]) {
+      const fingerprint = privacyFingerprint(kind, value);
+      if (fingerprint && !db.privacySuppressions.some((item) => item.fingerprint === fingerprint)) db.privacySuppressions.push({ fingerprint, kind, requestId, active: true, createdAt: now });
+    }
+    db.privacyRequests.unshift(request);
+    lead.privacyStatus = type;
+    lead.privacyRequestId = requestId;
+    lead.inPipeline = false;
+    lead.assignedTo = null;
+    lead.assignedName = "";
+    if (type === "anonymize") Object.assign(lead, { name: "***", phone: "***", email: request.maskedEmail, assistant: "", notes: "", comments: [], tags: [], meta: {} });
+    lead.updatedAt = now;
+    audit(db, user, type === "anonymize" ? "ANONYMIZE_LEAD" : "OPT_OUT_LEAD", { leadId: lead.id, requestId, reason, hasEvidence: Boolean(evidence) });
+    await saveDb(db);
+    const { evidence: omitted, ...publicRequest } = request;
+    return sendJson(res, 200, { ok: true, request: publicRequest });
+  }
+
+  if (method === "GET" && url.pathname === "/api/privacy/requests") {
+    if (!canManagePrivacy(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    return sendJson(res, 200, { requests: (db.privacyRequests || []).map(({ evidence, ...item }) => item) });
+  }
+
+  const legacyEvidenceMatch = url.pathname.match(/^\/api\/privacy\/requests\/([^/]+)\/evidence$/);
+  if (legacyEvidenceMatch && method === "GET") {
+    if (!canManagePrivacy(user)) return sendJson(res, 403, { error: "Sem permissão" });
+    const request = (db.privacyRequests || []).find((item) => item.id === decodeURIComponent(legacyEvidenceMatch[1]));
+    if (!request?.evidence) return notFound(res);
+    return sendJson(res, 200, decryptPrivacyEvidence(request.evidence));
+  }
 
   if (method === "GET" && url.pathname === "/api/me") {
     return sendJson(res, 200, { user: publicUser(user) });
@@ -13572,6 +13801,7 @@ async function handleRequest(req, res) {
     if (await fastStructuredStateResponse(req, res, url)) return;
     if (await fastStructuredLeadsResponse(req, res, url)) return;
     if (await fastStructuredManualLeadRoutes(req, res, url)) return;
+    if (await fastStructuredPrivacyRoutes(req, res, url)) return;
     if (await fastStructuredSamWebhook(req, res, url)) return;
     if (await fastStructuredSamEventAction(req, res, url)) return;
     if (await fastStructuredLeadAction(req, res, url)) return;

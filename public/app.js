@@ -58,6 +58,7 @@ const state = {
   smlFinance: null,
   commercialSettings: {},
   eventCaptureSettings: {},
+  privacyRequests: [],
   pipelineFrontSettings: { mobileFiltersCollapsed: true, mobileFooterStyle: "floating", mobileFooterTheme: "dark" },
   levMauadEmailPreview: false,
   structuredDbDiagnostics: null,
@@ -535,6 +536,7 @@ function allowedViews() {
   const views = userRules
     ? Object.entries(screenByView).filter(([, resourceId]) => userRules[resourceId]?.access).map(([view]) => view)
     : roleViews;
+  if (canManagePrivacy() && !views.includes("settings")) views.push("settings");
   return views.filter((view) => {
     if (view === "salesReport") return canAccessCommercialSalesReport();
     if (view === "finance") return canAccessLevFinance();
@@ -651,6 +653,14 @@ function canManageCommercialSettings() {
 
 function canManageEventCaptureSettings() {
   return ["Admin TI", "Head Comercial", "Coordenador de Marketing"].includes(state.user?.role);
+}
+
+function canManagePrivacy() {
+  return ["Admin TI", "Coordenador de Marketing", "Gestor de Tráfego"].includes(state.user?.role);
+}
+
+function canExecuteLeadPrivacy() {
+  return ["Admin TI", "Head Comercial"].includes(state.user?.role);
 }
 
 function editableRoles() {
@@ -4183,6 +4193,53 @@ function bindOpportunityModal() {
   });
 }
 
+function openLeadPrivacyModal(lead) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "modal-backdrop privacy-modal-backdrop";
+  wrapper.innerHTML = `
+    <div class="modal-card privacy-modal" role="dialog" aria-modal="true" aria-labelledby="privacy-title">
+      <div class="panel-head"><div><h2 id="privacy-title">Privacidade do lead</h2><p>${escapeHtml(lead.name || "")}</p></div><button type="button" data-close-privacy aria-label="Fechar">×</button></div>
+      <form id="leadPrivacyForm" class="form-grid">
+        <div class="field full"><label>Ação</label><select name="type" required><option value="opt_out">Opt-Out — não abordar novamente</option><option value="anonymize">Anonimizar — irreversível</option></select></div>
+        <div class="field"><label>Canal do pedido</label><select name="channel"><option>WhatsApp</option><option>E-mail</option><option>Telefone</option><option>Presencial</option><option>Outro</option></select></div>
+        <div class="field"><label>Comprovante (opcional)</label><input name="evidence" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"></div>
+        <div class="field full"><label>Motivo/contexto</label><textarea name="reason" required placeholder="Registre como e quando o titular fez o pedido"></textarea></div>
+        <div class="privacy-warning" data-privacy-warning>O contato deixará todas as bases e não poderá ser novamente abordado. O Opt-Out poderá ser revisto por um perfil autorizado.</div>
+        <label class="privacy-confirm full"><input type="checkbox" name="confirmed" required> Confirmo que revisei o pedido e desejo executar esta ação.</label>
+        <div class="row-actions full"><button type="button" data-close-privacy>Cancelar</button><button class="danger-button" type="submit">Confirmar</button></div>
+      </form>
+    </div>`;
+  document.body.appendChild(wrapper);
+  const close = () => wrapper.remove();
+  wrapper.querySelectorAll("[data-close-privacy]").forEach((button) => button.addEventListener("click", close));
+  wrapper.addEventListener("click", (event) => { if (event.target === wrapper) close(); });
+  const select = wrapper.querySelector("[name=type]");
+  select.addEventListener("change", () => {
+    wrapper.querySelector("[data-privacy-warning]").textContent = select.value === "anonymize"
+      ? "A anonimização é irreversível: nome e telefone serão eliminados, o e-mail será descaracterizado e os dados originais não poderão ser recuperados."
+      : "O contato deixará todas as bases e não poderá ser novamente abordado. O Opt-Out poderá ser revisto por um perfil autorizado.";
+  });
+  wrapper.querySelector("#leadPrivacyForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.submitter;
+    const form = new FormData(event.currentTarget);
+    try {
+      setButtonBusy(button, true, "Processando...");
+      const file = form.get("evidence");
+      const evidence = file?.size ? { name: file.name, dataUrl: await readFileAsDataUrl(file) } : null;
+      const type = String(form.get("type"));
+      if (type === "anonymize" && !confirm("Esta ação é irreversível. Os dados pessoais originais serão eliminados. Deseja continuar?")) return setButtonBusy(button, false);
+      await api(`/api/leads/${encodeURIComponent(lead.id)}/privacy`, { method: "POST", body: JSON.stringify({ type, channel: form.get("channel"), reason: form.get("reason"), evidence }) });
+      state.leads = state.leads.filter((item) => item.id !== lead.id);
+      close();
+      routeTo(state.previousView || "kanban");
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
+}
+
 function renderLeadDetail() {
   const lead = state.leads.find((item) => item.id === state.leadId);
   if (!lead) {
@@ -4239,6 +4296,8 @@ function renderLeadDetail() {
       </div>
       <div class="actions">
         <button data-back-lead>Voltar</button>
+        ${canExecuteLeadPrivacy() ? `<button data-lead-privacy="${escapeHtml(lead.id)}">Privacidade</button>` : ""}
+        ${lead.inPipeline && canRollbackLead(lead) ? `<button data-detail-rollback="${escapeHtml(lead.id)}">Rollback</button>` : ""}
         ${canManageLeads() ? `<button class="danger-button" data-delete-lead="${escapeHtml(lead.id)}">Excluir lead</button>` : ""}
         <button class="icon favorite ${lead.favorite ? "primary" : ""}" data-favorite="${escapeHtml(lead.id)}" title="Favoritar">${lead.favorite ? "★" : "☆"}</button>
       </div>
@@ -4275,6 +4334,20 @@ function renderLeadDetail() {
   `);
 
   document.querySelector("[data-back-lead]")?.addEventListener("click", () => routeTo(state.previousView || "kanban"));
+  document.querySelector("[data-lead-privacy]")?.addEventListener("click", () => openLeadPrivacyModal(lead));
+  document.querySelector("[data-detail-rollback]")?.addEventListener("click", async (event) => {
+    if (!confirm("Retirar este lead do pipeline e devolvê-lo à base de origem?")) return;
+    const button = event.currentTarget;
+    try {
+      setButtonBusy(button, true, "Voltando...");
+      const result = await api(`/api/leads/${encodeURIComponent(lead.id)}/rollback`, { method: "POST", body: JSON.stringify({ movementSource: "lead_detail" }) });
+      Object.assign(lead, result.lead);
+      renderLeadDetail();
+    } catch (error) {
+      setButtonBusy(button, false);
+      alert(error.message);
+    }
+  });
   document.querySelector("[data-delete-lead]")?.addEventListener("click", async (event) => {
     if (!confirm("Excluir este lead definitivamente?")) return;
     const button = event.currentTarget;
@@ -5779,6 +5852,7 @@ function renderSettings() {
   if (state.settingsTab === "eventCaptureMessage" && !canManageEventCaptureSettings()) state.settingsTab = "users";
   if (["levFinance", "smlFinance"].includes(state.settingsTab) && !canManageLevFinanceSettings()) state.settingsTab = "users";
   if (state.settingsTab === "commercial" && !canManageCommercialSettings()) state.settingsTab = "users";
+  if (state.settingsTab === "privacy" && !canManagePrivacy()) state.settingsTab = "users";
   if (state.settingsTab === "users" && !canManageUsers()) {
     const fallbackGroup = activeSettingsGroup();
     state.settingsTab = fallbackGroup?.tabs?.[0]?.id || "knowledge";
@@ -5800,7 +5874,32 @@ function renderSettings() {
   if (state.settingsTab === "backup") return renderBackupSettings();
   if (state.settingsTab === "structuredDb") return renderStructuredDbSettings();
   if (state.settingsTab === "knowledge") return renderKnowledgeSettings();
+  if (state.settingsTab === "privacy") return renderPrivacySettings();
   return renderUserSettings();
+}
+
+async function renderPrivacySettings() {
+  settingsLayout(`<section class="panel"><div class="panel-head"><div><h2>Solicitações de privacidade</h2><p>Comprovação de Opt-Out e anonimização. Dados originais não são exibidos.</p></div></div><div class="empty">Carregando...</div></section>`);
+  try {
+    const data = await api("/api/privacy/requests");
+    state.privacyRequests = data.requests || [];
+    settingsLayout(`
+      <section class="panel">
+        <div class="panel-head"><div><h2>Solicitações de privacidade</h2><p>Acesso restrito. Horários de São Paulo.</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Data</th><th>Tipo</th><th>Nome</th><th>E-mail</th><th>Telefone</th><th>Canal</th><th>Responsável</th><th>Comprovante</th></tr></thead><tbody>
+          ${state.privacyRequests.length ? state.privacyRequests.map((item) => `<tr><td>${escapeHtml(dateTimeLabel(item.requestedAt))}</td><td><span class="privacy-badge ${item.type === "anonymize" ? "danger" : ""}">${escapeHtml(item.privacyTag || (item.type === "anonymize" ? "Anonim." : "Opt-Out"))}</span></td><td>${escapeHtml(item.maskedName || "***")}</td><td>${escapeHtml(item.maskedEmail || "***")}</td><td>${escapeHtml(item.maskedPhone || "***")}</td><td>${escapeHtml(item.channel || "")}</td><td>${escapeHtml(item.actorName || "")}</td><td>${item.hasEvidence ? `<button type="button" data-privacy-evidence="${escapeHtml(item.id)}">Abrir</button>` : "—"}</td></tr>`).join("") : `<tr><td colspan="8" class="empty">Nenhuma solicitação registrada.</td></tr>`}
+        </tbody></table></div>
+      </section>`);
+    document.querySelectorAll("[data-privacy-evidence]").forEach((button) => button.addEventListener("click", async () => {
+      try {
+        const evidence = await api(`/api/privacy/requests/${encodeURIComponent(button.dataset.privacyEvidence)}/evidence`);
+        const opened = window.open();
+        if (opened) opened.location.href = evidence.dataUrl;
+      } catch (error) { alert(error.message); }
+    }));
+  } catch (error) {
+    settingsLayout(`<section class="panel"><div class="empty">${escapeHtml(error.message)}</div></section>`);
+  }
 }
 
 function renderSettingsActionMenu(menuId, actions, label = "⋮") {
